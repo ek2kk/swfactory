@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
-import type { SpecResult, BuildResult } from '../shared.js';
+import type { SpecResult, BuildResult, ReviewResult, ReviewRole } from '../shared.js';
 import { parseTitle } from './title.js';
 import { Problem } from './store.js';
 import { saveArtifact } from './artifacts.js';
@@ -122,4 +122,28 @@ export function validateBuild(value: unknown): BuildResult {
     }) || (result.outcome === 'READY' && (!result.changed_paths.length || !result.actions.length || !result.checks.length))
     || new Set(result.changed_paths).size !== result.changed_paths.length) throw new Problem(422, 'Невалидный Build.');
   return result;
+}
+
+export const reviewSchema = {
+  type: 'object', additionalProperties: false,
+  properties: { outcome: { enum: ['PASS', 'CHANGES', 'NEEDS_INPUT', 'BLOCKED'] }, summary: { type: 'string' },
+    findings: list, evidence: list, applicable: { type: 'boolean' }, applicability: { type: 'string' }, questions: specSchema.properties.questions },
+  required: ['outcome', 'summary', 'findings', 'evidence', 'applicable', 'applicability', 'questions'],
+};
+export function validateReview(value: unknown, role?: ReviewRole): ReviewResult {
+  const result = value as ReviewResult;
+  if (!result || typeof result !== 'object' || Array.isArray(result)
+    || Object.keys(result).sort().join() !== [...reviewSchema.required].sort().join()
+    || !['PASS', 'CHANGES', 'NEEDS_INPUT', 'BLOCKED'].includes(result.outcome) || !nonempty(result.summary)
+    || !validQuestions(result.questions) || (result.outcome === 'NEEDS_INPUT' ? !result.questions.length : result.questions.length > 0)
+    || !['findings', 'evidence'].every(key => Array.isArray(result[key as 'findings']) && result[key as 'findings'].every(nonempty))
+    || typeof result.applicable !== 'boolean' || typeof result.applicability !== 'string'
+    || (!result.applicable && (!nonempty(result.applicability) || (role && !['review-ui', 'review-ux'].includes(role))))
+    || (result.outcome === 'PASS' && (result.findings.length > 0 || (result.applicable && !result.evidence.length)))
+    || (result.outcome === 'CHANGES' && !result.findings.length)) throw new Problem(422, 'Невалидный Review.');
+  return result;
+}
+export type ExecuteReview = (input: CodexInput) => Promise<ReviewResult>;
+export function executeReview(input: CodexInput, executable = 'codex') {
+  return executeResult(input, reviewSchema, validateReview, executable);
 }
