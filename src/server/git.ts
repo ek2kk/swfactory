@@ -10,10 +10,11 @@ export type Run = (file: string, args: string[], cwd: string) => Promise<string>
 export const run: Run = async (file, args, cwd) => {
   try {
     const result = await exec(file, args, {
-      cwd, timeout: 15_000, maxBuffer: 512 * 1024,
+      cwd, timeout: 15_000, maxBuffer: 2 * 1024 * 1024,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GH_PROMPT_DISABLED: '1', GLAB_PROMPT_DISABLED: '1' },
     });
-    return result.stdout.trim();
+    // NUL-separated paths may start with whitespace; preserve the wire format.
+    return args.includes('-z') ? result.stdout : result.stdout.trim();
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') throw new Problem(422, `Не найден ${file} или checkout. Проверьте путь и установку CLI.`);

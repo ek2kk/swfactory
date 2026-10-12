@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Store } from '../src/server/store.js';
 import { SpecController } from '../src/server/spec.js';
+import { sourceHash } from '../src/server/build.js';
 import { run as command } from '../src/server/git.js';
 import { validateBuild, type ExecuteBuild } from '../src/server/codex.js';
 import type { BuildResult, SpecResult } from '../src/shared.js';
@@ -111,11 +112,12 @@ for (const scenario of ['unexpected', 'secret', 'secret-content', 'symlink', 'st
   if (scenario === 'secret') assert.equal(git(run.worktree, 'diff', '--cached', '--name-only'), '');
 });
 
-for (const scenario of ['answer', 'changed', 'restart'] as const) test(`Build question ${scenario}: preserves partial edits, answers and role`, async t => {
+for (const scenario of ['answer', 'changed', 'leading-changed', 'restart'] as const) test(`Build question ${scenario}: preserves partial edits, answers and role`, async t => {
   const { store, directory, project, task, queue, controller } = await fixture(t);
   const run = queue();
   const runner = controller(async input => {
     writeFileSync(join(input.cwd, 'README.md'), 'partial');
+    if (scenario === 'leading-changed') writeFileSync(join(input.cwd, ' leading.txt'), 'before');
     return { ...ready, outcome: 'NEEDS_INPUT', questions: [{ text: 'Greeting?', context: 'Text', impact: 'Output', options: ['hello'], required: true }] };
   });
   runner.enqueue(run); await runner.close();
@@ -128,12 +130,13 @@ for (const scenario of ['answer', 'changed', 'restart'] as const) test(`Build qu
   }
   const next = store.answer(project.id, task.id, request.id, store.task(project.id, task.id).state_version, ['hello']).run!;
   assert.equal(next.role, 'build'); assert.equal(next.worktree, run.worktree);
+  if (scenario === 'leading-changed') writeFileSync(join(run.worktree, ' leading.txt'), 'after!');
   if (scenario === 'changed') writeFileSync(join(run.worktree, 'README.md'), 'human changed');
   let calls = 0;
   const continuation = controller(async input => { calls++; assert.match(input.prompt, /Greeting/); assert.match(input.prompt, /hello/); assert.equal(readFileSync(join(input.cwd, 'README.md'), 'utf8'), 'partial'); writeFileSync(join(input.cwd, 'README.md'), 'hello'); return ready; });
   continuation.enqueue(next); await continuation.close();
-  assert.equal(calls, scenario === 'changed' ? 0 : 1);
-  assert.equal(store.task(project.id, task.id).stage, scenario === 'changed' ? 'needs-human' : 'review');
+  assert.equal(calls, scenario.endsWith('changed') ? 0 : 1);
+  assert.equal(store.task(project.id, task.id).stage, scenario.endsWith('changed') ? 'needs-human' : 'review');
 });
 
 test('new Spec automatically queues Build atomically and reaches Review without another action', async t => {
@@ -166,4 +169,34 @@ test('failed automatic Build queue rolls back Spec completion and never launches
     assert.equal(store.runs().filter(r => r.task_id === task.id && r.role === 'build').length, 0);
     assert.equal(calls, 0);
   } finally { await runner.close(); }
+});
+
+test('sourceHash includes the content of the first NUL-separated path with leading space', async t => {
+  const { queue } = await fixture(t);
+  const run = queue(), path = join(run.worktree, ' leading.txt');
+  writeFileSync(path, 'before');
+  const before = await sourceHash(run);
+  writeFileSync(path, 'after!');
+  assert.notEqual(await sourceHash(run), before);
+});
+
+for (const [label, path, content] of [
+  ['leading-space', ' leading.txt', 'hello'],
+  ['600-KiB', 'large.txt', 'a'.repeat(600 * 1024)],
+  ['2-MiB', 'large.txt', 'a'.repeat(2 * 1024 * 1024)],
+]) for (const committed of [false, true]) test(`Build READY ${label}, builder commit=${committed}`, async t => {
+  const { store, project, task, queue, controller, git } = await fixture(t);
+  const run = queue();
+  const runner = controller(async input => {
+    writeFileSync(join(input.cwd, path), content);
+    if (committed) { git(input.cwd, 'add', '--', path); git(input.cwd, 'commit', '-m', 'builder'); }
+    return { ...ready, changed_paths: [path] };
+  });
+  runner.enqueue(run); await runner.close();
+  const saved = store.specRun(project.id, task.id, run.id);
+  assert.equal(saved.outcome, 'READY', saved.error ?? '');
+  assert.equal(store.task(project.id, task.id).stage, 'review');
+  assert.equal(git(run.worktree, 'status', '--porcelain'), '');
+  assert.equal(git(run.worktree, 'rev-list', '--count', `${run.base_sha}..HEAD`), '1');
+  assert.equal(git(run.worktree, 'rev-parse', `HEAD:${path}`), git(run.worktree, 'hash-object', '--', path));
 });
