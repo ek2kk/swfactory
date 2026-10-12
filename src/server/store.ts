@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync, chmodSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Project, Task, Snapshot, SavedEvent, Revision } from '../shared.js';
+import { defaultModels, type Settings, type SpecRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision } from '../shared.js';
 
 export class Problem extends Error {
   constructor(public statusCode: number, message: string) { super(message); }
@@ -31,7 +31,7 @@ export class Store {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       const version = this.db.pragma('user_version', { simple: true });
-      if (version !== 0 && version !== 1) throw new Error('Версия базы новее приложения. Обновите приложение.');
+      if (version !== 0 && version !== 1 && version !== 2) throw new Error('Версия базы новее приложения. Обновите приложение.');
       this.db.transaction(() => {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS projects (
@@ -56,8 +56,16 @@ export class Store {
             payload TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
           );
           CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, response TEXT NOT NULL);
-          PRAGMA user_version = 1;
+          CREATE TABLE IF NOT EXISTS project_settings (
+            project_id TEXT PRIMARY KEY REFERENCES projects(id), config TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS runs (
+            id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), project_id TEXT NOT NULL REFERENCES projects(id),
+            description_revision INTEGER NOT NULL, config TEXT NOT NULL, project_version INTEGER NOT NULL,
+            status TEXT NOT NULL, branch TEXT NOT NULL, worktree TEXT NOT NULL, base_sha TEXT,
+            outcome TEXT, error TEXT, report INTEGER NOT NULL DEFAULT 0);
+          PRAGMA user_version = 2;
         `);
+        this.db.prepare("UPDATE runs SET status = 'interrupted', error = 'Backend перезапущен. Нужна ручная сверка.' WHERE status IN ('queued','running')").run();
         for (const task of this.db.prepare("SELECT * FROM tasks WHERE run_state IN ('running','queued','waiting')").all() as Task[]) {
           this.db.prepare("UPDATE tasks SET run_state = 'interrupted', state_version = state_version + 1 WHERE id = ?").run(task.id);
           this.event('task.interrupted', task.id, { reason: 'Backend перезапущен. Нужна ручная проверка; работа не возобновлена.' });
@@ -75,6 +83,7 @@ export class Store {
     return {
       projects: this.db.prepare('SELECT * FROM projects ORDER BY rowid').all() as Project[],
       tasks: this.db.prepare('SELECT * FROM tasks ORDER BY rowid').all() as Task[],
+      runs: this.runs(),
       cursor: (this.db.prepare('SELECT coalesce(max(id), 0) AS id FROM events').get() as { id: number }).id,
     };
   }
@@ -135,6 +144,53 @@ export class Store {
     this.db.prepare('INSERT INTO task_revisions(task_id, revision, description) VALUES (?, ?, ?)').run(id, task.revision + 1, description);
     this.event('task.edited', id, { revision: task.revision + 1 });
     return this.task(projectId, id);
+  }
+  settings(projectId: string): Settings {
+    this.project(projectId);
+    const row = this.db.prepare('SELECT config FROM project_settings WHERE project_id = ?').get(projectId) as { config: string } | undefined;
+    return row ? JSON.parse(row.config) : { models: { ...defaultModels }, instructions: '' };
+  }
+  saveSettings(projectId: string, config: Settings, version: number) {
+    if (this.project(projectId).state_version !== version) throw new Problem(409, 'Настройки изменились. Загрузите актуальную версию.');
+    this.db.prepare('INSERT INTO project_settings VALUES (?, ?) ON CONFLICT(project_id) DO UPDATE SET config = excluded.config').run(projectId, JSON.stringify(config));
+    this.db.prepare('UPDATE projects SET state_version = state_version + 1 WHERE id = ?').run(projectId);
+    this.event('project.settings', null, { project_id: projectId });
+    return this.settings(projectId);
+  }
+  runs(): SpecRun[] {
+    return (this.db.prepare('SELECT * FROM runs ORDER BY rowid').all() as (Omit<SpecRun, 'config'> & { config: string })[])
+      .map(row => ({ ...row, config: JSON.parse(row.config) }));
+  }
+  specRun(projectId: string, taskId: string, id: string) {
+    this.task(projectId, taskId);
+    const run = this.runs().find(run => run.id === id && run.task_id === taskId && run.project_id === projectId);
+    if (!run) throw new Problem(404, 'Запуск не найден в этой задаче.');
+    return run;
+  }
+  queueSpec(projectId: string, taskId: string, version: number, directory: string) {
+    const task = this.task(projectId, taskId);
+    if (task.state_version !== version || task.stage !== 'backlog' || task.run_state !== 'idle') throw new Problem(409, 'Задача изменилась или уже запущена.');
+    const id = randomUUID();
+    const run: SpecRun = { id, task_id: taskId, project_id: projectId, description_revision: task.revision,
+      config: this.settings(projectId), project_version: this.project(projectId).state_version, status: 'queued',
+      branch: `swfactory/${taskId}/${id}`, worktree: join(directory, 'worktrees', projectId, id),
+      base_sha: null, outcome: null, error: null, report: 0 };
+    this.db.prepare(`INSERT INTO runs VALUES (@id, @task_id, @project_id, @description_revision, @config, @project_version,
+      @status, @branch, @worktree, @base_sha, @outcome, @error, @report)`).run({ ...run, config: JSON.stringify(run.config) });
+    this.db.prepare("UPDATE tasks SET run_state = 'queued', state_version = state_version + 1 WHERE id = ?").run(taskId);
+    this.event('spec.queued', taskId, { run_id: id });
+    return run;
+  }
+  updateRun(run: SpecRun, stage: Task['stage'], state: Task['run_state']) {
+    this.db.transaction(() => {
+      const task = this.task(run.project_id, run.task_id);
+      const current = this.specRun(run.project_id, run.task_id, run.id);
+      if (!['queued', 'running'].includes(current.status) || task.revision !== run.description_revision
+        || !['queued', 'running'].includes(task.run_state)) throw new Problem(409, 'Результат запуска устарел.');
+      this.db.prepare('UPDATE runs SET status = @status, base_sha = @base_sha, outcome = @outcome, error = @error, report = @report WHERE id = @id').run(run);
+      this.db.prepare('UPDATE tasks SET stage = ?, run_state = ?, state_version = state_version + 1 WHERE id = ?').run(stage, state, run.task_id);
+      this.event(`spec.${run.status}`, run.task_id, { run_id: run.id, stage, outcome: run.outcome, error: run.error });
+    })();
   }
   revisions(projectId: string, id: string): Revision[] {
     this.task(projectId, id);
