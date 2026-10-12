@@ -417,3 +417,34 @@ test('Pending publication becomes unknown on restart without executing a retry',
   assert.equal(restored.task(project.id, task.id).stage, 'needs-human');
   assert.ok(restored.events(0).some(e => e.type === 'publication.unknown')); restored.close();
 });
+
+test('manual UI check pauses Review and continues with attributed human evidence for the same HEAD', async t => {
+  const { store, project, task, queue, controller, directory } = await fixture(t);
+  const seen: string[] = [];
+  let answered = false;
+  const review: ExecuteReview = async input => {
+    const role = /You are the ([\w-]+)/.exec(input.prompt)![1]; seen.push(role);
+    assert.match(input.prompt, /rendered UI\/UX checks are performed by the human/);
+    if (role === 'review-ui' && !answered) return { ...pass, outcome: 'NEEDS_INPUT', evidence: [], questions: [
+      { text: 'Open the page at 375px: is Save visible without horizontal scrolling?', context: 'Responsive layout requires manual verification', impact: 'Cannot complete UI Review', options: [], required: true },
+    ] };
+    if (role === 'review-ui') {
+      assert.match(input.prompt, /Checked at 375px: Save is visible/);
+      return { ...pass, evidence: ['Human confirmed at 375px: Save is visible without horizontal scrolling'] };
+    }
+    return pass;
+  };
+  const first = controller(review); first.enqueue(queue()); await settled(store, task.id); await first.close();
+  assert.deepEqual(seen, ['review-code', 'review-security', 'review-ui']);
+  const request = store.humanRequests().at(-1)!;
+  assert.equal(request.role, 'review-ui');
+  const waiting = store.task(project.id, task.id); assert.equal(waiting.run_state, 'waiting');
+  const head = store.runs().at(-1)!.head_sha;
+  const next = store.answer(project.id, task.id, request.id, waiting.state_version, ['Checked at 375px: Save is visible without horizontal scrolling']).run!;
+  answered = true;
+  const second = controller(review); second.enqueue(next); await settled(store, task.id); await second.close();
+  assert.deepEqual(seen, ['review-code', 'review-security', 'review-ui', 'review-ui', 'review-ux']);
+  assert.equal(store.task(project.id, task.id).stage, 'approve');
+  assert.equal(store.specRun(project.id, task.id, next.id).head_sha, head);
+  assert.match(readFileSync(join(directory, 'artifacts', next.id, 'report.md'), 'utf8'), /Human confirmed/);
+});

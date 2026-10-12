@@ -227,7 +227,7 @@ ${JSON.stringify(context)}`;
       const prompt = `You are the ${run.role} reviewer in a fresh independent session. Review only the specified base/head change against requirements and Spec. Read applicable AGENTS.md.
 Focus: ${focus}
 Do not modify source, index, branch or commits. Never run Build, publish, push or merge. Reports/logs belong outside source in ${directory}.
-Return PASS only with actual evidence; CHANGES with actionable findings. Missing required tools/checks (including browser checks for UI/UX) must produce NEEDS_INPUT questions or BLOCKED, never a fabricated PASS.
+Return PASS only with actual evidence; CHANGES with actionable findings. Required rendered UI/UX checks are performed by the human: return NEEDS_INPUT with manual steps and expected results. Use answered observations as human-provided evidence for this code version; never claim you checked the browser yourself. Other missing required checks must produce NEEDS_INPUT or BLOCKED, never a fabricated PASS.
 Only UI/UX may be not applicable, with a concrete explanation in applicability. Return structured questions for human decisions; never wait for interactive input.
 Task/run context: ${JSON.stringify({ task_id: task.id, run_id: run.id, role: run.role, round_id: run.round_id, description_revision: run.description_revision, spec_revision: run.spec_run_id, base_sha: run.base_sha, head_sha: run.head_sha })}
 Project instructions:
