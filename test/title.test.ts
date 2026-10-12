@@ -39,8 +39,10 @@ test('three shared slots, no duplicate title, stale revision discarded and curre
   assert.equal(calls.length, 3);
   calls[0].resolve('Old title'); await setImmediate();
   assert.equal(store.task(first.project_id, first.id).title, null);
-  assert.equal(calls[3].description, 'new');
-  calls[3].resolve('New title'); await setImmediate();
+  assert.equal(calls[3].description, 'original');
+  calls[1].resolve('Other title'); await setImmediate();
+  assert.equal(calls[4].description, 'new');
+  calls[4].resolve('New title'); await setImmediate();
   const saved = store.task(first.project_id, first.id);
   assert.equal(saved.title, 'New title');
   assert.equal(saved.description, 'new');
@@ -62,20 +64,15 @@ test('CLI failures and invalid output preserve the card and revision', async t =
   assert.ok(!JSON.stringify(store.snapshot()).includes('credentials'));
 });
 
-test('Spec releases active or pending title and working tasks consume shared slots', async t => {
+test('Spec releases active or pending title only after the generator settles', async t => {
   const { store, titles, calls, create } = fixture(t);
-  const work = create(), title = create();
-  store.db.prepare("UPDATE tasks SET stage = 'spec', run_state = 'running' WHERE id = ?").run(work.id);
-  create(); create();
+  const title = create();
   titles.kick(); await setImmediate();
-  assert.equal(calls.length, 2);
   await titles.releaseForSpec(title);
+  assert.equal(calls.length, 1);
   assert.equal(store.task(title.project_id, title.id).title_state, 'interrupted');
   assert.equal(store.task(title.project_id, title.id).title, null);
-  store.db.prepare("UPDATE tasks SET stage = 'spec', run_state = 'running' WHERE id = ?").run(title.id);
-  titles.acceptSpecTitle(title, 'Заголовок из Spec');
-  assert.equal(store.task(title.project_id, title.id).title, 'Заголовок из Spec');
-  assert.throws(() => titles.acceptSpecTitle({ ...title, revision: 99 }, 'stale'), /не готова/);
+  assert.throws(() => titles.releaseForSpec({ ...title, revision: 99 }), /изменилась/);
 });
 
 test('failed persistence rolls back start, launches no CLI and stops scheduling', async t => {
@@ -94,13 +91,13 @@ test('restart marks queued and active titles interrupted, keeps completed title,
   try {
     const p = store.addProject({ checkout: '/test', common_dir: '/test/.git', remote: 'origin', remote_url: 'git@github.com:owner/repo.git', hosting: 'github', host: 'github.com', repository: 'owner/repo', target_branch: 'main' });
     const a = store.createTask(p.id, 'a', 1), b = store.createTask(p.id, 'b', 1);
-    store.finishTitle(store.claimTitle()!, 'Saved title');
-    store.claimTitle();
+    store.finishTitle(store.claimTitle(a)!, 'Saved title');
+    store.claimTitle(b);
     const c = store.createTask(p.id, 'c', 1);
     store.close(); store = new Store(dir);
     assert.equal(store.task(p.id, a.id).title, 'Saved title');
     for (const task of [b, c]) assert.equal(store.task(p.id, task.id).title_state, 'interrupted');
-    assert.equal(store.claimTitle(), undefined);
+    assert.equal(store.claimTitle(store.task(p.id, a.id)), undefined);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -115,7 +112,72 @@ test('v1 database migration preserves descriptions and does not automatically ru
     store.close(); store = new Store(dir);
     assert.equal(store.task(p.id, task.id).description, 'old description');
     assert.equal(store.task(p.id, task.id).title_state, 'interrupted');
-    assert.equal(store.db.pragma('user_version', { simple: true }), 2);
-    assert.equal(store.claimTitle(), undefined);
+    assert.equal(store.db.pragma('user_version', { simple: true }), 3);
+    assert.equal(store.claimTitle(store.task(p.id, task.id)), undefined);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+for (const graceful of [true, false]) test(`title abort waits for CLI close (${graceful ? 'graceful' : 'forced'})`, { timeout: 5000 }, async () => {
+  const { writeFileSync, readFileSync, existsSync } = await import('node:fs');
+  const { setTimeout: delay } = await import('node:timers/promises');
+  const { generateTitle } = await import('../src/server/title.js');
+  const root = mkdtempSync(join(tmpdir(), 'factory-title-process-'));
+  const pidFile = join(root, 'pid'), aborted = join(root, 'aborted'), release = join(root, 'release');
+  writeFileSync(join(root, 'codex'), `#!${process.execPath}\nconst fs = require('node:fs');
+    process.on('SIGTERM', () => fs.writeFileSync(${JSON.stringify(aborted)}, 'yes'));
+    fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+    setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) process.exit(0); }, 5);`, { mode: 0o700 });
+  const previous = process.env.PATH;
+  process.env.PATH = `${root}:${previous}`;
+  const signal = new AbortController();
+  let settled = false, pid: number | undefined;
+  const done = generateTitle('test', signal.signal).then(() => { settled = true; }, () => { settled = true; });
+  async function waitFor(path: string) {
+    for (let i = 0; i < 200 && !existsSync(path); i++) await delay(5);
+    assert.ok(existsSync(path), `Missing process marker: ${path}`);
+  }
+  try {
+    await waitFor(pidFile); pid = Number(readFileSync(pidFile, 'utf8'));
+    signal.abort(); await waitFor(aborted); await delay(20);
+    assert.equal(settled, false, 'abort must not release a still-running CLI');
+    if (graceful) writeFileSync(release, 'yes');
+    await done;
+    assert.throws(() => process.kill(pid!, 0), { code: 'ESRCH' });
+  } finally {
+    if (pid) { try { process.kill(pid, 'SIGKILL'); } catch {} }
+    await done;
+    process.env.PATH = previous; rmSync(root, { recursive: true, force: true });
+  }
+});
+
+for (const variant of ['spec-v2', 'title-v2'] as const) test(`migration from ${variant} preserves data and opens both features`, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-v2-migration-'));
+  let store = new Store(dir);
+  try {
+    const p = store.addProject({ checkout: '/test', common_dir: '/test/.git', remote: 'origin', remote_url: 'git@github.com:owner/repo.git', hosting: 'github', host: 'github.com', repository: 'owner/repo', target_branch: 'main' });
+    const task = store.createTask(p.id, 'keep description', 1);
+    store.db.prepare("UPDATE tasks SET title = 'Saved title', title_state = 'completed' WHERE id = ?").run(task.id);
+    let runId: string | undefined;
+    if (variant === 'spec-v2') {
+      const config = { ...store.settings(p.id), instructions: 'Keep instructions' };
+      store.saveSettings(p.id, config, 1);
+      const run = store.queueSpec(p.id, task.id, 1, dir);
+      run.status = 'completed'; run.outcome = 'READY';
+      store.updateRun(run, 'build', 'idle'); runId = run.id;
+      store.db.exec('ALTER TABLE tasks DROP COLUMN title_state');
+    }
+    else store.db.exec('DROP TABLE runs; DROP TABLE project_settings');
+    store.db.pragma('user_version = 2');
+    store.close(); store = new Store(dir);
+    const saved = store.task(p.id, task.id);
+    assert.equal(saved.description, 'keep description'); assert.equal(saved.title, 'Saved title');
+    assert.equal(saved.title_state, 'completed');
+    assert.equal(store.revisions(p.id, task.id).length, 1);
+    assert.equal(store.db.pragma('user_version', { simple: true }), 3);
+    assert.equal(Object.keys(store.settings(p.id).models).length, 7);
+    if (runId) {
+      assert.equal(store.specRun(p.id, task.id, runId).outcome, 'READY');
+      assert.equal(store.settings(p.id).instructions, 'Keep instructions');
+    } else assert.deepEqual(store.runs(), []);
+  } finally { if (store.db.open) store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

@@ -116,3 +116,28 @@ test('saved card receives an asynchronous title and request replay does not gene
   assert.equal(calls, 1);
   assert.equal((await app.inject({ url: '/api/snapshot', headers })).json().tasks[0].title, 'CSV export');
 });
+
+test('model settings, frozen config, start replay/version/ownership and report access', async t => {
+  const { app, store, headers, project } = await fixture(t);
+  const settingsUrl = `/api/projects/${project.id}/settings`;
+  const defaults = (await app.inject({ url: settingsUrl, headers })).json();
+  assert.equal(Object.keys(defaults.models).length, 7);
+  const config = { models: { ...defaults.models, spec: 'exact-model' }, instructions: 'Project instructions' };
+  const settings = { ...config, state_version: 1, request_id: randomUUID() };
+  assert.equal((await app.inject({ method: 'PUT', url: settingsUrl, headers, payload: settings })).statusCode, 200);
+  assert.equal((await app.inject({ method: 'PUT', url: settingsUrl, headers, payload: settings })).statusCode, 200);
+  assert.equal((await app.inject({ method: 'PUT', url: settingsUrl, headers, payload: { ...settings, request_id: randomUUID() } })).statusCode, 409);
+  assert.equal((await app.inject({ method: 'PUT', url: settingsUrl, headers, payload: { ...settings, models: { spec: 'one' } } })).statusCode, 400);
+  const task = store.createTask(project.id, 'Spec', 2);
+  const url = `/api/projects/${project.id}/tasks/${task.id}/start`;
+  const payload = { request_id: randomUUID(), state_version: task.state_version };
+  assert.equal((await app.inject({ method: 'POST', url: `/api/projects/${randomUUID()}/tasks/${task.id}/start`, headers, payload })).statusCode, 404);
+  const started = await app.inject({ method: 'POST', url, headers, payload });
+  assert.equal(started.statusCode, 200);
+  assert.deepEqual(started.json().config, config);
+  assert.deepEqual((await app.inject({ method: 'POST', url, headers, payload })).json(), started.json());
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...payload, request_id: randomUUID() } })).statusCode, 409);
+  assert.equal(store.runs().length, 1);
+  assert.equal((await app.inject({ url: `/api/projects/${project.id}/tasks/${task.id}/runs/${started.json().id}/report`, headers })).statusCode, 404);
+  assert.equal((await app.inject({ url: `/api/projects/${randomUUID()}/tasks/${task.id}/runs/${started.json().id}/report`, headers })).statusCode, 404);
+});

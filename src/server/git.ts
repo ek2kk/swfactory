@@ -65,3 +65,29 @@ export async function inspectProject(input: ProjectInput, command: Run = run): P
   await command(input.hosting === 'github' ? 'gh' : 'glab', ['auth', 'status', '--hostname', identity.host], checkout);
   return { ...input, checkout, common_dir, remote_url, ...identity };
 }
+
+export async function preflight(project: Project, command: Run = run) {
+  const checkout = await realpath(await command('git', ['rev-parse', '--show-toplevel'], project.checkout));
+  const common = await realpath(await command('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], checkout));
+  if (checkout !== project.checkout || common !== project.common_dir
+    || await command('git', ['remote', 'get-url', '--', project.remote], checkout) !== project.remote_url) {
+    throw new Problem(422, 'Checkout или remote изменился. Подключите актуальный проект.');
+  }
+  const reasons: string[] = [];
+  for (const name of ['MERGE_HEAD', 'rebase-merge', 'rebase-apply']) {
+    const path = await command('git', ['rev-parse', '--path-format=absolute', '--git-path', name], checkout);
+    try { await realpath(path); reasons.push(`Незавершённый merge/rebase: ${path}`); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
+  const status = await command('git', ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'], checkout);
+  if (status) reasons.push(`Изменения в checkout (staged / unstaged / untracked):\n${status}`);
+  if (reasons.length) throw new Problem(422, reasons.join('\n'));
+}
+
+export async function fetchBase(project: Project, runId: string, command: Run = run) {
+  const ref = `refs/swfactory/${runId}/base`;
+  await command('git', ['fetch', '--no-tags', '--no-write-fetch-head', '--', project.remote, `refs/heads/${project.target_branch}:${ref}`], project.checkout);
+  const sha = await command('git', ['rev-parse', '--verify', `${ref}^{commit}`], project.checkout);
+  if (!/^[a-f0-9]{40,64}$/.test(sha)) throw new Problem(422, 'Fetch не вернул commit SHA.');
+  return sha;
+}

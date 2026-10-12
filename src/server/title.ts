@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Task } from '../shared.js';
 import { Store, Problem } from './store.js';
+import { Scheduler } from './scheduler.js';
 
 export function parseTitle(value: unknown): string {
   if (!value || typeof value !== 'object' || Array.isArray(value)
@@ -19,14 +20,30 @@ export async function generateTitle(description: string, signal: AbortSignal): P
     const schema = join(cwd, 'schema.json'), output = join(cwd, 'result.json');
     await writeFile(schema, JSON.stringify({ type: 'object', additionalProperties: false,
       properties: { title: { type: 'string' } }, required: ['title'] }), { mode: 0o600 });
+    signal.throwIfAborted();
     await new Promise<void>((resolve, reject) => {
+      let failed = false;
+      let forceStop: ReturnType<typeof setTimeout> | undefined;
       const child = execFile('codex', ['exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
         '--sandbox', 'read-only', '--skip-git-repo-check', '-c', 'approval_policy="never"',
         '-c', 'features.shell_tool=false', '-c', 'web_search="disabled"',
         '-c', 'features.apps=false', '-c', 'features.hooks=false', '-c', 'features.plugins=false',
         '-c', 'features.skill_search=false', '-c', 'features.skip_host_skill_discovery=true', '-c', 'features.multi_agent=false',
         '-c', 'project_doc_max_bytes=0', '--output-schema', schema, '--output-last-message', output, '-'],
-      { cwd, signal, timeout: 120_000, maxBuffer: 1024 * 1024 }, error => error ? reject(new Error('Codex title failed')) : resolve());
+      { cwd, maxBuffer: 1024 * 1024 }, error => { failed ||= !!error; });
+      function stop() {
+        failed = true;
+        child.kill('SIGTERM');
+        forceStop ??= setTimeout(() => child.kill('SIGKILL'), 1000);
+      }
+      const timeout = setTimeout(stop, 120_000);
+      signal.addEventListener('abort', stop, { once: true });
+      child.once('close', code => {
+        clearTimeout(timeout); clearTimeout(forceStop);
+        signal.removeEventListener('abort', stop);
+        if (failed || signal.aborted || code !== 0) reject(new Error('Codex title failed'));
+        else resolve();
+      });
       child.stdin!.on('error', () => {});
       child.stdin!.end('Return only a concise task title (1–120 characters), in the language of the description. '
         + 'Use only the supplied description; add no requirements. Do not implement the task or use tools. '
@@ -41,20 +58,25 @@ export class Titles {
   private stopped = false;
   error: string | null = null;
   constructor(private store: Store, private publish: () => void,
-    private generate = generateTitle, private onError: (error: unknown) => void = console.error) {}
+    private generate = generateTitle, private onError: (error: unknown) => void = console.error,
+    private scheduler = new Scheduler()) {}
 
   kick() {
     if (this.stopped) return;
     try {
-      let task: Task | undefined;
-      while ((task = this.store.claimTitle([...this.active.keys()]))) {
-        const saved = task, controller = new AbortController();
-        const done = Promise.resolve().then(() => this.generate(saved.description, controller.signal))
-          .then(title => parseTitle({ title })).catch(() => null)
-          .then(title => { if (!this.stopped) { this.store.finishTitle(saved, title); this.publish(); } })
-          .catch(error => { this.fail(error); })
-          .finally(() => { this.active.delete(saved.id); this.kick(); });
-        this.active.set(saved.id, { controller, done });
+      for (const task of this.store.snapshot().tasks) {
+        if (task.title_state !== 'pending' || task.run_state !== 'idle' || task.stage !== 'backlog' || this.active.has(task.id)) continue;
+        const controller = new AbortController();
+        const done = this.scheduler.enqueue(task.id, async () => {
+          try {
+            if (this.stopped || controller.signal.aborted || !this.store.claimTitle(task)) return;
+            this.publish();
+            const title = await this.generate(task.description, controller.signal).then(title => parseTitle({ title })).catch(() => null);
+            if (!this.stopped) { this.store.finishTitle(task, title); this.publish(); }
+          } catch (error) { this.fail(error); }
+        })
+          .finally(() => { this.active.delete(task.id); this.kick(); });
+        this.active.set(task.id, { controller, done });
       }
       this.publish();
     } catch (error) { this.fail(error); }
@@ -67,21 +89,8 @@ export class Titles {
     try { this.publish(); } catch { /* Storage may also be unavailable for snapshots. */ }
   }
 
-  acceptSpecTitle(task: Task, title: string) {
-    const value = parseTitle({ title });
-    this.store.db.transaction(() => {
-      const current = this.store.task(task.project_id, task.id);
-      if (this.active.has(task.id) || current.title_state === 'running' || current.stage !== 'spec'
-        || current.run_state !== 'running' || current.revision !== task.revision) throw new Problem(409, 'Задача не готова принять заголовок Spec.');
-      if (current.title) return;
-      this.store.db.prepare("UPDATE tasks SET title = ?, title_state = 'completed' WHERE id = ?").run(value, task.id);
-      this.store.event('title.completed', task.id, { revision: task.revision, source: 'spec' });
-    })();
-    this.publish();
-  }
-
-  // Spec must await this before taking the task slot; its result may supply a missing title.
-  async releaseForSpec(task: Task) {
+  // Persist interruption before signalling; the shared queue keeps the slot until CLI close.
+  releaseForSpec(task: Task) {
     this.store.db.transaction(() => {
       const current = this.store.task(task.project_id, task.id);
       if (current.revision !== task.revision || current.state_version !== task.state_version) throw new Problem(409, 'Карточка изменилась.');
@@ -92,8 +101,8 @@ export class Titles {
     })();
     const active = this.active.get(task.id);
     active?.controller.abort();
-    await active?.done;
     this.publish();
+    return active?.done ?? Promise.resolve();
   }
 
   async close() {
