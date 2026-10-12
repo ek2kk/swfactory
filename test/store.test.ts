@@ -40,3 +40,19 @@ test('failed event persistence rolls back the task, revision and request', t => 
   assert.equal((store.db.prepare('SELECT count(*) AS n FROM task_revisions').get() as { n: number }).n, 0);
   assert.equal(store.replay('create', 'create'), undefined);
 });
+
+test('v1 migration preserves tasks and failed start transaction leaves no run or request', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-migration-'));
+  let store = new Store(dir);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const project = store.addProject({ checkout: '/test', common_dir: '/test/.git', remote: 'origin', remote_url: 'git@github.com:owner/repo.git', hosting: 'github', host: 'github.com', repository: 'owner/repo', target_branch: 'main' });
+  const task = store.createTask(project.id, 'preserve', 1);
+  store.db.exec('DROP TABLE runs; DROP TABLE project_settings; PRAGMA user_version = 1;');
+  store.close(); store = new Store(dir);
+  assert.equal(store.task(project.id, task.id).description, 'preserve');
+  assert.equal(store.settings(project.id).models.spec, 'gpt-6.1-sol');
+  store.db.exec("CREATE TRIGGER fail_queue BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'write failed'); END");
+  assert.throws(() => store.mutate('start', 'start', () => store.queueSpec(project.id, task.id, 1, dir)), /write failed/);
+  assert.equal(store.runs().length, 0); assert.equal(store.task(project.id, task.id).run_state, 'idle');
+  assert.equal(store.replay('start', 'start'), undefined);
+});
