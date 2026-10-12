@@ -2,15 +2,16 @@ import { spawn } from 'node:child_process';
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { SpecResult } from '../shared.js';
+import { parseTitle } from './title.js';
 import { Problem } from './store.js';
 import { saveArtifact } from './artifacts.js';
 
 const list = { type: 'array', items: { type: 'string' } };
 export const specSchema = {
   type: 'object', additionalProperties: false,
-  properties: { outcome: { enum: ['READY', 'NEEDS_INPUT'] }, summary: { type: 'string' },
+  properties: { title: { type: 'string' }, outcome: { enum: ['READY', 'NEEDS_INPUT'] }, summary: { type: 'string' },
     requirements: list, acceptance_criteria: list, assumptions: list, out_of_scope: list, questions: list },
-  required: ['outcome', 'summary', 'requirements', 'acceptance_criteria', 'assumptions', 'out_of_scope', 'questions'],
+  required: ['title', 'outcome', 'summary', 'requirements', 'acceptance_criteria', 'assumptions', 'out_of_scope', 'questions'],
 };
 export function validateSpec(value: unknown): SpecResult {
   const result = value as SpecResult;
@@ -23,7 +24,9 @@ export function validateSpec(value: unknown): SpecResult {
       return Array.isArray(values) && values.every(nonempty);
     }) || (result.outcome === 'READY' && (!result.requirements.length || !result.acceptance_criteria.length || result.questions.length))
     || (result.outcome === 'NEEDS_INPUT' && !result.questions.length)) throw new Problem(422, 'Codex вернул невалидный Spec. Переход заблокирован.');
-  return result;
+  try { parseTitle({ title: result.title }); }
+  catch { throw new Problem(422, 'Codex вернул невалидный заголовок Spec. Переход заблокирован.'); }
+  return { ...result, title: result.title.trim() };
 }
 export type CodexInput = { cwd: string; directory: string; model: string; prompt: string };
 export type ExecuteSpec = (input: CodexInput) => Promise<SpecResult>;

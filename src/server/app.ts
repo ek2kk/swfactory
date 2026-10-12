@@ -3,6 +3,7 @@ import staticFiles from '@fastify/static';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { ServerResponse } from 'node:http';
 import { Store, Problem } from './store.js';
+import { generateTitle } from './title.js';
 import { inspectProject } from './git.js';
 import { roles, type ProjectInput, type Settings, type SpecRun } from '../shared.js';
 import { realpathSync } from 'node:fs';
@@ -25,7 +26,7 @@ function equal(a: string, b: string) {
 
 type Action = { request_id: string; state_version: number; description: string };
 export async function createApp(options: {
-  directory: string; origin: string; staticRoot?: string; inspect?: typeof inspectProject; command?: Run; execute?: ExecuteSpec;
+  directory: string; origin: string; staticRoot?: string; inspect?: typeof inspectProject; command?: Run; execute?: ExecuteSpec; generateTitle?: typeof generateTitle;
 }) {
   const store = new Store(options.directory);
   const directory = realpathSync(options.directory);
@@ -36,7 +37,7 @@ export async function createApp(options: {
   const origin = new URL(options.origin);
   const cookieName = `swfactory_${origin.port}`;
   function sendUpdate(client: ServerResponse, cursor: number) {
-    const snapshot = { ...store.snapshot(), execution_error: controller.error };
+    const snapshot = { ...store.snapshot(), execution_error: controller.error, title_error: titles.error };
     while (cursor < snapshot.cursor) {
       const events = store.events(cursor);
       if (!events.length) break;
@@ -54,7 +55,8 @@ export async function createApp(options: {
       if (sent !== undefined) clients.set(client, sent);
     }
   }
-  const controller = new SpecController(store, directory, publish, options.command, options.execute);
+  const controller = new SpecController(store, directory, publish, options.command, options.execute, options.generateTitle);
+  const titles = controller.titles;
   app.addHook('onRequest', async (request, reply) => {
     reply.headers({
       'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
@@ -79,7 +81,7 @@ export async function createApp(options: {
     reply.header('Set-Cookie', `${cookieName}=${session}; HttpOnly; SameSite=Strict; Path=/`);
     return { ok: true };
   });
-  app.get('/api/snapshot', async () => ({ ...store.snapshot(), execution_error: controller.error }));
+  app.get('/api/snapshot', async () => ({ ...store.snapshot(), execution_error: controller.error, title_error: titles.error }));
   app.post<{ Body: ProjectInput & { request_id: string; state_version: number } }>('/api/projects', {
     schema: { body: object({ checkout: text, remote: text, hosting: { enum: ['github', 'gitlab'] }, target_branch: text, request_id: uuid, state_version: { const: 0 } }) },
   }, async request => {
@@ -97,16 +99,20 @@ export async function createApp(options: {
   const actionBody = object({ request_id: uuid, state_version: version, description });
   app.post<{ Params: { projectId: string }; Body: Action }>('/api/projects/:projectId/tasks', { schema: { params: projectParams, body: actionBody } }, async request => {
     const { request_id, description, state_version } = request.body;
+    let changed = false;
     const result = store.mutate(request_id, JSON.stringify(['task.create', request.params.projectId, description, state_version]),
-      () => store.createTask(request.params.projectId, description, state_version));
+      () => { changed = true; return store.createTask(request.params.projectId, description, state_version); });
+    if (changed) setImmediate(() => titles.kick());
     publish();
     return result;
   });
   app.patch<{ Params: { projectId: string; taskId: string }; Body: Action }>('/api/projects/:projectId/tasks/:taskId', { schema: { params: taskParams, body: actionBody } }, async request => {
     const { request_id, description, state_version } = request.body;
     const { projectId, taskId } = request.params;
+    let changed = false;
     const result = store.mutate(request_id, JSON.stringify(['task.edit', projectId, taskId, description, state_version]),
-      () => store.editTask(projectId, taskId, description, state_version));
+      () => { changed = true; return store.editTask(projectId, taskId, description, state_version); });
+    if (changed) setImmediate(() => titles.kick());
     publish();
     return result;
   });
@@ -132,7 +138,7 @@ export async function createApp(options: {
     const fingerprint = JSON.stringify(['spec.start', projectId, taskId, state_version]);
     const prior = store.replay(request_id, fingerprint);
     if (prior !== undefined) return prior;
-    if (controller.error) throw new Problem(503, controller.error);
+    if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
     const result = store.mutate(request_id, fingerprint, () => store.queueSpec(projectId, taskId, state_version, directory)) as SpecRun;
     controller.enqueue(result);
     publish(); return result;
@@ -148,7 +154,7 @@ export async function createApp(options: {
   app.get('/api/events', async (request, reply) => {
     const lastId = request.headers['last-event-id'];
     if (lastId !== undefined && (typeof lastId !== 'string' || !/^\d{1,15}$/.test(lastId))) throw new Problem(400, 'Некорректный курсор событий.');
-    const snapshot = { ...store.snapshot(), execution_error: controller.error };
+    const snapshot = { ...store.snapshot(), execution_error: controller.error, title_error: titles.error };
     const cursor = Number(lastId ?? snapshot.cursor);
     if (cursor > snapshot.cursor) throw new Problem(400, 'Курсор событий новее базы.');
     reply.hijack();

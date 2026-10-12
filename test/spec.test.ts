@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync, readFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
 import { Store } from '../src/server/store.js';
 import { SpecController } from '../src/server/spec.js';
@@ -12,7 +13,7 @@ import { readReport } from '../src/server/artifacts.js';
 import type { ExecuteSpec } from '../src/server/codex.js';
 import type { SpecResult } from '../src/shared.js';
 
-export const ready: SpecResult = { outcome: 'READY', summary: 'Проверяемая спецификация', requirements: ['Добавить приветствие'],
+export const ready: SpecResult = { outcome: 'READY', title: 'Task title', summary: 'Проверяемая спецификация', requirements: ['Добавить приветствие'],
   acceptance_criteria: ['Вывод равен hello'], assumptions: [], out_of_scope: ['Публикация'], questions: [] };
 function fixture(t: { after: (fn: () => void) => void }) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'factory-spec-')));
@@ -89,7 +90,7 @@ test('failed preflight permits an explicit new attempt without launching Codex',
   assert.match(store.specRun(project.id, run.task_id, run.id).error!, /dirty/);
 });
 
-for (const scenario of ['question', 'invalid', 'source-change', 'event-failure', 'artifact-failure'] as const) test(`Spec ${scenario} blocks Build and keeps evidence`, async t => {
+for (const scenario of ['question', 'invalid', 'source-change', 'event-failure', 'title-event-failure', 'artifact-failure'] as const) test(`Spec ${scenario} blocks Build and keeps evidence`, async t => {
   const { store, project, queue, controller } = fixture(t);
   const run = queue();
   const runner = controller(async input => {
@@ -97,6 +98,7 @@ for (const scenario of ['question', 'invalid', 'source-change', 'event-failure',
     if (scenario === 'invalid') return { ...ready, acceptance_criteria: [] };
     if (scenario === 'source-change') writeFileSync(join(input.cwd, 'changed'), 'preserve');
     if (scenario === 'event-failure') store.db.exec("CREATE TRIGGER fail_completion BEFORE INSERT ON events WHEN NEW.type = 'spec.completed' BEGIN SELECT RAISE(ABORT, 'disk failed'); END");
+    if (scenario === 'title-event-failure') store.db.exec("CREATE TRIGGER fail_title BEFORE INSERT ON events WHEN NEW.type = 'title.completed' BEGIN SELECT RAISE(ABORT, 'disk failed'); END");
     if (scenario === 'artifact-failure') writeFileSync(join(input.directory, 'report.md.tmp'), 'partial');
     return ready;
   });
@@ -106,7 +108,7 @@ for (const scenario of ['question', 'invalid', 'source-change', 'event-failure',
   assert.equal(saved.status, scenario === 'question' ? 'completed' : 'failed');
   assert.equal(task.run_state, scenario === 'question' ? 'waiting' : 'interrupted');
   if (scenario === 'source-change') assert.ok(existsSync(join(run.worktree, 'changed')));
-  if (scenario !== 'question') assert.equal(saved.outcome, null);
+  if (scenario !== 'question') { assert.equal(saved.outcome, null); assert.equal(task.title, null); }
 });
 
 test('three slots, queue retained on shutdown, restart interrupts without launching', async t => {
@@ -137,4 +139,69 @@ test('artifact reader rejects symlink escape', async t => {
   unlinkSync(report); symlinkSync(join(directory, 'state.sqlite'), report);
   assert.throws(() => readReport(directory, run.id), /небезопасен/);
   assert.throws(() => readReport(directory, '../state.sqlite'), /недоступен/);
+});
+
+test('Title and Spec share three FIFO slots, await abort and save fallback title atomically', { timeout: 10000 }, async t => {
+  const { store, project, directory } = fixture(t);
+  const active = new Set<string>();
+  let maximum = 0;
+  const enter = (description: string) => {
+    assert.equal(active.has(description), false, 'Title and Spec must never overlap for the same task');
+    active.add(description); maximum = Math.max(maximum, active.size);
+  };
+  const titleCalls = new Map<string, { signal: AbortSignal; finish: () => void }>();
+  const specCalls: { description: string; finish: () => void }[] = [];
+  const runner = new SpecController(store, directory, () => {}, command, async input => {
+    const description = input.prompt.split('Task description:\n')[1];
+    enter(description);
+    await new Promise<void>(resolve => specCalls.push({ description, finish: resolve }));
+    active.delete(description);
+    return description === 'e' ? { ...ready, outcome: 'NEEDS_INPUT', questions: ['Which format?'] } : ready;
+  }, async (description, signal) => {
+    enter(description);
+    await new Promise<void>(resolve => titleCalls.set(description, { signal, finish: resolve }));
+    active.delete(description);
+    if (signal.aborted) throw new Error('confirmed stopped');
+    return `${description} title`;
+  });
+  async function until(predicate: () => boolean) {
+    for (let i = 0; i < 1000 && !predicate(); i++) await delay(5);
+    assert.ok(predicate(), 'Expected scheduler progress');
+  }
+  const create = (description: string) => store.createTask(project.id, description, 1);
+  const start = (task: ReturnType<typeof create>) => {
+    const run = store.mutate(randomUUID(), task.id, () => store.queueSpec(project.id, task.id, task.state_version, directory)) as ReturnType<Store['queueSpec']>;
+    runner.enqueue(run); return run;
+  };
+  try {
+    const a = create('a'); create('b'); create('c');
+    runner.titles.kick();
+    assert.equal(titleCalls.size, 3);
+    const d = create('d'), e = create('e');
+    store.db.prepare("UPDATE tasks SET title = 'Existing title', title_state = 'completed' WHERE id = ?").run(e.id);
+    start(d); start(e); start(a);
+    assert.equal(titleCalls.get('a')!.signal.aborted, true);
+    await delay(20);
+    assert.equal(specCalls.length, 0, 'An abort request alone must not free the slot');
+    titleCalls.get('a')!.finish(); await until(() => specCalls.length === 1);
+    assert.equal(specCalls[0].description, 'd');
+    titleCalls.get('b')!.finish(); await until(() => specCalls.length === 2);
+    titleCalls.get('c')!.finish(); await until(() => specCalls.length === 3);
+    assert.deepEqual(specCalls.map(call => call.description), ['d', 'e', 'a']);
+    const f = create('f'); runner.titles.kick();
+    assert.equal(titleCalls.has('f'), false);
+    specCalls[1].finish(); await until(() => titleCalls.has('f'));
+    assert.equal(store.task(project.id, e.id).run_state, 'waiting');
+    assert.equal(store.task(project.id, e.id).title, 'Existing title');
+    titleCalls.get('f')!.finish(); specCalls[0].finish(); specCalls[2].finish();
+    await until(() => store.task(project.id, a.id).stage === 'build' && store.task(project.id, f.id).title !== null);
+    assert.equal(store.task(project.id, a.id).title, ready.title);
+    assert.equal(store.task(project.id, d.id).title, ready.title);
+    assert.equal(maximum, 3);
+  } finally {
+    const closing = runner.close();
+    for (const call of titleCalls.values()) call.finish();
+    for (const call of specCalls) call.finish();
+    await closing;
+  }
 });

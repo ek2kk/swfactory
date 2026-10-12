@@ -33,6 +33,10 @@ function TaskCard({ task, project, runs, refresh }: { task: Task; project: Proje
     <span className="project-name">{project.repository}</span>
     <h3>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3>
     <p className="meta">Редакция {task.revision} · {{ idle: task.stage === 'build' ? 'Spec готова · Build ещё не реализован' : 'Не запущена', queued: 'В очереди · ожидает слот', running: task.stage === 'spec' ? 'Codex готовит Spec' : 'Проверяем checkout и создаём worktree', waiting: 'Нужен ответ человека · продолжение в следующем срезе', interrupted: 'Прервана — нужна ручная проверка', completed: 'Завершена' }[task.run_state]}</p>
+    {!task.title && <p role="status" className="meta">{task.title_state === 'pending' ? 'Заголовок ожидает свободного слота…'
+      : task.title_state === 'running' ? 'Codex формирует заголовок…'
+      : task.title_state === 'interrupted' ? 'Генерация заголовка прервана. Описание сохранено; заголовок можно получить в Spec.'
+      : 'Не удалось получить заголовок. Описание сохранено; проверьте Codex CLI. Заголовок можно получить в Spec.'}</p>}
     {editing ? <form onSubmit={async event => {
       event.preventDefault(); setBusy(true); setError('');
       try {
@@ -148,6 +152,7 @@ function App() {
     <header><div><p className="eyebrow">LOCAL WORKSPACE</p><h1>SW Factory</h1></div><p className="connection" role="status">{connection}</p></header>
     <p className="intro">Из описания — в проверяемую спецификацию. Codex работает в отдельном worktree; закрытие вкладки не останавливает задачу.</p>
     {error && <p role="alert" className="error">{error}</p>}
+    {snapshot.title_error && <p role="alert" className="error">{snapshot.title_error}</p>}
     {snapshot.execution_error && <p role="alert" className="error">{snapshot.execution_error}</p>}
     <div className="setup">
       <section aria-labelledby="connect-title"><h2 id="connect-title">Подключить проект</h2>

@@ -5,11 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { executeSpec, validateSpec } from '../src/server/codex.js';
 
-const ready = { outcome: 'READY', summary: 'Valid', requirements: ['Requirement'], acceptance_criteria: ['Test'], assumptions: [], out_of_scope: [], questions: [] };
+const ready = { outcome: 'READY', title: 'Task title', summary: 'Valid', requirements: ['Requirement'], acceptance_criteria: ['Test'], assumptions: [], out_of_scope: [], questions: [] };
 test('Spec result validation rejects incomplete, extra, blank and inconsistent fields', () => {
   assert.deepEqual(validateSpec(ready), ready);
   for (const bad of [null, {}, { ...ready, extra: true }, { ...ready, summary: ' ' }, { ...ready, requirements: [] },
-    { ...ready, assumptions: [''] }, { ...ready, outcome: 'PASS' }, { ...ready, questions: ['unresolved'] }, { ...ready, outcome: 'NEEDS_INPUT' }]) assert.throws(() => validateSpec(bad));
+    { ...ready, assumptions: [''] }, { ...ready, outcome: 'PASS' }, { ...ready, title: '' }, { ...ready, title: 'x'.repeat(121) }, { ...ready, title: 'a\nb' }, { ...ready, questions: ['unresolved'] }, { ...ready, outcome: 'NEEDS_INPUT' }]) assert.throws(() => validateSpec(bad));
 });
 for (const scenario of ['valid', 'exit', 'incomplete', 'jsonl', 'result', 'failed', 'spawn', 'truncated'] as const) test(`Codex process ${scenario}`, async t => {
   const root = mkdtempSync(join(tmpdir(), 'factory-codex-')), directory = join(root, 'artifacts');
