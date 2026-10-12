@@ -397,3 +397,33 @@ test('human answer persists immediately but continuation joins FIFO behind occup
     assert.deepEqual(calls.slice(3), [ahead.worktree, first.worktree]);
   } finally { const closing = runner.close(); releases.forEach(release => release()); await closing; }
 });
+
+test('Spec answer repeats worktree preflight on dequeue even when an unfinished merge has empty status', { timeout: 15000 }, async t => {
+  const { store, project, directory, git, queue, controller } = fixture(t);
+  const first = queue(), initial = controller(async () => needsInput);
+  initial.enqueue(first); await initial.close();
+  const releases: (() => void)[] = [];
+  let calls = 0;
+  const runner = new SpecController(store, directory, () => {}, command, async () => { calls++; return ready; },
+    async () => { await new Promise<void>(resolve => releases.push(resolve)); return 'Title'; });
+  try {
+    for (let i = 0; i < 3; i++) store.createTask(project.id, `Blocker ${i}`, project.state_version);
+    runner.titles.kick(); assert.equal(releases.length, 3);
+    const question = store.humanRequests()[0], task = store.task(project.id, first.task_id);
+    const { run } = store.answer(project.id, task.id, question.id, task.state_version, ['English', 'Text', '']);
+    runner.enqueue(run!);
+    assert.equal(store.task(project.id, task.id).run_state, 'queued');
+    git('-C', first.worktree, 'checkout', '-b', 'merge-other');
+    git('-C', first.worktree, 'commit', '--allow-empty', '-m', 'other');
+    git('-C', first.worktree, 'checkout', first.branch);
+    git('-C', first.worktree, 'merge', '--no-commit', '--no-ff', 'merge-other');
+    assert.equal(git('-C', first.worktree, 'status', '--porcelain'), '');
+    assert.equal(git('-C', first.worktree, 'rev-parse', 'HEAD'), first.base_sha);
+    releases[0]();
+    for (let i = 0; i < 1000 && store.specRun(project.id, task.id, run!.id).status === 'queued'; i++) await delay(5);
+    const saved = store.specRun(project.id, task.id, run!.id);
+    assert.equal(saved.status, 'failed'); assert.match(saved.error!, /merge\/rebase/);
+    assert.equal(calls, 0);
+    assert.ok(git('-C', first.worktree, 'rev-parse', '--verify', 'MERGE_HEAD'));
+  } finally { const closing = runner.close(); releases.forEach(release => release()); await closing; }
+});

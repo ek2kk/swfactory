@@ -112,8 +112,8 @@ for (const scenario of ['unexpected', 'secret', 'secret-content', 'symlink', 'st
   if (scenario === 'secret') assert.equal(git(run.worktree, 'diff', '--cached', '--name-only'), '');
 });
 
-for (const scenario of ['answer', 'changed', 'leading-changed', 'restart'] as const) test(`Build question ${scenario}: preserves partial edits, answers and role`, async t => {
-  const { store, directory, project, task, queue, controller } = await fixture(t);
+for (const scenario of ['answer', 'changed', 'leading-changed', 'restart', 'merge', 'rebase'] as const) test(`Build question ${scenario}: preserves partial edits, answers and role`, async t => {
+  const { store, directory, project, task, git, queue, controller } = await fixture(t);
   const run = queue();
   const runner = controller(async input => {
     writeFileSync(join(input.cwd, 'README.md'), 'partial');
@@ -132,11 +132,18 @@ for (const scenario of ['answer', 'changed', 'leading-changed', 'restart'] as co
   assert.equal(next.role, 'build'); assert.equal(next.worktree, run.worktree);
   if (scenario === 'leading-changed') writeFileSync(join(run.worktree, ' leading.txt'), 'after!');
   if (scenario === 'changed') writeFileSync(join(run.worktree, 'README.md'), 'human changed');
+  if (scenario === 'merge') writeFileSync(git(run.worktree, 'rev-parse', '--path-format=absolute', '--git-path', 'MERGE_HEAD'), `${run.base_sha}\n`);
+  if (scenario === 'rebase') mkdirSync(git(run.worktree, 'rev-parse', '--path-format=absolute', '--git-path', 'rebase-merge'));
   let calls = 0;
   const continuation = controller(async input => { calls++; assert.match(input.prompt, /Greeting/); assert.match(input.prompt, /hello/); assert.equal(readFileSync(join(input.cwd, 'README.md'), 'utf8'), 'partial'); writeFileSync(join(input.cwd, 'README.md'), 'hello'); return ready; });
   continuation.enqueue(next); await continuation.close();
-  assert.equal(calls, scenario.endsWith('changed') ? 0 : 1);
-  assert.equal(store.task(project.id, task.id).stage, scenario.endsWith('changed') ? 'needs-human' : 'review');
+  const blocked = scenario !== 'answer';
+  assert.equal(calls, blocked ? 0 : 1);
+  assert.equal(store.task(project.id, task.id).stage, blocked ? 'needs-human' : 'review');
+  if (scenario === 'merge' || scenario === 'rebase') {
+    assert.match(store.specRun(project.id, task.id, next.id).error!, /merge\/rebase/);
+    assert.equal(readFileSync(join(run.worktree, 'README.md'), 'utf8'), 'partial');
+  }
 });
 
 test('new Spec automatically queues Build atomically and reaches Review without another action', async t => {
@@ -209,4 +216,22 @@ test('Git blob output exceeding 2 MiB of raw bytes is rejected', async t => {
   writeFileSync(join(run.worktree, 'oversized.bin'), Buffer.alloc(2 * 1024 * 1024 + 1, 255));
   const blob = git(run.worktree, 'hash-object', '-w', '--', 'oversized.bin');
   await assert.rejects(command('git', ['show', blob], run.worktree), /Команда git show не выполнена/);
+});
+
+test('initial Build rejects unfinished merge with unchanged HEAD and clean status', async t => {
+  const { store, project, task, initial, git, queue, controller } = await fixture(t);
+  const run = queue();
+  git(initial.worktree, 'checkout', '-b', 'merge-other');
+  git(initial.worktree, 'commit', '--allow-empty', '-m', 'other');
+  git(initial.worktree, 'checkout', initial.branch);
+  git(initial.worktree, 'merge', '--no-commit', '--no-ff', 'merge-other');
+  assert.equal(git(initial.worktree, 'status', '--porcelain'), '');
+  assert.equal(git(initial.worktree, 'rev-parse', 'HEAD'), initial.base_sha);
+  let calls = 0;
+  const runner = controller(async () => { calls++; return ready; });
+  runner.enqueue(run); await runner.close();
+  const saved = store.specRun(project.id, task.id, run.id);
+  assert.equal(saved.status, 'failed'); assert.match(saved.error!, /merge\/rebase/);
+  assert.equal(calls, 0);
+  assert.ok(git(initial.worktree, 'rev-parse', '--verify', 'MERGE_HEAD'));
 });

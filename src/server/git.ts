@@ -76,20 +76,19 @@ export async function verifyRepository(project: Project, path: string, command: 
     || await command('git', ['remote', 'get-url', '--', project.remote], checkout) !== project.remote_url) {
     throw new Problem(422, 'Checkout или remote изменился. Подключите актуальный проект.');
   }
-}
-
-export async function preflight(project: Project, command: Run = run) {
-  await verifyRepository(project, project.checkout, command);
-  const checkout = project.checkout;
   const reasons: string[] = [];
   for (const name of ['MERGE_HEAD', 'rebase-merge', 'rebase-apply']) {
     const path = await command('git', ['rev-parse', '--path-format=absolute', '--git-path', name], checkout);
     try { await realpath(path); reasons.push(`Незавершённый merge/rebase: ${path}`); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
-  const status = await command('git', ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'], checkout);
-  if (status) reasons.push(`Изменения в checkout (staged / unstaged / untracked):\n${status}`);
   if (reasons.length) throw new Problem(422, reasons.join('\n'));
+}
+
+export async function preflight(project: Project, command: Run = run) {
+  await verifyRepository(project, project.checkout, command);
+  const status = await command('git', ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'], project.checkout);
+  if (status) throw new Problem(422, `Изменения в checkout (staged / unstaged / untracked):\n${status}`);
 }
 
 export async function fetchBase(project: Project, runId: string, command: Run = run) {
