@@ -1,69 +1,49 @@
 # Технический дизайн: локальная Kanban-доска для coding agents
 
-Дата: 11 октября 2026 года. Версия: 1.0.
+Дата: 12 октября 2026 года. Версия: 1.2.
 
-Статус: предлагаемая реализация согласованного [PRD](PRD.md). Это дизайн, не описание существующего приложения. Код и интеграционные прототипы не создавались. Указанные ниже runtime-проверки обязательны до заявления о работоспособности.
+Статус: предлагаемая реализация [PRD](PRD.md). Код приложения ещё не создан. Минимальный Codex protocol smoke выполнен 12 октября; его границы указаны в §7. План отделяет первый прототип от последующих доработок надёжности.
 
 ## 1. Границы и инварианты
 
-Продуктовые решения взяты из интервью и не пересматриваются: только macOS; личный локальный backend; браузерный Kanban; описание без ручного заголовка; Claude Code и Codex; фиксированные стадии; четыре reviewer; отдельный approver; три исполняемые задачи; две автоматические доработки; строгий merge; решения человека в карточке; ручное продолжение после перезапуска.
+Актуальный scope: macOS; один пользователь; локальный backend и браузерный Kanban; только Codex; четыре reviewer и отдельный approver; три исполняемые задачи; две автоматические доработки. Pipeline заканчивается созданием PR/MR. Любой merge пользователь выполняет на GitHub/GitLab, вне приложения.
 
-Предлагаемые технические решения: один TypeScript backend, SQLite, файлы артефактов, HTTP+SSE для браузера, Codex app-server по stdio и Claude CLI с локальным MCP permission bridge. Конкретные package/CLI versions фиксируются после прототипов, а не объявляются проверенными в этом документе.
+Проверки качества — агентские reviews и существующий CI/CD проекта. Backend не запускает независимый обязательный tests/lint/build runner. Его schema/state/Git проверки обеспечивают работу приложения, но не доказывают качество кода задачи. Прерывание, session resume и crash recovery дорабатываются после первого прототипа.
 
-Инварианты:
+Рабочие роли Codex запускаются с полными разрешениями по решению пользователя. Инструкции и worktree не являются sandbox: агент технически может обращаться к другим файлам, credentials и hosting API. По workflow contract он работает только в задаче и не выполняет merge. Title generation до запуска не должна менять проект.
 
-1. Единственный writer состояния pipeline — backend. Агент возвращает результат, но не меняет стадию и не пишет базу приложения.
-2. Для одной задачи одновременно активна одна стадия; Build не пересекается с Review. Четыре reviewer внутри Review допустимы.
-3. Не более трёх задач имеют право исполнять работу. Число дочерних процессов может быть больше.
-4. Результат связан с `task_id`, редакцией требований, `run_id`, round, base SHA и head SHA. Старый READY/PASS не подходит новой попытке.
-5. Разрешение человека связано с неизменяемым запросом. После изменения версии кода, аргументов действия или поколения процесса требуется новое решение.
-6. `merged` устанавливается по подтверждённому состоянию remote. Разрешение merge, постановка в очередь и exit code не являются фактом merge.
-7. Основной checkout пользователя не редактируется. Автоматические stash/reset/force push отсутствуют.
-8. Перезапуск backend восстанавливает информацию, но не разрешает возобновление исполнения.
+Инварианты первого прототипа:
+
+1. Backend управляет переходами; агент возвращает структурированный результат.
+2. Build не пересекается с Review одной задачи; не более трёх исполняемых задач.
+3. Результат связан с task/run, редакцией требований и версией кода; старый PASS не подходит изменённому коду.
+4. Вопрос принадлежит конкретной задаче и попытке; один ответ не запускает её дважды.
+5. `pr-created` означает подтверждённый PR/MR с URL, а не успешный CI или merge.
+6. Основной checkout не редактируется; автоматические stash/reset/force push отсутствуют.
+7. Сохранённые карточки и отчёты переживают restart, но исполнение автоматически не возобновляется.
 
 ## 2. Компоненты и технологический выбор
 
-```mermaid
-flowchart TB
-    UI[Browser: Kanban и карточка] <-->|HTTP JSON + SSE| API[Локальный backend]
-    API --> DB[(SQLite)]
-    API --> F[Артефакты и логи]
-    API --> W[Workflow controller + scheduler]
-    W --> P[Process runner]
-    P --> CA[Codex adapter: app-server stdio]
-    P --> CL[Claude adapter: CLI + permission bridge]
-    CA --> WT[Task worktree]
-    CL --> WT
-    W --> G[Git coordinator]
-    G --> WT
-    W --> H[GitHub / GitLab adapters]
-    H --> CLI[gh / glab]
-    CLI --> REM[Remote repository, PR/MR, CI]
-```
+Один Node.js LTS + TypeScript backend с Fastify обслуживает React UI, собранный Vite. SQLite хранит состояние, файлы — большие отчёты и логи. HTTP JSON используется для действий, SSE — для событий. Точные версии зависимостей фиксируются при реализации в lockfile.
 
-| Компонент                         | Ответственность                                                                            |
-| --------------------------------- | ------------------------------------------------------------------------------------------ |
-| React UI, Vite build              | Доска, формы, лента событий, отчёты, ответы на вопросы; без локальной бизнес-истины        |
-| Node.js LTS + TypeScript, Fastify | Локальный HTTP API, проверка входных данных, SSE, жизненный цикл backend                   |
-| Workflow controller               | Допустимые переходы, проверки артефактов, repair budget, merge gates                       |
-| Scheduler                         | Три task leases, очередь и возобновление после ожидания                                    |
-| Process runner                    | Executable/cwd/env, stdin/stdout, process group, выход/остановка, принадлежность процессов |
-| Два agent adapters                | Provider-specific запуск, события, результаты, permissions и session resume                |
-| Git coordinator                   | Preflight, worktrees, commits, SHA, синхронизация целевой ветки                            |
-| Два hosting adapters              | PR/MR, CI и правила ветки, source-head guard, merge и reconciliation                       |
-| SQLite + файлы                    | Долговечное состояние, журнал решений, результаты и большие логи                           |
+| Компонент | Ответственность |
+| --- | --- |
+| React UI | Доска, карточки, вопросы, отчёты; без локальной бизнес-истины |
+| Fastify API | Schema validation, предметные действия, HTTP/SSE |
+| Controller и scheduler | Переходы, repair budget, очередь и три task slots |
+| Process runner | Executable, argv, cwd, stdin/stdout, завершение CLI |
+| Codex adapter | Prompt, JSONL progress, структурированный result |
+| Git coordinator | Preflight, worktrees, commits и SHA |
+| GitHub/GitLab adapters | Push/create PR/MR и получение identity/URL |
+| SQLite и файлы | Карточки, попытки, решения, отчёты и логи |
 
-Выбор TypeScript уменьшает число языков и позволяет использовать единые типы HTTP/event envelopes. Fastify нужен для маршрутизации и schema validation; схемы создаёт приложение, а не пользователь или модель. [Fastify validation](https://fastify.dev/docs/latest/Reference/Validation-and-Serialization/).
+SQLite предлагается использовать через `better-sqlite3`, без ORM; native dependency проверяется на текущем Mac при сборке. Не нужны Redis, PostgreSQL, Kafka, Temporal, Electron и отдельные сервисы. Один Codex adapter не требует multi-provider SDK или plugin abstraction заранее.
 
-SQLite предлагается использовать через `better-sqlite3`, без ORM: здесь короткие транзакции и один backend writer. Native dependency требует проверки установки на целевых Mac. Причина не брать пока `node:sqlite` — его API всё ещё помечен как предварительный в просмотренной документации. [better-sqlite3](https://github.com/WiseLibs/better-sqlite3), [node:sqlite](https://nodejs.org/api/sqlite.html).
-
-Не нужны Redis, PostgreSQL, Kafka, Temporal, Electron и отдельный микросервис для каждого адаптера. Зависимости и их точные версии выбираются один раз при реализации и сохраняются в lockfile.
-
-Backend запускается отдельным локальным процессом и обслуживает собранный frontend. Закрытие браузера не является сигналом остановки. Автозапуск при входе в macOS не входит в MVP; после явного старта приложения пользователь получает URL локального UI.
+Backend — отдельный локальный процесс, обслуживающий frontend. Закрытие вкладки не останавливает backend. Автозапуск при входе в macOS не входит в MVP; после явного запуска пользователь получает URL.
 
 ## 3. Хранение и владение данными
 
-Предлагаемый data directory: `~/Library/Application Support/AgentKanban/`; имя рабочее и не фиксирует название продукта. Репозитории пользователя не содержат доску или runtime state.
+Предлагаемый data directory: `~/Library/Application Support/AgentKanban/`; название рабочее. Репозитории пользователя не содержат runtime state приложения.
 
 ```text
 <data-dir>/
@@ -75,390 +55,211 @@ Backend запускается отдельным локальным проце�
     events.jsonl
     stderr.log
   worktrees/<project-id>/<task-id>/
-  runtime/
-    backend.lock
-    permission.sock
-    processes/<run-id>.json
 ```
 
-SQLite — источник истины для стадии и принятых решений. Файлы — содержимое артефактов и большие логи; файл `build.md` сам по себе не запускает переход. Отчёты предыдущих попыток не перезаписываются.
+SQLite — источник истины для карточки и принятых решений. Файл отчёта сам по себе не запускает переход. Предыдущие отчёты не перезаписываются. Process handles и очередь активного backend могут находиться в памяти; их потеря не должна удалять сохранённую задачу.
 
-### Логическая схема
+| Сущность | Данные |
+| --- | --- |
+| `projects` | canonical checkout/git-common-dir, remote/host/repository, target, role models, agent setup instructions, config revision |
+| `tasks` | описание/revision, title, stage/run state, wait reason, branch/worktree, base/head, repair count, state version, PR/MR identity/URL |
+| `task_revisions` | исходное описание и уточнения; immutable revisions |
+| `runs` | task/role/round/attempt, config snapshot, CLI/model, session ID при наличии, input revisions/SHA, timestamps, status/error |
+| `results` | outcome, artifact references, reviewed base/head, agent evidence |
+| `human_requests` | task/run, kind, вопрос/варианты, bound revision, status, ответ |
+| `events` | monotonic ID, task/run, type, timestamp, payload |
+| `settings` | schema version, defaults, executable path |
 
-| Сущность           | Основные данные                                                                                                                                                                      |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `projects`         | canonical checkout/git-common-dir, remote host/repository, target branch, hosting provider, role settings, checks/setup, merge policy, config revision                               |
-| `tasks`            | project, generated title/title state, description revision, stage, run state, wait reason, resume stage, branch/worktree, current base/head, repair count, sync count, state version |
-| `task_revisions`   | дословное описание, уточнения и источник изменения; immutable revisions                                                                                                              |
-| `runs`             | task/role/round/attempt, config snapshot, protocol/CLI version, provider IDs, process ownership, input SHA/revisions, timestamps, status, error                                      |
-| `results`          | run, artifact references+hashes, normalized outcome, checked base/head, validation evidence                                                                                          |
-| `human_requests`   | task/run/attempt, kind, original payload+hash, provider correlation, options, status, answer, expiry/revocation, bound code/config revision                                          |
-| `events`           | monotonic ID, task/run, event type, timestamp, structured payload; durable UI history                                                                                                |
-| `operations`       | operation ID, task, kind, expected state/head/base, request fingerprint, status, remote identity/result; external side-effect journal                                                |
-| `execution_leases` | task owner, backend generation, acquired time; максимум три                                                                                                                          |
-| `settings`         | schema version, global defaults, detected executables и локальные предпочтения                                                                                                       |
+Один backend владеет data directory; второй scheduler не допускается. Репозитории с одним Git common-dir распознаются как дубликат, а не независимые рабочие пространства.
 
-`runs` отделяет попытку процесса от задачи и логического раунда. Четыре review results образуют один раунд. Новое исполнение после сбоя — новая попытка, но не автоматически новый repair round.
+SQLite использует foreign keys, WAL и короткие транзакции. Переход и событие сохраняются вместе; ответ «сохранено» даётся после commit. Артефакт публикуется после полной записи временного файла; неполный результат не принимается. Миграции не удаляют старую базу. Согласованный backup/restore, orphan artifacts и crash/disk-full испытания — следующий этап.
 
-Один процесс backend владеет data directory. Singleton lock проверяет не только PID, но и идентичность экземпляра. Второй запуск открывает существующий UI или сообщает занятость; не создаёт второго scheduler. Репозитории с одним Git common-dir не регистрируются как независимые рабочие пространства без явного обнаружения дубликата.
-
-Использовать SQLite foreign keys, WAL, короткие транзакции и durable synchronous mode. Изменение состояния и соответствующее событие записываются одной транзакцией. WAL не превращает файловые изменения или remote API в транзакции. [SQLite WAL](https://sqlite.org/wal.html).
-
-Артефакт сначала пишется во временный файл и атомарно публикуется, затем регистрируется в SQLite с hash. После сбоя orphan-файл можно связать с попыткой либо пометить неполным; нельзя автоматически принять его как успешный результат. Ответ браузеру «сохранено» даётся после commit состояния. Миграции схемы не удаляют старую базу; перед миграцией нужен согласованный SQLite backup, не копирование одного live `.sqlite` без WAL.
-
-Права data directory — только текущему пользователю. OAuth/API/hosting tokens не копируются в базу. На MVP нет автоматического удаления истории; большие логи выдаются порциями, а заполнение диска блокирует новые работы с понятной причиной.
+Data directory доступен только текущему пользователю. Tokens не копируются из штатных хранилищ CLI. История автоматически не удаляется, большие логи читаются порциями. Ошибка сохранения блокирует продолжение и показывается пользователю.
 
 ## 4. State machine
 
-Храним отдельно `stage` и `run_state`. Это сохраняет исходные колонки и позволяет честно показать ожидание без добавления стадий pipeline.
-
-- `stage`: `backlog | spec | build | review | approve | merged | needs-human`.
-- `run_state`: `idle | queued | running | waiting | interrupting | interrupted | cancelled | completed`.
-- `wait_reason`: при необходимости `question | permission | human_review | ci | rate_limit | environment | merge_gate`.
-- `resume_stage`: этап, куда нужно вернуться из `needs-human`.
+- `stage`: `backlog | spec | build | review | approve | pr-created | needs-human`.
+- `run_state`: `idle | queued | running | waiting | interrupted | completed`. В прототипе interrupted обозначает незавершённую работу после restart, без обещания resume.
+- `wait_reason`: `question | human_review | rate_limit | environment | publication`.
+- `resume_stage`: этап продолжения после штатного вопроса, не механизм аварийного восстановления.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Backlog
     Backlog --> Spec: start + preflight + slot
-    Spec --> Build: valid spec
-    Build --> Review: READY + verified checks
+    Spec --> Build: READY
+    Build --> Review: READY
     Review --> Build: CHANGES + repair budget
     Review --> Approve: four PASS on same revision
-    Approve --> Merged: remote confirms merge
-    Approve --> Review: target changed + sync + checks
-    Spec --> NeedsHuman: question / blocked
-    Build --> NeedsHuman: question / blocked
-    Review --> NeedsHuman: blocked / budget exhausted
-    Approve --> NeedsHuman: escalation / blocked gate
-    NeedsHuman --> Spec: answered spec question
-    NeedsHuman --> Build: explicit rework
-    NeedsHuman --> Review: resume review
-    NeedsHuman --> Approve: human decision
+    Approve --> PRCreated: APPROVE + confirmed PR/MR
+    Spec --> NeedsHuman: NEEDS_INPUT
+    Build --> NeedsHuman: NEEDS_INPUT / BLOCKED
+    Review --> NeedsHuman: question / budget exhausted
+    Approve --> NeedsHuman: ESCALATE / publication error
+    NeedsHuman --> Spec: answer
+    NeedsHuman --> Build: answer / rework
+    NeedsHuman --> Review: answer
+    NeedsHuman --> Approve: publish decision
 ```
 
-Диаграмма показывает содержательные переходы. Permission wait, interruption и cancellation допустимы из любой выполняемой стадии; возврат всегда через сохранённый checkpoint и scheduler, а не по произвольному изменению колонки в UI.
+Controller проверяет run ID, редакцию и допустимый переход с optimistic `state_version`. Невалидный результат — ошибка протокола, а не CHANGES. Agent text не интерпретируется как административная команда.
 
-| Событие            | Проверка                                             | Изменение                                              |
-| ------------------ | ---------------------------------------------------- | ------------------------------------------------------ |
-| Start              | backlog, актуальная редакция, preflight              | queued → spec/running после lease                      |
-| Spec READY         | schema, acceptance criteria, нет нерешённых вопросов | build                                                  |
-| Build READY        | branch/head/checks/артефакты соответствуют attempt   | новый review round                                     |
-| Review result      | роль, round, input revisions, base/head совпадают    | сохранить один verdict; ждать остальные                |
-| Все reviews готовы | четыре PASS либо CHANGES                             | approve либо repair/needs-human                        |
-| Human answer       | pending request, current version, валидная форма     | записать ответ; queued для продолжения                 |
-| Agent APPROVE      | актуальное доказательство, машинные gates            | запросить контролируемую merge operation               |
-| Remote merged      | совпадает PR/MR identity                             | merged/completed, сохранить merge commit               |
-| Interrupt/Cancel   | действие актуально; повтор идемпотентен              | остановка, reconciliation, затем interrupted/cancelled |
-
-Контроллер проверяет переходы транзакционно с optimistic `state_version`. Агентские сообщения не интерпретируются как административные команды. Невалидный результат не равен CHANGES: это protocol/environment error.
-
-Две автоматические доработки учитываются `repair_count = 0..2`. Явное «Отправить на доработку» после эскалации создаёт новый human-authorized цикл с новым бюджетом; старые счётчики и история остаются. Если человек меняет требования, увеличивается description/spec revision и пересматриваются зависящие от неё результаты.
+Две автоматические доработки учитываются `repair_count = 0..2`. Явная доработка после эскалации разрешает новый цикл; история сохраняется. Изменение требований или кода делает зависимые результаты неактуальными. Это обычные правила реализации, а не отдельное исследование до прототипа.
 
 ## 5. Scheduler, ресурсы и ожидания
 
-Очередь хранится в SQLite. В MVP FIFO по времени готовности; приоритеты и сложное планирование не нужны. Выдача lease и старт run разделены операционным checkpoint, чтобы crash между ними можно было обнаружить.
+Один backend, FIFO и максимум три активные задачи. После restart очередь не стартует автоматически. Для упрощения прототипа четыре reviewer запускаются последовательно; параллельный запуск внутри задачи — последующая оптимизация. Все четыре роли остаются обязательными, builder ждёт конца раунда.
 
-Максимум три task leases. Lease удерживается, пока агент, setup/test process или mutating pipeline operation реально исполняют работу. Idle app-server и процесс, подтверждённо ожидающий разрешения, сами по себе не занимают вычислительный слот задачи.
+При NEEDS_INPUT reviewer завершает run; следующая роль ждёт ответа. Ответ сохраняется и ставит продолжение в очередь. Слот освобождается после завершения run; одного изменения статуса в памяти недостаточно, если процесс ещё работает. Сложные случаи остановки потомков проверяются после прототипа.
 
-При нескольких reviewer задача освобождает lease только после quiescence: все reviewer завершены или ожидают ответа и ни один tool/test не продолжает исполняться. Новые reviewer после появления блокировки не запускаются. UI может уже показывать Needs human, но внутренний lease ещё удерживается до безопасной точки.
-
-Ответ человека сохраняется сразу. Если свободного lease нет, UI показывает очередь; адаптер не отправляет разрешение или новый prompt, способный возобновить выполнение, до выдачи lease. Отказ тоже может заставить агента продолжить reasoning, поэтому отправляется по тому же правилу. Если provider timeout истёк раньше, запрос становится устаревшим, требуется reconciliation и новый запрос.
-
-CI и remote polling не используют task lease. Получение конечного результата само по себе не запускает следующего агента без scheduler. При подтверждённом rate limit блокируется запуск новых runs этого provider до доступного reset time; если reset неизвестен, пользователь продолжает вручную. Покупка credits и смена провайдера не происходят автоматически.
-
-Генерация заголовка — короткая metadata work item, привязанная к задаче. Она использует общий лимит, не запускается одновременно с агентом этой задачи и не переводит Backlog в Spec. Если заголовок ещё не готов при старте, его можно получить вместе со Spec, не дублируя вызов.
-
-Предлагаемые технические пределы, не новые продуктовые опции: один автоматический повтор только для однозначно безопасного сбоя до начала действий; максимум две последовательные синхронизации с меняющейся target branch за цикл, затем человек. Потеря соединения после side effect не считается безопасным сбоем для слепого retry.
+Title generation использует тот же лимит задач и не пересекается с другой ролью своей задачи. Если заголовок не готов при старте, его можно получить вместе со Spec. Подтверждённый rate limit приостанавливает новые runs до известного reset time; иначе требуется ручное продолжение. Молчаливой смены модели и покупки credits нет.
 
 ## 6. Роли, контекст и контракты результатов
 
-### Настройки по умолчанию
+Все роли используют Codex и доступную модель из конфигурации пользователя. Модель можно переопределить для роли. Конфигурация фиксируется при запуске задачи; недоступная модель даёт ошибку без молчаливой подмены. Автоматический каталог моделей не нужен.
 
-| Роль                  | Предлагаемый default                                                |
-| --------------------- | ------------------------------------------------------------------- |
-| Заголовок             | CLI/модель Spec, короткий запрос без tool access                    |
-| Spec                  | Claude Code, `opus`                                                 |
-| Build                 | Codex, модель из действующей конфигурации CLI, разрешённая аккаунту |
-| Review security       | Claude Code, `opus`                                                 |
-| Review code / UI / UX | Claude Code, `sonnet`                                               |
-| Approve               | Claude Code, `opus`                                                 |
+Каждый run получает task/run ID, редакцию требований, абсолютный worktree, base/head SHA, инструкции роли, применимые repo instructions и предыдущие результаты. Reviewers и approver работают в отдельных сессиях. Первый прототип передаёт сохранённый контекст в новый run; продолжение старой CLI session не является обязательным.
 
-Это редактируемые defaults, а не утверждение о доступности моделей на любом тарифе. На preflight разрешаем aliases в конкретные модели, если provider это поддерживает, и сохраняем запрошенный и фактический ID. Недоступная модель блокирует запуск с выбором пользователя; молчаливой подмены нет. Для Codex список можно получать через `model/list`; для Claude сначала проверяется поддержанный pinned CLI способ, иначе пользователь вводит допустимый model ID. Источник возможностей Codex: [app-server](https://learn.chatgpt.com/docs/app-server).
+Backend-owned envelope: `schema_version`, `task_id`, `run_id`, `role`, `round`, `description_revision`, `spec_revision`, `base_sha`, `head_sha`, `outcome`, `summary`, `artifact_refs`. Принадлежность результата и Git state проверяет backend; echo идентификаторов от модели не является доказательством.
 
-Каждый запуск получает task ID, description/spec revision, абсолютный worktree, base/head SHA, инструкции роли, применимые repo instructions, свои report/artifact paths и относящиеся к нему предыдущие результаты. Полные transcript других агентов не передаются по умолчанию. История builder может продолжаться после review; reviewers и approver работают с явно зафиксированным контекстом проверки.
+| Роль | Результат |
+| --- | --- |
+| Title | Короткий заголовок из описания; без новых требований и изменения проекта |
+| Spec | READY/NEEDS_INPUT; требования, acceptance criteria, допущения, out-of-scope |
+| Build | READY/BLOCKED; изменённые пути, отчёт о реализации и действиях агента |
+| Review | PASS/CHANGES; findings, evidence, applicability; неприменимость UI/UX объясняется |
+| Approve | APPROVE/ESCALATE; соответствие задаче и причины риска; решение о публикации, не о merge |
 
-Backend-owned result envelope содержит `schema_version`, `task_id`, `run_id`, `role`, `round`, `description_revision`, `spec_revision`, `base_sha`, `head_sha`, `outcome`, `summary`, `artifact_refs`. Поля идентичности и SHA подтверждает backend; echo от LLM не считается доказательством.
+Любая рабочая роль может вернуть NEEDS_INPUT. Это завершает run и не расходует repair budget. Backend проверяет JSON Schema и результат процесса. PASS — содержательное мнение агента, а не независимое доказательство прохождения тестов. Backend runner для tests/lint/build отсутствует. Агент может запускать команды в ходе работы; детерминированный контроль качества проекта остаётся в его CI/CD.
 
-| Результат роли | Обязательное содержимое                                                                                 |
-| -------------- | ------------------------------------------------------------------------------------------------------- |
-| Title          | Короткий plain-text заголовок, без новых требований и tool calls                                        |
-| Spec           | Контекст, требования, acceptance criteria, out-of-scope, допущения; READY либо NEEDS_INPUT              |
-| Build          | READY/BLOCKED, изменённые пути, команды и результаты проверок, ответы на замечания                      |
-| Review         | PASS/CHANGES, findings с объяснением, evidence, applicability; `not_applicable` объясняется внутри PASS |
-| Approve        | APPROVE/ESCALATE, выполненные критерии, risk flags и конкретная причина эскалации                       |
+По workflow contract только Build меняет source. Остальные роли имеют full access, но инструктируются не менять его; изменение source аннулирует reviews прежней версии. Последовательный запуск уменьшает конкуренцию за worktree. Browser tool для необходимой UI/UX-проверки берётся из настроенного окружения проекта; без возможности нужной проверки роль блокируется с вопросом, а не выдаёт фиктивный PASS.
 
-Markdown-отчёт — человекочитаемое представление результата. Структурированный результат проходит schema validation, но успешный JSON не доказывает успешность тестов. Backend фиксирует exit codes, полный проверенный command record, head и состояние дерева.
+## 7. Codex adapter
 
-Только Build изменяет исходники. Spec/review/approve получают ограниченные права; разрешённые проверки могут писать build outputs/cache в отведённые места. Изменение tracked source во время Review аннулирует раунд. Несовместимые команды тестов/build сериализуются в одном worktree, даже если четыре LLM reviewer работают параллельно. UI/UX получают разные порты/профили браузера; collision проверяется, номер не выводится только из task ID.
+Один встроенный модуль. Минимальный контракт: запустить prompt в нужном cwd, читать JSONL progress, получить финальный результат по JSON Schema, различать успех и ошибку. Продуктовый вопрос передаётся результатом NEEDS_INPUT; ответ поступает в новую попытку с сохранённым контекстом.
 
-Browser tool для визуальных проверок берётся из заранее настроенного окружения проекта, например исходного `agent-browser`. Если проверка необходима, а инструмента или dev setup нет, это BLOCKED с вопросом, не фиктивный PASS. Автоматическая установка пакетов на машину без разрешения не подразумевается.
+Для рабочих ролей предполагается `codex exec --json --dangerously-bypass-approvals-and-sandbox --output-schema <schema> -` с explicit cwd и prompt через stdin. Это выбранный пользователем full-access режим. Изменение файла проверяется в одноразовом репозитории при реализации адаптера. Ошибка, неполный stream или невалидный result не переводят задачу дальше. App-server bridge и live tool approvals не нужны.
 
-## 7. Agent adapters
+Штатная authentication остаётся в хранилище CLI. Модель задаётся настройками роли либо берётся из существующей конфигурации. Нативный интерактивный вопрос не получает автоматического ответа; агент инструктируется возвращать NEEDS_INPUT.
 
-Это два встроенных модуля, не публичный plugin SDK. Общие операции: проверка доступности/версии, start/resume, поток нормализованных событий, ответ на запрос, interrupt, получение финального результата. Provider payload хранится отдельно; общий интерфейс не притворяется, что все CLI имеют одинаковые возможности.
+### Что уже проверено 12 октября 2026
 
-Нормализованные события: `run_started`, `progress`, `human_request`, `permission_request`, `artifact_ready`, `run_completed`, `run_failed`, `rate_limited`. У каждого есть task/run/attempt и provider correlation, когда она предоставляется.
+- Установлен `/opt/homebrew/bin/codex`, версия `0.160.1`; `codex login status` сообщает ChatGPT authentication.
+- Локальные help подтверждают `exec --json`, `--output-schema`, `--output-last-message` и `exec resume <SESSION_ID>`.
+- Реальный запрос выполнен с `--ephemeral --ignore-user-config --sandbox read-only --skip-git-repo-check`, отключёнными shell/web search и заданной схемой. Получены `thread.started`, `turn.started`, `item.completed`, `turn.completed`, exit code 0 и `{"outcome":"READY","summary":"protocol-ok"}`. Tool events в этом запуске не было.
+- Внешняя sandbox среды исследования сначала запретила инициализацию CLI. Smoke прошёл после разрешённого запуска вне внешней sandbox, при сохранении read-only режима самого CLI.
 
-### 7.1 Codex
+Это подтверждает auth и базовый обмен prompt → JSONL → structured result. Это не проверка full-access изменения файлов, NEEDS_INPUT цикла, resume или технического отключения всех возможных tools. Title mode до старта должен исключать изменение проекта; полный набор ограничений проверяется в S-12. Настройки пользователя не изменялись.
 
-Используется установленный `codex app-server` по локальному stdio JSON-RPC. Документированы `thread/start`, `thread/resume`, `turn/start`, `turn/interrupt`, поток событий и server-initiated approvals. App-server помечен experimental и не поддерживаемым для production workloads; это принятая зависимость локального MVP. [Official OpenAI documentation](https://learn.chatgpt.com/docs/app-server).
+Официальная документация: [Non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode), [Configuration Reference](https://learn.chatgpt.com/docs/config-file/config-reference). Поддержка флага в help и удачный smoke не заменяют испытание всей роли.
 
-Предлагаем отдельный app-server process на активный role run: простой ownership и ограниченный blast radius. Четыре reviewer могут породить четыре процесса. Оптимизация через общий server откладывается до измерений.
+## 8. Human requests и решения
 
-Adapter выполняет initialize, создаёт либо возобновляет thread, задаёт cwd и разрешения, затем запускает turn. Сохраняются реальные thread/session/turn IDs, а не идентификатор «последней сессии». На protocol parse failure, EOF и failed turn результат не принимается как успешный. Завершённый turn сам по себе не означает READY или PASS — нужен result contract.
+Запрос имеет `kind=question` либо `decision` по ESCALATE approver. Merge decisions и permission prompts отдельных tools отсутствуют.
 
-Для команд и файлов поддерживаются requestApproval с явным ответом по request ID. В UI MVP используем разовое разрешение, отказ и прерывание; session-wide grants и изменение постоянных правил не выдаются скрыто. Отдельные permission/network запросы отображаются с их фактической областью доступа. Устаревшие server requests инвалидируются. Подробности wire format берутся из pinned schema, не из произвольного разбора текстовых сообщений.
+1. Агент завершает run с NEEDS_INPUT/ESCALATE.
+2. Backend сохраняет вопрос с task/run ID и текущей редакцией.
+3. UI показывает текст, варианты и свободный ответ; ничего не выбирает автоматически.
+4. Ответ сохраняется один раз. Повторный submit не создаёт второго run; ответ на отозванный вопрос отклоняется.
+5. После выделения слота новая попытка получает вопрос и ответ. APPROVE либо разрешение публикации по ESCALATE ведёт к созданию PR/MR.
 
-Приложение использует штатную Codex authentication. Веб-клиент не получает токены. Нельзя заменять этот адаптер на `exec --json`, сохраняя обещание двусторонних approvals; нельзя возвращать удалённый `codex mcp-server`.
+Reviewer в прототипе последовательны: при вопросе следующая роль не стартует. Ответ без изменения требований сохраняет результаты с теми же входными данными; изменение требований требует пересмотра зависимых результатов. Несколько вопросов одного результата показываются вместе; продолжение — после всех обязательных ответов.
 
-### 7.2 Claude Code
-
-Запускается штатный `claude -p` с потоковым JSON output и сохранением сессии. `--permission-prompt-tool` связывает запросы с локальным MCP permission host; `--resume` адресует конкретную историю. Не используем `--bare` или отключение persistence как безусловную оптимизацию подписочного сценария. [CLI reference](https://code.claude.com/docs/en/cli-reference), [headless](https://code.claude.com/docs/en/headless).
-
-Предлагаемый bridge — маленький stdio MCP process, запускаемый Claude из конфигурации конкретного run. Он передаёт запрос backend через защищённый local socket, ждёт решения и возвращает provider-specific result. Bridge не принимает произвольных shell-команд и не имеет собственной бизнес-логики merge. Он нужен для protocol adaptation, а не для отдельного backend service.
-
-**Точный MCP input/result envelope, correlation и сроки ожидания ещё не подтверждены практикой.** Нельзя выдавать SDK `canUseTool` schema за установленный wire contract `permission-prompt-tool`. Это обязательный spike S-02. Не используем недокументированный stdin control protocol только потому, что есть флаг stream-json.
-
-Существующие permission hooks могут конкурировать с host, а отдельные интерактивные MCP и network requests имеют ограничения. Они не должны приводить к показу кнопки, которая фактически уже ничего не контролирует. Для неподдержанного request — объяснимый Needs human без автоматического allow. [Claude hooks](https://code.claude.com/docs/en/hooks#permissionrequest).
-
-Для освобождения task lease нужен подтверждённый контроль над возобновлением: сторонний hook не должен разрешать ожидающее действие за спиной scheduler. Способ ограничить конкурирующие handlers на уровне конкретного запуска проверяется S-02; глобальные пользовательские настройки не переписываются. Если обеспечить это нельзя, такой набор CLI/settings не считается поддержанным для managed execution.
-
-### 7.3 Вопросы по требованиям
-
-Для продуктовых вопросов базовый переносимый путь — role result `NEEDS_INPUT` с вопросами: run заканчивается в checkpoint, backend показывает форму, после ответа роль продолжается с сохранённым контекстом. Это не требует постоянно держать RPC открытым.
-
-Нативные tool-вопросы, возникающие посреди turn, обрабатываются отдельно: supported Codex user-input event или Claude tool/hook bridge. Их точные схемы входят в adapter spikes. Нельзя подменять вопрос разрешением команды или автоматически выбирать рекомендуемый вариант.
-
-### 7.4 Версии и auth
-
-Preflight сохраняет binary path/version, поддержанные capabilities и модель; проверенный version range адаптера задаётся после spikes. Неизвестная несовместимая версия даёт actionable error, не автообновление CLI.
-
-Credentials остаются в штатных хранилищах CLI. Для личного сценария не строим OAuth gateway и не импортируем tokens в backend. Это не обещание разрешённости будущего hosted/многопользовательского продукта с теми же credentials: такой продукт вне MVP. [Claude authentication restrictions](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use).
-
-## 8. Human requests и approvals
-
-Все обращения хранятся в общей таблице, но имеют разные `kind`: `question`, `decision`, `permission`. Ответы проверяются по отдельным схемам. `decision` может разрешить риск, препятствующий автоматическому merge, но не превратить failed CI в PASS.
-
-### Жизненный цикл запроса
-
-1. Adapter/controller получает исходный payload и назначает app request UUID.
-2. Backend сохраняет request вместе с run/attempt, transport generation, provider request ID и payload hash; публикует событие после commit.
-3. UI показывает неизменённый смысл запроса, область действия и допустимые ответы. Рекомендуемый ответ не отправляется автоматически.
-4. Ответ проходит проверку версии и одноразового статуса; двойной submit возвращает существующий результат.
-5. Для ответа, возобновляющего агентскую работу, scheduler сначала выделяет task lease. До этого `answered_queued`.
-6. Backend журналирует delivery и отправляет provider-specific response. Подтверждение провайдера переводит запрос в `resolved`.
-7. Если результат доставки неизвестен, запрос остаётся `delivery_unknown`, а не отправляется снова вслепую.
-
-Статусы: `pending`, `answered_queued`, `delivering`, `resolved`, `expired`, `revoked`, `delivery_unknown`. Несколько запросов одного run не перезаписывают друг друга. Истёкшие или отозванные кнопки недоступны; reason виден в истории.
-
-```mermaid
-sequenceDiagram
-    participant A as Agent adapter
-    participant B as Backend / SQLite
-    participant U as Browser
-    A->>B: permission request + correlation
-    B->>B: persist pending
-    B-->>U: SSE: human_request
-    U->>B: answer(request_id, version, decision)
-    B->>B: validate + persist answer
-    B->>B: wait for task lease if needed
-    B->>A: response to exact live request
-    A-->>B: resolved / action outcome
-    B-->>U: history and task state
-```
-
-Для команд показываются полный command preview и cwd, для файлов — пути, тип действия и ссылка на доступные подробности изменения, для network — destination/scope. Это не diff viewer. Если разрешение действительно шире одной команды, UI обязан показать реальную область; label «один раз» не должен скрывать grant на весь turn.
-
-Close tab не закрывает MCP/RPC request. При backend restart нельзя восстанавливать старый live request ID из одной только базы и посылать его в новый процесс. Старые requests становятся revoked/unverified, агент должен заново представить действие. Пользовательское намерение остаётся в истории, но не превращается в автоматическое разрешение нового запроса.
+Закрытие вкладки не теряет вопрос. После restart ответ сам не запускает исполнение. Сложные гонки нескольких reviewer и recovery не являются предварительным блокером разработки.
 
 ## 9. Git и рабочие пространства
 
-Git operations выполняет контролируемый coordinator с explicit cwd/argv. Один worktree на задачу обеспечивает изоляцию веток, но linked worktrees разделяют Git metadata; это не sandbox. [Git worktree](https://git-scm.com/docs/git-worktree).
+Git coordinator использует explicit cwd/argv. Один worktree на задачу разделяет ветки, но linked worktrees имеют общие Git metadata; это не sandbox.
 
-### Старт
+1. Определить canonical repository path, Git root, remote identity; проверить отсутствие merge/rebase в подключённом checkout.
+2. Проверить staged, unstaged и неигнорируемые untracked изменения. Dirty checkout блокирует новый старт; stash/discard автоматически не выполняются.
+3. Fetch выбранного remote и фиксация target SHA. Локальная ветка не reset/pull/checkout-ится. Неопубликованные локальные commits показываются отдельно, не подмешиваются в задачу.
+4. Создать ветку `factory/<task-id>` и worktree от выбранного SHA. Название не зависит от LLM-заголовка.
+5. Передать агенту инструкции project setup; backend не добавляет стадию независимых project checks.
 
-1. Разрешить canonical repository path, проверить Git root, remote identity, отсутствие merge/rebase в подключённом checkout.
-2. Проверить `git status --porcelain` с учётом untracked. Любая неигнорируемая незакоммиченная запись блокирует новый старт; ignored caches не блокируют.
-3. Выполнить fetch выбранного remote и разрешить target ref в конкретный SHA. Локальная ветка пользователя не reset/pull/checkout-ится. Источник задачи — выбранный remote target; локальные неопубликованные commits показываются как отдельное отличие, не подмешиваются скрыто.
-4. Создать ветку `factory/<task-id>` и worktree в data directory от зафиксированного SHA. Название не зависит от изменяемого LLM-заголовка.
-5. Выполнить project setup и сохранить результат. При ошибке оставить worktree и объяснить причину.
+Preflight повторяется перед реальным стартом из очереди. Основной checkout после этого не подмешивается в работу. После сбоя dirty task worktree сохраняется; безопасное resume добавляется после прототипа.
 
-Preflight повторяется непосредственно перед реальным стартом, а не только при нажатии кнопки. Изменения основного checkout после начала не подмешиваются в задачу; новую задачу они блокируют. Продолжение собственного dirty task worktree сначала проходит reconciliation, а не новый clean-check с потерей работы.
+Commit фиксирует coordinator с explicit paths после проверки дерева. Если builder уже создал commits, coordinator проверяет branch/history и не дублирует commit. Нельзя автоматически добавлять секреты, неожиданные untracked files или весь checkout через blanket staging. Перед Review фиксируются base/head и чистота source tree; report artifacts находятся вне tracked source. Изменение source делает прежние reviews stale.
 
-### Build и freeze
+Автоматической синхронизации с каждым изменением target нет. Приложение публикует PR/MR; актуальная интеграция с target, конфликты и merge остаются пользователю и платформе. Worktree и branch автоматически не удаляются. Cleanup с проверкой данных и процессов — позднее; локального pull после внешнего merge нет.
 
-Builder реализует и проверяет изменение. Commit фиксирует coordinator после проверки дерева и explicit paths; если builder уже создал commits, coordinator валидирует branch/history и не создаёт искусственный дубль. На commit выделяется exclusive write phase задачи. Нельзя автоматически добавлять секреты, неожиданные untracked файлы или весь checkout через blanket staging.
+## 10. Создание PR/MR
 
-Перед Review сохраняются base/head и чистота source tree. Review/test artifacts пишутся вне tracked source. Любое вмешательство в исходники после freeze делает результаты stale. Agent permission не даёт права самовольно публиковать/мержить ветку; remote side effects проходят отдельный coordinator.
+Hosting adapters используют авторизованные `gh`/`glab`, JSON output и explicit repository/host. Тексты передаются через файлы/structured input, без shell interpolation. Backend не вызывает merge, не включает remote auto-merge и не управляет queues/trains.
 
-### Обновление target
+После четырёх PASS и APPROVE либо решения человека по ESCALATE backend проверяет актуальность source, ищет существующий PR/MR по source branch, target и task marker, затем выполняет push/create. Описание содержит задачу, summary и отчёты. Identity/URL сохраняются; только после этого задача становится `pr-created/completed`.
 
-Выбран merge target SHA в task branch, а не rebase: опубликованная история не переписывается, force push не нужен. На время операции нет работающих агентов этой задачи. При конфликте сохраняются данные и формируется Needs human; автоматическое разрешение конфликта считается новой реализацией с последующим полным review, а не механической синхронизацией.
+При timeout исход публикации может быть неизвестен. Прототип останавливается с явной причиной и предлагает ручную сверку remote; слепой повтор push/create запрещён. Полный журнал операций, reconciliation и crash injection добавляются после прототипа. Обычный повторный click защищается состоянием задачи и сохранённой identity.
 
-После успешной синхронизации записываются новые base/head, прежние reviews/approve/human-merge approvals помечаются stale, повторяются все проверки и четыре reviews. Spec также пересматривается, если изменения base затронули её предпосылки. После этого обновляются PR/MR и CI. Это новый validation round; `repair_count` увеличивается только при содержательной автоматической доработке по замечаниям.
-
-### Cleanup
-
-После Merged/Cancelled не удалять worktree или branch автоматически в MVP. Отдельное пользовательское действие проверяет незакоммиченные данные и отсутствие процессов; принудительное удаление не предлагается как default. Основной checkout остаётся как был; приложение не делает локальный pull после remote merge.
-
-## 10. PR/MR, CI и merge gates
-
-Hosting adapter использует авторизованные `gh`/`glab`, JSON output и explicit repository/host. Различия flags и статусов остаются внутри двух адаптеров. Тексты берутся из файлов/structured input без shell interpolation. Никаких `--admin` или иных bypass-режимов.
-
-### Публикация и идемпотентность
-
-После четырёх PASS backend журналирует publish intent, проверяет существующую remote ветку и PR/MR по source branch, target и уникальному task marker, затем push/create. В описание входят исходная задача, summary, проверки и идентификатор задачи. Обновление повторяет проверку SHA и не создаёт новый PR/MR на каждом раунде.
-
-Любой timeout после push/create/merge означает неизвестный исход. Перед retry требуется lookup remote. `operations` хранит `prepared → dispatched → confirmed | unknown | failed`. Exactly-once внешних действий не обещается; цель — обнаружить состоявшееся действие и не повторить его.
-
-### Evidence для merge
-
-Решение связывается с tuple: description/spec/config revision, base SHA, source head SHA, четыре review result IDs, checks run IDs, provider CI identity и approve result либо human decision ID.
-
-Backend проверяет:
-
-- Evidence актуален, code tree не изменён и все проверки завершены.
-- Обязательные checks известны, относятся к актуальному source/merge candidate и прошли. Отсутствие checks, skipped/neutral без однозначной provider policy, pending и API error не трактуются как success.
-- Platform approvals, branch protection и запреты merge соблюдены.
-- Agent verdict APPROVE или человек явно разрешил данную эскалацию; содержательные CHANGES не игнорируются.
-- Auto-merge включён и изменение попадает в разрешённую категорию; иначе нужен человек.
-- Нет другого merge этого canonical remote repository.
-
-Документация/тесты определяются сочетанием настроенных project paths, анализа diff и risk flags reviewer/approver. Одного расширения файла недостаточно: Markdown может управлять агентом, а тестовый helper — исполнять privileged code. Если пути/тип не определены, automatic eligibility = false. CI, dependencies, executable config и другие чувствительные изменения автоматически не принимаются.
-
-Agent APPROVE с намерением merge инициирует controlled operation: backend повторно проверяет gates и исполняет соответствующий CLI. Это сохраняет агентское решение, не поручая модели вручную обходить проверки shell-командами. По human decision действует тот же machine gate. При неустранимом gate UI предлагает нужное действие, а не кнопку bypass.
-
-### Сериализация и race с target
-
-Один merge coordinator на canonical remote repository, даже если он подключён через два локальных clone. Локальная очередь не блокирует действия людей и CI на remote.
-
-Перед отправкой merge заново читается target SHA; при отличии операция отменяется и задача возвращается к синхронизации. В merge command передаётся source-head guard. GitHub `--match-head-commit` и GitLab `--sha` защищают source HEAD, но не гарантируют неизменность target между чтением и merge. У GitLab queued auto-merge также нельзя считать состоявшимся merge. [gh merge](https://cli.github.com/manual/gh_pr_merge), [glab merge](https://docs.gitlab.com/cli/mr/merge/).
-
-**Непроверенная граница гарантии:** строгая связка «reviewed base = base в момент merge» не обеспечивается одним локальным mutex. Provider-side branch protection/merge queue/train может проверять актуальную интеграцию, но сама по себе не заменяет требование повторить четыре агентских reviews после изменения base. Не утверждаем, что queue решает это автоматически.
-
-S-07 должен установить поддержанный механизм и его пределы для каждого hosting adapter. До этого автоматический merge на конфигурации с недоказуемыми условиями заблокирован с объяснением человеку. Это ограничение готовности интеграции, не отмена требования PRD. Механизм очереди, который сам позже меняет base и мержит без нашего повторного цикла, не включается скрыто.
-
-После отправки операции polling различает `merge_requested`, `queued`, `merged`, `failed`, `unknown`. Только подтверждённый merged state переводит карточку в Merged. При отмене уже отправленного remote запроса проверяется возможность его отзыва; локальная отмена не обещает отменить уже состоявшийся merge.
+CI/CD запускается платформой согласно её настройкам. Приложение предоставляет ссылку на PR/MR; собственный CI polling, gates и интерпретация required checks не нужны. Отсутствующий или failed CI не мешает созданию PR/MR и не считается PASS. Решение о merge и branch protection остаются на платформе.
 
 ## 11. Прерывание, отмена и восстановление
 
-Backend владеет процессами через run ID, instance generation, PID/start identity и process group. Одного PID недостаточно из-за reuse. Остановка направляется только процессам с подтверждённой принадлежностью.
+Это следующий этап после первого рабочего прототипа. Минимальный backend хранит process handles в памяти, карточки и отчёты в SQLite. Закрытие вкладки не останавливает работу.
 
-### Плановая остановка
+После restart незавершённые задачи отображаются как interrupted без автоматического запуска. Прототип не обещает безопасное resume после аварии; пользователь вручную проверяет оставшиеся процессы, worktree и remote. Частичные файлы сохраняются, автоматического reset/discard нет. Неизвестное состояние нельзя показывать как завершение или автоматически повторять в том же worktree.
 
-1. Закрыть gate новых tool/merge actions для задачи, сохранить interrupt/cancel intent.
-2. Попросить adapter завершить turn/процесс; дождаться ограниченное время.
-3. При необходимости остановить подтверждённое дерево процессов; невозможность доказать остановку отображается как проблема, а не «готово».
-4. Зафиксировать Git state, артефакты и неизвестные remote operations.
-5. Отозвать неисполненные permissions; сохранить историю и выставить interrupted либо cancelled.
+Последующие доработки:
 
-Timeout не означает, что команда ничего не сделала. Даже нормальная остановка не откатывает файлы, отправленные запросы и commits. Claude документирует специальное поведение SIGTERM, но parity всех потомков между CLI не предполагается; проверяется S-04. [Claude interruption](https://code.claude.com/docs/en/headless#stop-a-run-with-sigterm).
+- Interrupt/Cancel: закрыть запуск следующих ролей, остановить свой CLI и его потомков, дождаться завершения и сохранить состояние.
+- Resume: сверить worktree/remote, использовать конкретный session ID либо новый run с сохранённым контекстом.
+- Recovery: проверить ownership процессов и незавершённые публикации; не убивать чужой процесс по одному совпавшему PID.
+- Fault injection: partial edit/commit, timeout после PR/MR create, crash backend, full disk и backup restore.
 
-### Старт backend после сбоя
-
-Recovery начинается с закрытым execution gate. Проверяются integrity/version SQLite, singleton ownership, незавершённые runs и operations. Приложение не восстанавливает исполнение только потому, что в БД стоял `running`.
-
-Если старые принадлежащие приложению процессы ещё живы, их нужно остановить/привести к подтверждённому ожиданию до разрешения новых запусков. Переподключение к неизвестному stdio-процессу не обещается. Если ownership не доказан, его не убивают по совпавшему PID и не запускают конкурирующий worker в том же worktree; показывается Needs human.
-
-Удалённые queued merge operations сверяются отдельно. Если внешняя платформа уже приняла неотзываемое действие, локальный restart не может гарантировать его остановку; UI показывает этот факт, а не предлагает ложное «ещё не началось». MVP не должен намеренно оставлять отложенный автоматический merge, который обойдёт ручное возобновление и повторную проверку target.
-
-Восстановленные задачи получают interrupted/awaiting explicit resume. Старые task leases не переиспользуются. Pending live-RPC approvals помечаются недействительными; продуктовые вопросы с неизменным контекстом могут оставаться отвечаемыми, но ответ после restart не запускает работу без действия «Продолжить».
-
-| Момент сбоя                      | Recovery                                                                                                    |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| Во время title generation        | Описание уже в базе; placeholder; повтор только после разрешённого возобновления metadata job               |
-| После создания worktree          | Проверить existing path/branch; не создавать второй                                                         |
-| Во время Build                   | Сохранить dirty files и commits; сверить ветку; продолжить session либо новый run с checkpoint              |
-| После отчёта до commit состояния | Проверить run/head/hash и полноту result; не принимать по одному имени файла                                |
-| Во время permission delivery     | Считать исход неизвестным; сверить provider; старый ответ не replay-ить в новый процесс                     |
-| После PR/MR create с timeout     | Найти существующий объект по source/target/task marker                                                      |
-| После merge с timeout            | Запросить фактический remote state; не повторять merge без проверки                                         |
-| Во время CI wait                 | Обновить CI snapshot; для следующей активной стадии всё равно нужен explicit resume                         |
-| Worktree удалён пользователем    | Не создавать видимость сохранённого кода; объяснить утрату и предложить восстановление из известных commits |
-
-Продолжение истории CLI — удобство, а не единственный checkpoint. Минимально достаточный контекст новой сессии: описание/уточнения, spec, текущий diff, last build, отзывы текущего раунда и подтверждённые checks. Прежние approvals не переносятся автоматически.
+Статус в памяти описывает намерение controller, но не останавливает отдельный процесс ОС. Поэтому будущая кнопка Stop должна выполнять фактическую остановку; до её реализации UI не обещает такую возможность.
 
 ## 12. UI API, безопасность и наблюдаемость
 
-### HTTP и события
+Предметные endpoints: projects/settings; tasks/create/read/update-before-start; actions `start`, `rework`; human-request answer; report/log reads; health/capability checks. Interrupt/resume/cancel добавляются позже. Endpoint merge и общий «выполни shell» endpoint отсутствуют.
 
-Предлагаемые endpoints: projects/settings; tasks/create/read/update-before-start; task actions `start`, `interrupt`, `resume`, `cancel`, `rework`; human-request answer; report/log reads; health и capability checks. Это предметные операции, не общий «выполни shell-команду» endpoint.
+Mutating запросы имеют request ID и expected state version. Backend проверяет принадлежность task/project, schema и allowed transition. SSE передаёт сохранённые события; при reconnect UI получает snapshot и недостающие события. Raw token streaming не обязателен.
 
-У каждого mutating запроса есть request ID и expected state version. Сервер проверяет project/task ownership, allowed transition и schema. Endpoint «поставить любой stage» отсутствует. Merge разрешается через конкретный `human_request`, а не свободный URL с branch name.
+- Backend слушает только loopback; UI/API используют один origin, CORS не открывается всем сайтам.
+- Session bootstrap token и защита от CSRF/чужого Origin нужны и локальному приложению, управляющему CLI.
+- Browser не получает provider tokens или произвольный filesystem access; артефакты читаются по ID с защитой от traversal/symlink escape.
+- Markdown/agent text выводятся без исполнения HTML/scripts и не становятся backend instructions.
+- Spawn получает argv и explicit cwd; description/title/model output не интерполируются в shell.
+- Full-access агент остаётся доверенным исполнителем. Отсутствие у него специального backend tool не запрещает shell-доступ к файлам и credentials; workflow не объявляется security boundary.
 
-SSE передаёт сохранённые события с monotonic ID. При reconnect UI запрашивает актуальный snapshot и недостающие события; прогресс stdout может батчиться, но решения и переходы не теряются. Raw token streaming в карточку не обязателен; важны роль, этап, последнее действие, вопрос и итоговый отчёт.
-
-### Локальная граница безопасности
-
-- Backend слушает только loopback. Один origin для UI/API; CORS не открывается для любых сайтов.
-- Session bootstrap token и защита mutating requests от CSRF/чужого Origin нужны даже localhost-продукту: backend управляет файлами и CLI.
-- Browser не получает provider tokens или произвольный доступ к filesystem. Артефакты читаются по ID, с canonical-path проверкой против traversal/symlink escape.
-- Markdown/agent text считаются недоверенными данными и выводятся без исполнения HTML/scripts; агентский текст не становится backend instruction.
-- Spawn получает массив argv и explicit cwd; description, title и model output не интерполируются в shell command. Project setup/test commands — отдельная явная доверенная конфигурация пользователя.
-- Рабочие агенты не получают административные инструменты backend, database access или автоматический merge bypass. Sandbox capabilities и inherited hooks проверяются; prompt-only запрет не объявляется security boundary.
-- Нельзя обещать полную изоляцию недоверенного кода только на основании Git worktree. MVP рассчитан на доверенные пользовательские репозитории; контроль доступа агента и сохранность основного checkout всё равно проверяются.
-
-### Диагностика
-
-В run сохраняются timestamps, CLI/model/version, session IDs, base/head, duration, exit/error classification, checks и provider usage при наличии. Usage показывается как измерение вызова, не как точный процент остатка подписки, если provider не выдал такой показатель.
-
-Нужны различимые причины: authentication, rate limit, permission denied, protocol error, missing artifact, failed check, interrupted, remote state unknown. Логи не должны включать auth headers/секреты из конфигурации; потенциально чувствительный raw output остаётся локальным, доступным пользователю. Встроенный Prometheus/Langfuse не требуется.
+В run сохраняются CLI/model/version, session ID при наличии, timestamps, base/head, duration, exit/error classification, agent reports и usage, если CLI его сообщает. Usage не выдаётся за точный остаток подписки. Различаются authentication, rate limit, protocol error, missing artifact и publication unknown. Секреты из конфигурации не журналируются; потенциально чувствительный raw output остаётся локальным. Prometheus/Langfuse для MVP не нужны.
 
 ## 13. Последовательность реализации и проверки
 
-На текущем этапе выполняется только документирование. Предлагаемый порядок дальнейшей реализации:
+1. **Codex adapter.** Дополнить выполненный smoke работой в одноразовом repo: file edit, READY/PASS/NEEDS_INPUT и ошибка. Title mode отдельно. Claude и session resume не требуются для старта.
+2. **Одна вертикальная задача.** SQLite/UI/controller: описание → Spec → вопрос/ответ → Build → четыре последовательных Review → Approve → PR/MR. Начать с доступного hosting, затем проверить второй до заявления о поддержке обоих.
+3. **Остальной MVP.** Несколько проектов, три task slots, фильтры, ошибки/лимиты, отчёты, keyboard accessibility.
+4. **Надёжность после прототипа.** Interrupt/Cancel/Resume, process lifecycle, reconciliation публикаций, fault injection и установка в чистом окружении.
 
-1. **Protocol spikes S-01/S-02/S-04/S-07.** Подтвердить ключевые возможности до полноценного UI. Результат — минимальные проверяемые harnesses и protocol fixtures, не продуктовая фабрика.
-2. **Persistence + state machine.** Задачи, поколения attempts, очередь, human requests, crash recovery; CLI заменяются тестовым adapter.
-3. **Вертикальный сценарий.** Одна задача от описания и LLM-title до Spec/Build, вопроса в UI, остановки и ручного resume.
-4. **Review и hosting.** Четыре reviewers, budgets, Git SHA binding, PR/MR и CI gates, human decision.
-5. **Параллелизм и remote races.** Три задачи, ответы после освобождения слота, target update, последовательно выполняемые merges.
-6. **Приёмка на macOS.** Реальные Claude/Codex и GitHub/GitLab в тестовых репозиториях; затем проверка всех AC из PRD.
-
-Минимальные meaningful automated checks будущей реализации: таблица допустимых переходов; невозможность четвёртого lease; late/duplicate approval; stale review SHA; timeout после remote side effect; recovery без auto-resume; dirty checkout; invalid result; третий repair запрещён; base movement инвалидирует approvals. Это не тесты UI ради повторения разметки.
-
-End-to-end smoke должен включать отказ разрешения, закрытие вкладки, SIGTERM backend, сохранение частичных правок и восстановление после неоднозначного PR/MR create. Отдельно тестируется изменение target другим участником прямо во время merge gate.
+Небольшие тесты самого приложения проверяют переходы, принадлежность вопросов, лимит задач, stale results, repair budget и ошибки CLI. Это не backend test runner для пользовательских проектов. Полная модель гонок, merge исследования и crash suite не предшествуют первому прототипу.
 
 ## 14. Непроверенные предположения и минимальные проверки
 
-Ни одна строка ниже не выполнена в рамках подготовки документов. Их результаты определяют готовность интеграции; согласованные возможности не считаются реализованными заранее.
+ID сохранены для связи с ранними заметками; прежняя обязательность пересмотрена. Короткий smoke из §7 не означает завершение всей S-01/S-12.
 
-| ID   | Предположение / риск                                                           | Минимальная проверка                                                                                                                                     | Критерий успеха и действие при провале                                                                                                          |
-| ---- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| S-01 | Pinned Codex app-server обеспечивает нужный approval roundtrip со штатной auth | Запустить тестовую задачу, получить command и file approval, ответить allow/deny, прервать turn, возобновить thread                                      | Все ответы адресованы правильному запросу; auth остаётся штатной. Иначе блокер Codex adapter, не переход к TUI scraping                         |
-| S-02 | Claude permission tool имеет достаточный MCP contract                          | Минимальный MCP host записывает request envelope, возвращает реальные allow/deny; проверить два параллельных запроса, долгий ответ, cancellation и hooks | Зафиксированы schema/correlation/timeouts на конкретной версии. SDK schema не подставляется без подтверждения; несовместимость — блокер функции |
-| S-03 | Продуктовые и нативные вопросы можно корректно вернуть из UI                   | READY/NEEDS_INPUT checkpoint и native question: варианты, free text, повторный ответ, stale reply                                                        | Исходные вопросы/ответы сохранены; продолжение верной задачи, без auto-select                                                                   |
-| S-04 | Можно остановить принадлежащее задаче дерево процессов на macOS                | Агент запускает длительный test и dev server; interrupt/cancel, закрытие вкладки, crash backend и restart                                                | После остановки нет неучтённых продолжающих писать процессов; данные сохранены; PID reuse не приводит к чужому kill                             |
-| S-05 | Resume и fallback не дублируют изменения                                       | Kill после partial edit и после commit; resume живой истории, затем с недоступной session                                                                | Нет отката/повторного применения, checkpoint связан с фактическим Git state                                                                     |
-| S-06 | Worktree/sandbox/permissions обеспечивают нужную область доступа               | Попытка изменить task source, основной checkout и application state; test cache writes; dirty source during review                                       | Разрешённая работа выполняется; запрет реально enforce-ится либо capability считается неподдержанной, не маскируется prompt                     |
-| S-07 | GitHub/GitLab позволяют выдержать source/base gates                            | На каждом тестовом remote: source change, target change между read и merge, CI pending/fail, protected branch, queue и timeout после merge               | Установлен механизм строгой проверки и его ограничения. Пока base race не закрыт доказуемо, auto-merge для такой конфигурации не включается     |
-| S-08 | Повтор create/push/merge идемпотентен на уровне приложения                     | Потерять ответ после успешного remote действия, перезапустить backend и нажать Continue                                                                  | Находится исходный PR/MR/merge; дубль не создаётся                                                                                              |
-| S-09 | Одновременно ожидающие approvals не ломают лимит три                           | Три задачи, до четырёх reviewer, запросы в разных runs; освободить слот, запустить следующую и ответить предыдущим                                       | Число исполняемых task leases не превышает три, late responses не оживляют старую попытку                                                       |
-| S-10 | Local persistence выдерживает crash и ошибки диска                             | Прервать запись result/SQLite transaction, заполнить тестовый volume, восстановить backup                                                                | Нет тихой потери подтверждённых решений; неполный результат не принимается; явная ошибка                                                        |
-| S-11 | Установка стека работает на целевых Mac                                        | Чистое окружение Apple Silicon; при заявленной Intel-поддержке повторить на Intel; проверить native SQLite driver и CLI                                  | Фиксируется реальная support matrix/min macOS/CLI versions; «все macOS» не заявляется без проверки                                              |
-| S-12 | CLI/model defaults работают с аккаунтом пользователя                           | Read-only capability/auth check, короткий title generation с tools disabled                                                                              | Не требуется API fallback, известна фактическая модель; ошибка не уничтожает задачу                                                             |
-
-Особенно важно S-07: локальная сериализация сама по себе не доказывает атомарность remote merge. Этот риск нельзя скрыть за общей фразой «перед merge проверим SHA».
+| ID | Проверка | Когда и критерий |
+| --- | --- | --- |
+| S-01 | Codex prompt → JSONL → structured result; file edit и NEEDS_INPUT | Базовый smoke выполнен; остальные сценарии при создании адаптера |
+| S-02 | Claude CLI | Исключено из текущего scope |
+| S-03 | Вопрос → ответ → новая попытка правильной роли; duplicate submit | В первом прототипе, без отдельного исследования |
+| S-04 | Interrupt/Cancel и остановка дерева процессов | После прототипа; статус stopped соответствует фактической остановке |
+| S-05 | Resume/fallback после partial edit и commit | После прототипа; сохранённые правки не теряются |
+| S-06 | Правильный cwd, сохранность checkout, reviews актуального source | В вертикальном сценарии; full access не объявляется sandbox |
+| S-07 | Строгий merge по source/base, CI gates, queues | Исключено: приложение не выполняет merge |
+| S-08 | Восстановление после неизвестного push/create | После прототипа; до этого unknown блокирует слепой retry, требуется ручная сверка |
+| S-09 | Не более трёх активных задач, ответ ждёт слота | При добавлении scheduler; reviewer сначала последовательны |
+| S-10 | Crash/disk-full, orphan artifacts, backup restore | После прототипа; обычное сохранение карточек реализуется сразу |
+| S-11 | Установка на целевом Mac | Прототип на текущем Mac; расширенная support matrix после него |
+| S-12 | Выбранная модель и title mode без изменения проекта | Auth и один structured call подтверждены; полный title contract ещё проверить |
 
 ## 15. Связь с критериями PRD
 
-| Область дизайна                     | Acceptance criteria             |
-| ----------------------------------- | ------------------------------- |
-| UI/project/title/config             | AC-01–AC-04, AC-07, AC-22–AC-23 |
-| Worktree и role contracts           | AC-05–AC-09                     |
-| Human requests, adapters, scheduler | AC-10–AC-12, AC-16              |
-| Hosting и merge                     | AC-13–AC-18                     |
-| Persistence/recovery/cancel         | AC-19–AC-21                     |
+| Область | Acceptance criteria |
+| --- | --- |
+| UI/project/title/model | AC-01–AC-04, AC-07, AC-22–AC-23 |
+| Worktree и role contracts | AC-05–AC-09, AC-17 |
+| Вопросы, Codex, scheduler | AC-10–AC-12, AC-16 |
+| PR/MR без merge и CI gates | AC-13–AC-15, AC-18 |
+| Сохранение без auto-restart | AC-19 |
+| После прототипа: interruption/cancel/resume | AC-20–AC-21 |
 
-Технические defaults допускают уточнение по результатам spikes без расширения состава продукта. Изменение согласованных пользовательских возможностей требует отдельного решения; неуспешный prototype не даёт права незаметно убрать approvals, один из CLI или один из hosting providers.
+Изменения scope от 12 октября: только Codex, без merge из приложения, без независимого backend runner для проектных checks, recovery после первого прототипа. Четыре review-роли и approver сохранены; Claude adapter и multi-provider SDK заранее не строятся.
