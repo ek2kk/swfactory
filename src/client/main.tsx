@@ -75,6 +75,12 @@ function TaskCard({ task, project, runs, questions, refresh }: { task: Task; pro
       }}>{busy ? 'Ставим в очередь…' : 'Доработать: новый цикл (до двух доработок)'}</button>
     </>}
     {!editing && questions.map(request => request.result.outcome === 'ESCALATE' ? <HumanDecision key={request.id} task={task} request={request} refresh={refresh} /> : <HumanQuestions key={request.id} task={task} request={request} refresh={refresh} />)}
+    {task.run_state === 'interrupted' && runs.at(-1)?.status === 'failed' && runs.at(-1)?.diagnostic?.execution_finished && !task.publication_status && <button disabled={busy} onClick={async () => {
+      setBusy(true); setError('');
+      try { await api(`${taskPath(task)}/retry`, 'POST', { state_version: task.state_version }); await refresh(); }
+      catch (error) { setError((error as Error).message); } finally { setBusy(false); }
+    }}>Повторить завершённый запуск</button>}
+    {task.run_state === 'interrupted' && (runs.at(-1)?.status === 'interrupted' || !runs.at(-1)?.diagnostic?.execution_finished) && <p>Перед продолжением нужна ручная проверка процесса и worktree. Автоматический повтор недоступен.</p>}
     {runs.map(run => <RunReport key={run.id} task={task} run={run} />)}
     <details onToggle={event => setShowHistory(event.currentTarget.open)}><summary>История описания</summary>
       {showHistory && <History task={task} revisions={revisions} setRevisions={setRevisions} />}
@@ -151,6 +157,8 @@ function History({ task, revisions, setRevisions }: { task: Task; revisions: Rev
 
 function RunReport({ task, run }: { task: Task; run: AgentRun }) {
   const [report, setReport] = useState('');
+  const [log, setLog] = useState<{ text: string; next_offset: number; more: boolean }>({ text: '', next_offset: 0, more: true });
+  const [logName, setLogName] = useState('events.jsonl');
   const [error, setError] = useState('');
   const [open, setOpen] = useState(false);
   useEffect(() => {
@@ -165,6 +173,13 @@ function RunReport({ task, run }: { task: Task; run: AgentRun }) {
     <summary>{run.role} · редакция {run.description_revision}{run.stale || run.description_revision !== task.revision ? ' · Неактуальна' : ''} · {run.outcome ?? run.status} · {run.config.models[run.role]}</summary>
     <p className="meta">Доработки: {run.repair_attempt}/2 · {run.round_id && `Раунд: ${run.round_id}`} {run.spec_run_id && `Spec: ${run.spec_run_id}`}<br />{run.base_sha && `Base: ${run.base_sha}`}<br />{run.head_sha && `Head: ${run.head_sha}`}<br />Branch: {run.branch}<br />{run.worktree}</p>
     <p className="meta">Модели запуска: {roles.map(role => `${role}: ${run.config.models[role]}`).join(' · ')}</p>
+    <p className="meta">CLI: {run.diagnostic?.cli_version ?? 'неизвестна'} · Session: {run.diagnostic?.session_id ?? 'не предоставлен'}<br />
+      Начало: {run.started_at ?? '—'} · Конец: {run.finished_at ?? '—'} · Duration: {run.started_at && run.finished_at ? `${Date.parse(run.finished_at) - Date.parse(run.started_at)} ms` : '—'}</p>
+    {run.diagnostic?.usage && <p>Usage этого запуска: {JSON.stringify(run.diagnostic.usage)}. Это не остаток подписки.</p>}
+    {run.diagnostic?.error_kind && <p>Причина: {run.diagnostic.error_kind}</p>}
+    <label>Локальный лог <select value={logName} onChange={e => { setLogName(e.target.value); setLog({ text: '', next_offset: 0, more: true }); }}><option>events.jsonl</option><option>stderr.log</option></select></label>
+    <button onClick={async () => { try { setLog(await api(`${taskPath(task)}/runs/${run.id}/log?name=${logName}&offset=${log.next_offset}`)); setError(''); } catch (error) { setError((error as Error).message); } }}>Следующие 64 KiB лога</button>
+    {log.text && <pre>{log.text}</pre>}{!log.more && <p>Конец доступного лога.</p>}
     {run.error && <pre role="alert" className="error">{run.error}</pre>}
     {error && <p role="alert">{error}</p>}
     {!!run.report && <pre>{report || 'Загружаем сохранённый отчёт…'}</pre>}
@@ -231,6 +246,9 @@ function App() {
     {error && <p role="alert" className="error">{error}</p>}
     {snapshot.title_error && <p role="alert" className="error">{snapshot.title_error}</p>}
     {snapshot.execution_error && <p role="alert" className="error">{snapshot.execution_error}</p>}
+    {!!snapshot.execution_pause?.paused && <section aria-label="Лимит Codex"><p role="status">Новые запуски приостановлены: {snapshot.execution_pause.reset_at ? `до ${snapshot.execution_pause.reset_at}` : 'reset time неизвестен; после восстановления лимитов продолжите вручную'}. Уже работающие задачи завершаются.</p>
+      {!snapshot.execution_pause.reset_at && <button disabled={!!busy} onClick={async () => { setBusy('resume'); try { await api('/execution/resume', 'POST', { state_version: snapshot.execution_pause!.state_version }); await refresh(); } catch (error) { setError((error as Error).message); } finally { setBusy(''); } }}>Лимит восстановлен — продолжить очередь</button>}
+    </section>}
     <div className="setup">
       <section aria-labelledby="connect-title"><h2 id="connect-title">Подключить проект</h2>
         <form onSubmit={async event => {

@@ -1,7 +1,9 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ApproveResult, SpecResult, BuildResult, ReviewResult, ReviewRole } from '../shared.js';
+import { CodexFailure, classifyFailure, redact, redactStructured } from './diagnostics.js';
+import type { RunDiagnostic } from '../shared.js';
 import { parseTitle } from './title.js';
 import { Problem } from './store.js';
 import { saveArtifact } from './artifacts.js';
@@ -38,7 +40,7 @@ export function validateSpec(value: unknown): SpecResult {
   catch { throw new Problem(422, 'Codex вернул невалидный заголовок Spec. Переход заблокирован.'); }
   return { ...result, title: result.title.trim() };
 }
-export type CodexInput = { cwd: string; directory: string; model: string; prompt: string };
+export type CodexInput = { cwd: string; directory: string; model: string; prompt: string; metadata?: (value: RunDiagnostic) => void };
 export type ExecuteSpec = (input: CodexInput) => Promise<SpecResult>;
 
 export function executeSpec(input: CodexInput, executable = 'codex') {
@@ -49,16 +51,23 @@ export function executeBuild(input: CodexInput, executable = 'codex') {
   return executeResult(input, buildSchema, validateBuild, executable);
 }
 async function executeResult<T>(input: CodexInput, schema: object, validate: (value: unknown) => T, executable: string): Promise<T> {
+  const version = await new Promise<string | undefined>(resolve => {
+    const child = execFile(executable, ['--version'], { cwd: input.cwd, timeout: 2000, maxBuffer: 4096 }, (error, output) => resolve(!error && /^codex[- ]cli [\w.+-]+\s*$/.test(output) ? output.trim() : undefined));
+    child.stdin?.end();
+  });
+  input.metadata?.({ cli_version: version });
   saveArtifact(input.directory, 'schema.json', JSON.stringify(schema));
   const stdout = openSync(join(input.directory, 'events.jsonl'), 'wx', 0o600);
   let stderr: number;
   try { stderr = openSync(join(input.directory, 'stderr.log'), 'wx', 0o600); }
   catch (error) { closeSync(stdout); throw error; }
   try {
+    saveArtifact(input.directory, 'log-format.json', JSON.stringify({ format: 'redacted-v1' }));
     return await new Promise<T>((resolve, reject) => {
       const child = spawn(executable, ['exec', '--json', '--dangerously-bypass-approvals-and-sandbox',
         '--model', input.model, '--output-schema', join(input.directory, 'schema.json'), '--color', 'never', '-'],
       { cwd: input.cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+      let stderrBuffer = '', stderrTail = '';
       let buffer = '', message = '', started = false, completed = false, thread = false, failed: Error | undefined;
       // shortcut: logs are capped at 32 MiB per run; add rotation for larger workloads.
       let bytes = 0;
@@ -69,35 +78,41 @@ async function executeResult<T>(input: CodexInput, schema: object, validate: (va
         try {
           bytes += Buffer.byteLength(chunk);
           if (bytes > 32 * 1024 * 1024) throw new Problem(422, 'Поток Codex превысил 32 MiB. Нужна ручная проверка.');
-          writeSync(stdout, chunk);
           buffer += chunk;
           let newline: number;
           while ((newline = buffer.indexOf('\n')) >= 0) {
             const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
             if (!line.trim()) continue;
-            const event = JSON.parse(line);
+            let event;
+            try { event = JSON.parse(line); }
+            catch { writeSync(stdout, '[Invalid JSONL event omitted]\n'); throw new Error('Invalid JSONL'); }
+            writeSync(stdout, JSON.stringify(redactStructured(event)) + '\n');
             if (typeof event?.type !== 'string' || completed) throw new Error('Invalid stream');
-            if (event.type === 'thread.started') thread = true;
+            if (event.type === 'thread.started') { thread = true; if (typeof event.thread_id === 'string' && event.thread_id.length <= 256) input.metadata?.({ session_id: redact(event.thread_id) }); }
             if (event.type === 'turn.started') { if (started || !thread) throw new Error('Invalid turn'); started = true; }
-            if (event.type === 'error' || event.type === 'turn.failed') throw new Problem(422, `Codex не выполнил запрос модели ${input.model}. Проверьте доступ к модели, авторизацию и локальный stderr.log; замены модели нет.`);
+            if (event.type === 'error' || event.type === 'turn.failed') throw classifyFailure(event);
             if (event.type === 'item.completed' && event.item?.type === 'agent_message') message = event.item.text;
-            if (event.type === 'turn.completed') { if (!started || !message) throw new Error('Incomplete turn'); completed = true; }
+            if (event.type === 'turn.completed') { if (!started) throw new Error('Incomplete turn'); if (!message) throw new CodexFailure('missing_artifact'); completed = true;
+              if (event.usage) { const usage = Object.fromEntries(['input_tokens', 'output_tokens', 'cached_input_tokens'].filter(k => Number.isSafeInteger(event.usage[k]) && event.usage[k] >= 0).map(k => [k, event.usage[k]])); input.metadata?.({ usage }); } }
           }
           if (buffer.length > 2 * 1024 * 1024) throw new Error('Oversized event');
-        } catch (error) { fail(error instanceof Problem ? error : new Problem(422, 'Невалидный JSONL stream Codex. Переход заблокирован.')); }
+        } catch (error) { fail(error instanceof Problem ? error : new CodexFailure('protocol_error')); }
       });
       child.stderr.on('data', (chunk: Buffer) => {
         if (failed) return;
-        try { bytes += chunk.length; if (bytes > 32 * 1024 * 1024) throw new Error(); writeSync(stderr, chunk); }
+        try { bytes += chunk.length; if (bytes > 32 * 1024 * 1024) throw new Error(); stderrBuffer += chunk.toString('utf8'); stderrTail = (stderrTail + chunk.toString('utf8')).slice(-65536);
+          let newline: number; while ((newline = stderrBuffer.indexOf('\n')) >= 0) { writeSync(stderr, redact(stderrBuffer.slice(0, newline)) + '\n'); stderrBuffer = stderrBuffer.slice(newline + 1); } }
         catch { fail(new Problem(422, 'Не удалось сохранить лог Codex или превышен лимит 32 MiB.')); }
       });
       child.on('error', () => { failed = new Problem(422, 'Не удалось запустить Codex. Проверьте CLI и checkout.'); });
       child.stdin.on('error', () => { failed ??= new Problem(422, 'Codex не принял prompt. Проверьте CLI и локальные логи.'); });
       child.on('close', code => {
+        try { if (stderrBuffer) writeSync(stderr, redact(stderrBuffer)); if (buffer) writeSync(stdout, '[Incomplete JSONL event omitted]\n'); } catch { failed = new Problem(422, 'Не удалось сохранить локальный лог.'); }
+        if (failed instanceof CodexFailure) failed.finished = true;
         if (failed) return reject(failed);
-        if (code !== 0 || !completed || buffer.trim()) return reject(new Problem(422, `Codex завершился с ошибкой или неполным stream (модель ${input.model}). Проверьте CLI, доступ к модели и локальные логи. Переход заблокирован.`));
+        if (code !== 0 || !completed || buffer.trim()) { const error = code !== 0 ? classifyFailure(stderrTail) : new CodexFailure(message ? 'protocol_error' : 'missing_artifact'); error.finished = true; return reject(error); }
         try { resolve(validate(JSON.parse(message))); }
-        catch { reject(new Problem(422, 'Codex вернул невалидный результат. Переход заблокирован.')); }
+        catch { const error = new CodexFailure('protocol_error'); error.finished = true; reject(error); }
       });
       child.stdin.end(input.prompt);
     });

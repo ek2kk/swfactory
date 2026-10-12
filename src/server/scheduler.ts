@@ -3,6 +3,12 @@ type Job = { taskId: string; work: () => Promise<void>; resolve: () => void; rej
 export class Scheduler {
   private active = new Set<string>();
   private pending: Job[] = [];
+  private closed = false;
+  private timer?: ReturnType<typeof setTimeout>;
+  constructor(private available = () => true) {}
+  wake() { clearTimeout(this.timer); this.timer = undefined; this.drain(); }
+  close() { this.closed = true; clearTimeout(this.timer); for (const job of this.pending.splice(0)) job.resolve(); }
+
 
   enqueue(taskId: string, work: () => Promise<void>): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -12,6 +18,11 @@ export class Scheduler {
   }
 
   private drain() {
+    if (this.closed) return;
+    if (!this.available()) {
+      if (this.pending.length && !this.timer) this.timer = setTimeout(() => { this.timer = undefined; this.drain(); }, 250);
+      return;
+    }
     while (this.active.size < 3 && this.pending.length && !this.active.has(this.pending[0].taskId)) {
       const job = this.pending.shift()!;
       this.active.add(job.taskId);

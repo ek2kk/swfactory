@@ -8,7 +8,7 @@ import { inspectProject } from './git.js';
 import { roles, type ProjectInput, type Settings, type AgentRun } from '../shared.js';
 import { realpathSync } from 'node:fs';
 import { SpecController } from './spec.js';
-import { readReport } from './artifacts.js';
+import { readLog, readReport } from './artifacts.js';
 import type { Run } from './git.js';
 import type { ExecuteApprove, ExecuteSpec, ExecuteBuild, ExecuteReview } from './codex.js';
 
@@ -252,6 +252,32 @@ export async function createApp(options: {
     const run = store.specRun(projectId, taskId, runId);
     if (!run.report) throw new Problem(404, 'Сохранённый отчёт пока отсутствует.');
     return { text: readReport(directory, runId) };
+  });
+  app.get<{ Params: { projectId: string; taskId: string; runId: string }; Querystring: { name: 'events.jsonl' | 'stderr.log'; offset: string } }>('/api/projects/:projectId/tasks/:taskId/runs/:runId/log', {
+    schema: { params: object({ projectId: uuid, taskId: uuid, runId: uuid }), querystring: object({ name: { enum: ['events.jsonl', 'stderr.log'] }, offset: { type: 'string', pattern: '^(0|[1-9][0-9]{0,8})$' } }) },
+  }, async request => {
+    const { projectId, taskId, runId } = request.params;
+    store.specRun(projectId, taskId, runId);
+    return readLog(directory, runId, request.query.name, Number(request.query.offset));
+  });
+  app.post<{ Body: { request_id: string; state_version: number } }>('/api/execution/resume', {
+    schema: { body: object({ request_id: uuid, state_version: version }) },
+  }, async request => {
+    const { request_id, state_version } = request.body;
+    const result = store.mutate(request_id, JSON.stringify(['execution.resume', state_version]), () => store.resumeExecution(state_version));
+    controller.resume(); publish(); return result;
+  });
+  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/retry', {
+    schema: { params: taskParams, body: object({ request_id: uuid, state_version: version }) },
+  }, async request => {
+    const { projectId, taskId } = request.params;
+    const { request_id, state_version } = request.body;
+    const fingerprint = JSON.stringify(['run.retry', projectId, taskId, state_version]);
+    const prior = store.replay(request_id, fingerprint);
+    if (prior !== undefined) return prior;
+    if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
+    const result = store.mutate(request_id, fingerprint, () => store.retryRun(projectId, taskId, state_version)) as AgentRun;
+    controller.enqueue(result); publish(); return result;
   });
   app.get('/api/events', async (request, reply) => {
     await controller.refreshReviewState();

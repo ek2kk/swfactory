@@ -13,7 +13,7 @@ export type Task = {
 };
 export type Revision = { task_id: string; revision: number; description: string; created_at: string };
 export type SavedEvent = { id: number; type: string; task_id: string | null; payload: string; created_at: string };
-export type Snapshot = { projects: Project[]; tasks: Task[]; runs: AgentRun[]; human_requests: HumanRequest[]; execution_error?: string | null; title_error?: string | null; cursor: number };
+export type Snapshot = { execution_pause?: ExecutionPause; projects: Project[]; tasks: Task[]; runs: AgentRun[]; human_requests: HumanRequest[]; execution_error?: string | null; title_error?: string | null; cursor: number };
 
 export const roles = ['spec', 'build', 'review-code', 'review-security', 'review-ui', 'review-ux', 'approve'] as const;
 export type Models = Record<typeof roles[number], string>;
@@ -35,7 +35,11 @@ export type ReviewResult = {
 export type ApproveResult = {
   outcome: 'APPROVE' | 'ESCALATE' | 'NEEDS_INPUT'; summary: string; risks: string[]; affected_paths: string[]; questions: Question[];
 };
+export type FailureKind = 'authentication' | 'model_unavailable' | 'rate_limit' | 'protocol_error' | 'missing_artifact';
+export type RunDiagnostic = { error_kind?: FailureKind; execution_finished?: boolean; reset_at?: string | null; cli_version?: string; session_id?: string; usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number } };
+export type ExecutionPause = { paused: number; reset_at: string | null; state_version: number };
 export type AgentRun = {
+  diagnostic?: RunDiagnostic; started_at?: string | null; finished_at?: string | null;
   repair_round_id: string | null; repair_attempt: number;
   spec_run_id: string | null; round_id: string | null; stale: number;
   role: 'spec' | 'build' | ReviewRole | 'approve'; head_sha: string | null; source_hash: string | null;
