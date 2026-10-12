@@ -30,7 +30,7 @@ function TaskCard({ task, project, runs, questions, refresh }: { task: Task; pro
   const [revisions, setRevisions] = useState<Revision[] | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   return <article className="card">
-    <span className="project-name">{project.repository}</span>
+    <span className="project-name">{project.host}/{project.repository} · {project.checkout}</span>
     <h3>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3>
     <p className="meta">Редакция {task.revision} · {{ idle: task.stage === 'build' ? 'Spec готова · можно запустить Build' : task.stage === 'review' ? 'Build готов · Review ещё не реализован' : 'Не запущена', queued: 'В очереди · ожидает слот', running: task.stage === 'spec' ? 'Codex готовит Spec' : task.stage === 'build' ? 'Codex реализует задачу' : 'Проверяем checkout и создаём worktree', waiting: 'Нужен ответ человека', interrupted: 'Прервана — нужна ручная проверка', completed: 'Завершена' }[task.run_state]}</p>
     {!task.title && <p role="status" className="meta">{task.title_state === 'pending' ? 'Заголовок ожидает свободного слота…'
@@ -136,7 +136,7 @@ function ModelSettings({ project, refresh }: { project: Project; refresh: () => 
     setVersion(project.state_version);
   }
   useEffect(() => { reload().catch(error => setError(error.message)); }, [project.id]);
-  return <details><summary>Модели и инструкции · {project.repository}</summary>
+  return <details><summary>Модели и инструкции · {project.host}/{project.repository} · {project.checkout}</summary>
     {config && <form onSubmit={async event => {
       event.preventDefault(); setBusy(true); setError('');
       try { await api(`/projects/${project.id}/settings`, 'PUT', { ...config, state_version: version }); setVersion(version + 1); await refresh(); }
@@ -179,6 +179,7 @@ function App() {
     })().catch(error => { if (!disposed) { setError(error.message); setConnection('Подключение не выполнено'); } });
     return () => { disposed = true; events?.close(); };
   }, []);
+  const visibleTasks = snapshot.tasks.filter(task => !filter || task.project_id === filter);
   const selected = snapshot.projects.find(p => p.id === projectId) ?? snapshot.projects[0];
   return <main>
     <header><div><p className="eyebrow">LOCAL WORKSPACE</p><h1>SW Factory</h1></div><p className="connection" role="status">{connection}</p></header>
@@ -212,19 +213,19 @@ function App() {
         }}>
           <label>Проект<select value={selected?.id ?? ''} onChange={event => setProjectId(event.target.value)} disabled={!snapshot.projects.length}>
             {!snapshot.projects.length && <option value="">Сначала подключите проект</option>}
-            {snapshot.projects.map(p => <option key={p.id} value={p.id}>{p.repository} · {p.target_branch}</option>)}
+            {snapshot.projects.map(p => <option key={p.id} value={p.id}>{p.host}/{p.repository} · {p.checkout} · {p.target_branch}</option>)}
           </select></label>
           <label>Описание<textarea required maxLength={100000} value={description} onChange={event => setDescription(event.target.value)} placeholder="Что нужно сделать?" /></label>
           <button disabled={!ready || !selected || !description.trim() || !!busy}>{busy === 'task' ? 'Сохраняем…' : 'Добавить в Backlog'}</button>
         </form>
       </section>
     </div>
-    {!!snapshot.projects.length && <details className="projects"><summary>Подключённые проекты ({snapshot.projects.length})</summary>{snapshot.projects.map(p => <div key={p.id}><strong>{p.repository}</strong><p>{p.checkout}</p><p>{p.hosting} · {p.remote} → {p.remote_url} · target: {p.target_branch}</p></div>)}</details>}
+    {!!snapshot.projects.length && <details className="projects"><summary>Подключённые проекты ({snapshot.projects.length})</summary>{snapshot.projects.map(p => <div key={p.id}><strong>{p.host}/{p.repository}</strong><p>{p.checkout}</p><p>{p.hosting} · {p.remote} → {p.remote_url} · target: {p.target_branch}</p></div>)}</details>}
     <section className="projects" aria-label="Настройки моделей">{snapshot.projects.map(project => <ModelSettings key={project.id} project={project} refresh={refresh} />)}</section>
-    <div className="board-heading"><h2>Доска <span>{snapshot.tasks.length}</span></h2><label>Проект <select value={filter} onChange={event => setFilter(event.target.value)}><option value="">Все проекты</option>{snapshot.projects.map(p => <option key={p.id} value={p.id}>{p.repository}</option>)}</select></label></div>
+    <div className="board-heading"><h2>Доска <span>{visibleTasks.length}</span></h2><label>Проект <select value={filter} onChange={event => setFilter(event.target.value)}><option value="">Все проекты</option>{snapshot.projects.map(p => <option key={p.id} value={p.id}>{p.host}/{p.repository} · {p.checkout}</option>)}</select></label></div>
     <div className="board" tabIndex={0} role="region" aria-label="Kanban, горизонтальная прокрутка">
       {stages.map((stage, index) => {
-        const tasks = snapshot.tasks.filter(t => t.stage === stage && (!filter || t.project_id === filter));
+        const tasks = visibleTasks.filter(t => t.stage === stage);
         return <section key={stage} className={`column ${stage === 'needs-human' ? 'human' : ''}`} aria-label={labels[index]}><h2>{labels[index]} <span>{tasks.length}</span></h2>
           {tasks.length ? tasks.map(task => <TaskCard key={task.id} task={task} questions={snapshot.human_requests.filter(request => request.task_id === task.id)} runs={snapshot.runs.filter(run => run.task_id === task.id)} project={snapshot.projects.find(p => p.id === task.project_id)!} refresh={refresh} />) : <p className="empty">{stage === 'backlog' ? 'Добавьте первую задачу' : 'Пока нет задач'}</p>}
         </section>;
