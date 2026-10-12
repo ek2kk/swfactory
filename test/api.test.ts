@@ -4,14 +4,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { setImmediate } from 'node:timers/promises';
 import { get } from 'node:http';
 import { createApp } from '../src/server/app.js';
 import type { Project, Task } from '../src/shared.js';
 
 const origin = 'http://127.0.0.1:4317';
-async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
+async function fixture(t: { after: (fn: () => Promise<void>) => void }, generate?: (description: string, signal: AbortSignal) => Promise<string>) {
   const directory = mkdtempSync(join(tmpdir(), 'factory-api-'));
-  const result = await createApp({ directory, origin, inspect: async input => ({ ...input, common_dir: `${input.checkout}/.git`, remote_url: 'git@github.com:owner/repo.git', host: 'github.com', repository: 'owner/repo' }) });
+  const result = await createApp({ directory, origin, generateTitle: generate ?? (async (_description, signal) => new Promise((_resolve, reject) => { signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }); })), inspect: async input => ({ ...input, common_dir: `${input.checkout}/.git`, remote_url: 'git@github.com:owner/repo.git', host: 'github.com', repository: 'owner/repo' }) });
   t.after(async () => { await result.app.close(); rmSync(directory, { recursive: true, force: true }); });
   const session = await result.app.inject({ method: 'POST', url: '/api/session', headers: { host: '127.0.0.1:4317', origin }, payload: { token: result.token } });
   assert.equal(session.statusCode, 200);
@@ -44,7 +45,7 @@ test('description, immutable revisions, replay, ownership, stale state and allow
   assert.deepEqual(revisions.map((r: { description: string }) => r.description), [payload.description, edit.description]);
   store.db.prepare("UPDATE tasks SET stage = 'spec' WHERE id = ?").run(task.id);
   assert.equal((await app.inject({ method: 'PATCH', url: `${url}/${task.id}`, headers, payload: { ...edit, request_id: randomUUID(), state_version: 2 } })).statusCode, 409);
-  assert.equal(store.events(0).length, 3);
+  assert.equal(store.events(0).filter(e => !e.type.startsWith('title.')).length, 3);
 });
 
 test('validation, CSRF, Host, authentication, duplicate project and absent filesystem endpoints', async t => {
@@ -96,4 +97,22 @@ test('SSE reconnect replays missed events, snapshots and live changes', async t 
   assert.match(text, /task.edited/);
   assert.match(text, /live edit/);
   assert.equal(store.snapshot().tasks.length, 1);
+});
+
+
+test('saved card receives an asynchronous title and request replay does not generate twice', async t => {
+  let calls = 0;
+  const { app, store, project, headers } = await fixture(t, async description => { calls++; assert.equal(description, 'Export CSV'); return 'CSV export'; });
+  const url = `/api/projects/${project.id}/tasks`;
+  const payload = { request_id: randomUUID(), state_version: 1, description: 'Export CSV' };
+  const response = await app.inject({ method: 'POST', url, headers, payload });
+  const task = response.json<Task>();
+  assert.equal(task.title, null);
+  await setImmediate(); await setImmediate();
+  assert.equal(store.task(project.id, task.id).title, 'CSV export');
+  assert.equal(store.events(0).at(-1)?.type, 'title.completed');
+  assert.deepEqual((await app.inject({ method: 'POST', url, headers, payload })).json(), task);
+  await setImmediate();
+  assert.equal(calls, 1);
+  assert.equal((await app.inject({ url: '/api/snapshot', headers })).json().tasks[0].title, 'CSV export');
 });

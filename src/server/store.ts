@@ -31,7 +31,7 @@ export class Store {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       const version = this.db.pragma('user_version', { simple: true });
-      if (version !== 0 && version !== 1) throw new Error('Версия базы новее приложения. Обновите приложение.');
+      if (version !== 0 && version !== 1 && version !== 2) throw new Error('Версия базы новее приложения. Обновите приложение.');
       this.db.transaction(() => {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS projects (
@@ -56,8 +56,12 @@ export class Store {
             payload TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
           );
           CREATE TABLE IF NOT EXISTS requests (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, response TEXT NOT NULL);
-          PRAGMA user_version = 1;
         `);
+        if (version !== 2) this.db.exec("ALTER TABLE tasks ADD COLUMN title_state TEXT NOT NULL DEFAULT 'interrupted'; PRAGMA user_version = 2;");
+        for (const task of this.db.prepare("SELECT * FROM tasks WHERE title_state IN ('pending','running')").all() as Task[]) {
+          this.db.prepare("UPDATE tasks SET title_state = 'interrupted' WHERE id = ?").run(task.id);
+          this.event('title.interrupted', task.id, { revision: task.revision });
+        }
         for (const task of this.db.prepare("SELECT * FROM tasks WHERE run_state IN ('running','queued','waiting')").all() as Task[]) {
           this.db.prepare("UPDATE tasks SET run_state = 'interrupted', state_version = state_version + 1 WHERE id = ?").run(task.id);
           this.event('task.interrupted', task.id, { reason: 'Backend перезапущен. Нужна ручная проверка; работа не возобновлена.' });
@@ -122,7 +126,7 @@ export class Store {
   createTask(projectId: string, description: string, version: number) {
     if (this.project(projectId).state_version !== version) throw new Problem(409, 'Настройки проекта изменились. Обновите страницу.');
     const id = randomUUID();
-    this.db.prepare('INSERT INTO tasks(id, project_id, description) VALUES (?, ?, ?)').run(id, projectId, description);
+    this.db.prepare("INSERT INTO tasks(id, project_id, description, title_state) VALUES (?, ?, ?, 'pending')").run(id, projectId, description);
     this.db.prepare('INSERT INTO task_revisions(task_id, revision, description) VALUES (?, 1, ?)').run(id, description);
     this.event('task.created', id, { project_id: projectId, revision: 1 });
     return this.task(projectId, id);
@@ -131,10 +135,32 @@ export class Store {
     const task = this.task(projectId, id);
     if (task.state_version !== version) throw new Problem(409, 'Карточка изменилась. Загрузите актуальную редакцию перед сохранением.');
     if (task.stage !== 'backlog' || task.run_state !== 'idle') throw new Problem(409, 'Описание можно менять только до запуска задачи.');
-    this.db.prepare('UPDATE tasks SET description = ?, revision = revision + 1, state_version = state_version + 1 WHERE id = ?').run(description, id);
+    this.db.prepare("UPDATE tasks SET description = ?, title = NULL, title_state = 'pending', revision = revision + 1, state_version = state_version + 1 WHERE id = ?").run(description, id);
     this.db.prepare('INSERT INTO task_revisions(task_id, revision, description) VALUES (?, ?, ?)').run(id, task.revision + 1, description);
     this.event('task.edited', id, { revision: task.revision + 1 });
     return this.task(projectId, id);
+  }
+  claimTitle(activeIds: string[] = []): Task | undefined {
+    return this.db.transaction(() => {
+      const tasks = this.snapshot().tasks;
+      const occupied = new Set([...activeIds, ...tasks.filter(task => task.title_state === 'running'
+        || ['running', 'queued', 'waiting'].includes(task.run_state)).map(task => task.id)]);
+      if (occupied.size >= 3) return;
+      const task = tasks.find(task => task.title_state === 'pending' && task.stage === 'backlog'
+        && task.run_state === 'idle' && !occupied.has(task.id));
+      if (!task) return;
+      this.db.prepare("UPDATE tasks SET title_state = 'running' WHERE id = ?").run(task.id);
+      this.event('title.started', task.id, { revision: task.revision });
+      return task;
+    })();
+  }
+  finishTitle(task: Task, title: string | null) {
+    this.db.transaction(() => {
+      const current = this.task(task.project_id, task.id);
+      if (current.revision !== task.revision || current.title_state !== 'running') return;
+      this.db.prepare('UPDATE tasks SET title = ?, title_state = ? WHERE id = ?').run(title, title === null ? 'failed' : 'completed', task.id);
+      this.event(title === null ? 'title.failed' : 'title.completed', task.id, { revision: task.revision });
+    })();
   }
   revisions(projectId: string, id: string): Revision[] {
     this.task(projectId, id);
