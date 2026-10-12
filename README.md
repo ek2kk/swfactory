@@ -300,4 +300,9 @@ SQLite v8 сохраняет статус публикации, номер и UR
 `/tmp/swfactory-real-smoke`, создаёт только toy CLI `hello.mjs`, его `node:test` и README.
 Он проходит настоящий вопрос/ответ и pipeline до PR; source приложения не копируется.
 Evidence сохраняется в `/tmp/swfactory-real-evidence-2`, remote/ветки не удаляются.
-Запуск требует внешнего разрешения текущей среды; успешная интеграция пока не заявлена.
+12 октября 2026 реальный smoke с `gpt-6.1-sol` прошёл Spec NEEDS_INPUT → ответ →
+Spec READY → Build READY → Code/Security/UI/UX PASS → APPROVE → подтверждённый
+[GitHub PR #1](https://github.com/ek2kk/swfactory-smoke/pull/1).
+Одобренный и опубликованный head: `3920b9f1c45bb1174a21bfa8fdf64efb1f9bf16b`.
+CI в тестовом repository отсутствует и не обозначен PASS. PR, source branch,
+worktree и `evidence.json` сохранены; merge не выполнялся.
