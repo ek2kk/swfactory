@@ -145,7 +145,7 @@ test('new Spec automatically queues Build atomically and reaches Review without 
   const run = store.queueSpec(project.id, task.id, 1, directory);
   const runner = new SpecController(store, directory, () => {}, command, async () => spec, undefined, async input => {
     writeFileSync(join(input.cwd, 'README.md'), 'hello'); return ready;
-  });
+  }, async () => ({ outcome: 'BLOCKED', summary: 'Review tested separately', findings: [], evidence: [], applicable: true, applicability: '', questions: [] }));
   runner.enqueue(run);
   try {
     for (let i = 0; i < 1000 && store.task(project.id, task.id).stage !== 'review'; i++) await new Promise(resolve => setTimeout(resolve, 10));

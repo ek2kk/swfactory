@@ -192,3 +192,26 @@ test('Build action requires current Spec, schema/ownership/version and replays w
   assert.equal((await request({ ...payload, request_id: randomUUID() })).statusCode, 409);
   assert.equal(store.runs().filter(run => run.role === 'build').length, 1);
 });
+
+test('Review action requires committed Build, schema/ownership/version and replays without a second run', async t => {
+  const { app, store, headers, project } = await fixture(t);
+  const task = store.createTask(project.id, 'Build something', 1);
+  const url = `/api/projects/${project.id}/tasks/${task.id}/review`;
+  const request = (payload: object, path = url) => app.inject({ method: 'POST', url: path, headers, payload });
+  assert.equal((await request({ request_id: randomUUID(), state_version: 1 })).statusCode, 409);
+  assert.equal((await request({ request_id: randomUUID(), state_version: '1' })).statusCode, 400);
+  const spec = store.queueSpec(project.id, task.id, 1, '/tmp');
+  spec.status = 'completed'; spec.outcome = 'READY'; store.updateRun(spec, 'build', 'idle');
+  const build = store.queueBuild(project.id, task.id, store.task(project.id, task.id).state_version);
+  build.status = 'completed'; build.outcome = 'READY'; build.head_sha = 'head'; build.source_hash = 'hash';
+  store.updateRun(build, 'review', 'idle');
+  const version = store.task(project.id, task.id).state_version;
+  const payload = { request_id: randomUUID(), state_version: version };
+  assert.equal((await request({ ...payload, request_id: randomUUID() }, url.replace(project.id, randomUUID()))).statusCode, 404);
+  assert.equal((await request({ ...payload, state_version: version - 1 })).statusCode, 409);
+  const response = await request(payload); assert.equal(response.statusCode, 200);
+  assert.equal(response.json().role, 'review-code');
+  assert.deepEqual((await request(payload)).json(), response.json());
+  assert.equal((await request({ ...payload, request_id: randomUUID() })).statusCode, 409);
+  assert.equal(store.runs().filter(run => run.role === 'review-code').length, 1);
+});
