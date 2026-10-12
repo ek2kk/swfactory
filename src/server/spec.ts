@@ -2,7 +2,7 @@ import { mkdirSync, realpathSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { SpecRun } from '../shared.js';
 import { Store, Problem } from './store.js';
-import { preflight, fetchBase, run as git, type Run } from './git.js';
+import { preflight, verifyRepository, fetchBase, run as git, type Run } from './git.js';
 import { executeSpec, validateSpec, type ExecuteSpec } from './codex.js';
 import { Titles, generateTitle } from './title.js';
 import { Scheduler } from './scheduler.js';
@@ -49,9 +49,9 @@ export class SpecController {
     try {
       const project = this.store.project(run.project_id);
       const task = this.store.task(run.project_id, run.task_id);
-      await preflight(project, this.command);
-      prepared = true;
       if (!run.parent_run_id) {
+        await preflight(project, this.command);
+        prepared = true;
         run.base_sha = await fetchBase(project, run.id, this.command);
         run.status = 'running';
         // Persist the immutable base and intended paths before creating external Git state.
@@ -63,6 +63,7 @@ export class SpecController {
         await preflight(project, this.command);
         await this.command('git', ['worktree', 'add', '-b', run.branch, run.worktree, run.base_sha], project.checkout);
       } else {
+        await verifyRepository(project, run.worktree, this.command);
         await this.verifyWorktree(run);
         run.status = 'running';
       }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync, readFileSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync, readFileSync, existsSync, symlinkSync, unlinkSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -283,5 +283,38 @@ for (const scenario of ['revision', 'restart', 'save-failure', 'dirty-worktree']
     next.enqueue(response.run!); await next.close();
     assert.equal(called, false); assert.equal(store.task(project.id, task.id).run_state, 'interrupted');
     assert.equal(readFileSync(join(run.worktree, 'human-file'), 'utf8'), 'preserve');
+  }
+});
+
+for (const scenario of ['dirty-checkout', 'changed-remote', 'foreign-worktree'] as const) test(`Spec continuation ${scenario}`, async t => {
+  const { checkout, store, project, git, queue, controller } = fixture(t);
+  const first = queue(), initial = controller(async () => needsInput);
+  initial.enqueue(first); await initial.close();
+  const request = store.humanRequests()[0], task = store.task(project.id, first.task_id);
+  if (scenario === 'dirty-checkout') writeFileSync(join(checkout, 'README.md'), 'User changes while answering');
+  else if (scenario === 'changed-remote') git('remote', 'set-url', 'origin', join(checkout, 'different.git'));
+  else {
+    renameSync(first.worktree, `${first.worktree}.original`);
+    git('clone', '--no-checkout', project.remote_url, first.worktree);
+    git('-C', first.worktree, 'checkout', '-b', first.branch, first.base_sha!);
+  }
+  const { run } = store.answer(project.id, task.id, request.id, task.state_version, ['English', 'Text', '']);
+  let calls = 0;
+  const next = controller(async input => {
+    calls++;
+    assert.equal(input.cwd, first.worktree);
+    assert.equal(readFileSync(join(input.cwd, 'README.md'), 'utf8'), 'initial');
+    assert.match(input.prompt, /English/);
+    return ready;
+  });
+  next.enqueue(run!); await next.close();
+  const saved = store.specRun(project.id, task.id, run!.id);
+  if (scenario === 'dirty-checkout') {
+    assert.equal(saved.status, 'completed', saved.error ?? '');
+    assert.equal(calls, 1); assert.equal(store.task(project.id, task.id).stage, 'build');
+    assert.equal(readFileSync(join(checkout, 'README.md'), 'utf8'), 'User changes while answering');
+  } else {
+    assert.equal(calls, 0); assert.equal(saved.status, 'failed');
+    assert.match(saved.error!, /remote изменился/);
   }
 });
