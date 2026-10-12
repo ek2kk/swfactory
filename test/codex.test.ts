@@ -29,3 +29,13 @@ for (const scenario of ['valid', 'exit', 'incomplete', 'jsonl', 'result', 'faile
   const result = executeSpec({ cwd: root, directory, model: 'chosen-model', prompt: 'prompt' }, scenario === 'spawn' ? join(root, 'missing') : cli);
   if (scenario === 'valid') assert.deepEqual(await result, ready); else await assert.rejects(result);
 });
+
+test('NEEDS_INPUT requires structured context, impact, options and required flag', () => {
+  const question = { text: 'Which?', context: 'Context', impact: 'Impact', options: ['A', 'B'], required: true };
+  const result = { ...ready, outcome: 'NEEDS_INPUT', questions: [question] };
+  assert.deepEqual(validateSpec(result), result);
+  for (const q of ['Old string', null, { ...question, context: '' }, { ...question, impact: ' ' },
+    { ...question, options: [3] }, { ...question, required: 'true' }, { ...question, extra: true }]) {
+    assert.throws(() => validateSpec({ ...result, questions: [q] }));
+  }
+});

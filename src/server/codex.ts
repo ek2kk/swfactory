@@ -10,7 +10,11 @@ const list = { type: 'array', items: { type: 'string' } };
 export const specSchema = {
   type: 'object', additionalProperties: false,
   properties: { title: { type: 'string' }, outcome: { enum: ['READY', 'NEEDS_INPUT'] }, summary: { type: 'string' },
-    requirements: list, acceptance_criteria: list, assumptions: list, out_of_scope: list, questions: list },
+    requirements: list, acceptance_criteria: list, assumptions: list, out_of_scope: list, questions: { type: 'array', maxItems: 20, items: {
+      type: 'object', additionalProperties: false,
+      properties: { text: { type: 'string' }, context: { type: 'string' }, impact: { type: 'string' }, options: list, required: { type: 'boolean' } },
+      required: ['text', 'context', 'impact', 'options', 'required'],
+    } } },
   required: ['title', 'outcome', 'summary', 'requirements', 'acceptance_criteria', 'assumptions', 'out_of_scope', 'questions'],
 };
 export function validateSpec(value: unknown): SpecResult {
@@ -19,10 +23,13 @@ export function validateSpec(value: unknown): SpecResult {
   if (!result || typeof result !== 'object' || Array.isArray(result)
     || Object.keys(result).sort().join() !== [...specSchema.required].sort().join()
     || !['READY', 'NEEDS_INPUT'].includes(result.outcome) || !nonempty(result.summary)
-    || !['requirements', 'acceptance_criteria', 'assumptions', 'out_of_scope', 'questions'].every(key => {
+    || !['requirements', 'acceptance_criteria', 'assumptions', 'out_of_scope'].every(key => {
       const values = result[key as keyof SpecResult];
       return Array.isArray(values) && values.every(nonempty);
-    }) || (result.outcome === 'READY' && (!result.requirements.length || !result.acceptance_criteria.length || result.questions.length))
+    }) || !Array.isArray(result.questions) || result.questions.length > 20 || !result.questions.every(q =>
+      q && typeof q === 'object' && Object.keys(q).sort().join() === 'context,impact,options,required,text'
+      && nonempty(q.text) && nonempty(q.context) && nonempty(q.impact) && typeof q.required === 'boolean'
+      && Array.isArray(q.options) && q.options.every(nonempty)) || (result.outcome === 'READY' && (!result.requirements.length || !result.acceptance_criteria.length || result.questions.length))
     || (result.outcome === 'NEEDS_INPUT' && !result.questions.length)) throw new Problem(422, 'Codex вернул невалидный Spec. Переход заблокирован.');
   try { parseTitle({ title: result.title }); }
   catch { throw new Problem(422, 'Codex вернул невалидный заголовок Spec. Переход заблокирован.'); }

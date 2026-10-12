@@ -56,3 +56,20 @@ test('v1 migration preserves tasks and failed start transaction leaves no run or
   assert.equal(store.runs().length, 0); assert.equal(store.task(project.id, task.id).run_state, 'idle');
   assert.equal(store.replay('start', 'start'), undefined);
 });
+
+test('v3 migration preserves completed Spec evidence and adds empty question storage', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-v3-'));
+  let store = new Store(dir);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const project = store.addProject({ checkout: '/test', common_dir: '/test/.git', remote: 'origin', remote_url: 'git@github.com:owner/repo.git', hosting: 'github', host: 'github.com', repository: 'owner/repo', target_branch: 'main' });
+  const task = store.createTask(project.id, 'preserve', 1);
+  const run = store.queueSpec(project.id, task.id, 1, dir);
+  run.status = 'completed'; run.outcome = 'READY'; run.report = 1;
+  store.updateRun(run, 'build', 'idle', 'Preserved title');
+  store.db.exec('DROP TABLE human_requests; ALTER TABLE runs DROP COLUMN parent_run_id; PRAGMA user_version = 3;');
+  store.close(); store = new Store(dir);
+  assert.equal(store.db.pragma('user_version', { simple: true }), 4);
+  assert.deepEqual(store.specRun(project.id, task.id, run.id), run);
+  assert.equal(store.task(project.id, task.id).title, 'Preserved title');
+  assert.deepEqual(store.humanRequests(), []);
+});
