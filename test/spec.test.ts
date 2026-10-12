@@ -318,3 +318,82 @@ for (const scenario of ['dirty-checkout', 'changed-remote', 'foreign-worktree'] 
     assert.match(saved.error!, /remote изменился/);
   }
 });
+
+for (const dirty of [false, true]) test(`global FIFO across projects: queued preflight dirty=${dirty}`, { timeout: 15000 }, async t => {
+  const { store, project, directory, queue } = fixture(t);
+  const other = fixture(t);
+  const second = store.addProject(other.project);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const calls: string[] = [];
+  const runner = new SpecController(store, directory, () => {}, command, async input => {
+    calls.push(input.cwd);
+    if (calls.length <= 3) await gate;
+    return needsInput;
+  });
+  const until = async (predicate: () => boolean) => {
+    for (let i = 0; i < 1000 && !predicate(); i++) await delay(5);
+    assert.ok(predicate(), 'Expected queue progress');
+  };
+  try {
+    for (let i = 0; i < 3; i++) runner.enqueue(queue());
+    await until(() => calls.length === 3);
+    const task = store.createTask(second.id, 'Second project', second.state_version);
+    const fourth = store.queueSpec(second.id, task.id, task.state_version, directory);
+    runner.enqueue(fourth);
+    await delay(20);
+    assert.equal(calls.length, 3);
+    assert.equal(store.task(second.id, task.id).run_state, 'queued');
+    assert.equal(store.task(second.id, task.id).stage, 'backlog');
+    if (dirty) writeFileSync(join(other.checkout, 'README.md'), 'user changes while queued');
+    release();
+    await until(() => !['queued', 'running'].includes(store.specRun(second.id, task.id, fourth.id).status));
+    assert.equal(calls.length, dirty ? 3 : 4);
+    assert.equal(store.specRun(second.id, task.id, fourth.id).status, dirty ? 'failed' : 'completed');
+    if (dirty) {
+      assert.match(store.specRun(second.id, task.id, fourth.id).error!, /checkout/);
+      assert.equal(existsSync(fourth.worktree), false);
+      assert.equal(readFileSync(join(other.checkout, 'README.md'), 'utf8'), 'user changes while queued');
+    }
+  } finally { release(); await runner.close(); }
+});
+
+test('human answer persists immediately but continuation joins FIFO behind occupied slots', { timeout: 15000 }, async t => {
+  const { store, project, directory, queue } = fixture(t);
+  const first = queue();
+  const initial = new SpecController(store, directory, () => {}, command, async () => needsInput);
+  initial.enqueue(first); await initial.close();
+  const releases: (() => void)[] = [];
+  const calls: string[] = [];
+  let active = 0, maximum = 0;
+  const runner = new SpecController(store, directory, () => {}, command, async input => {
+    calls.push(input.cwd); maximum = Math.max(maximum, ++active);
+    if (calls.length <= 3) await new Promise<void>(resolve => releases.push(resolve));
+    if (input.cwd === first.worktree) assert.match(input.prompt, /English/);
+    active--; return needsInput;
+  });
+  const until = async (predicate: () => boolean) => {
+    for (let i = 0; i < 1000 && !predicate(); i++) await delay(5);
+    assert.ok(predicate(), 'Expected queue progress');
+  };
+  try {
+    for (let i = 0; i < 3; i++) runner.enqueue(queue());
+    await until(() => calls.length === 3);
+    const ahead = queue(); runner.enqueue(ahead);
+    const question = store.humanRequests()[0];
+    const task = store.task(project.id, first.task_id);
+    const response = store.mutate('answer-request', 'answer-fingerprint', () =>
+      store.answer(project.id, task.id, question.id, task.state_version, ['English', 'Text', ''])) as { run: typeof first };
+    runner.enqueue(response.run);
+    assert.deepEqual(store.humanRequests()[0].answers, ['English', 'Text', '']);
+    assert.equal(store.task(project.id, task.id).stage, 'spec');
+    assert.equal(store.task(project.id, task.id).run_state, 'queued');
+    assert.deepEqual(store.replay('answer-request', 'answer-fingerprint'), response);
+    assert.throws(() => store.answer(project.id, task.id, question.id, task.state_version, ['English', 'Text', '']));
+    await delay(20); assert.equal(calls.length, 3);
+    releases[0]();
+    await until(() => store.specRun(project.id, task.id, response.run.id).status === 'completed');
+    assert.equal(maximum, 3);
+    assert.deepEqual(calls.slice(3), [ahead.worktree, first.worktree]);
+  } finally { const closing = runner.close(); releases.forEach(release => release()); await closing; }
+});
