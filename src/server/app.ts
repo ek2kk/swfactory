@@ -172,6 +172,19 @@ export async function createApp(options: {
     controller.enqueue(result);
     publish(); return result;
   });
+  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/publish', {
+    schema: { params: taskParams, body: object({ request_id: uuid, state_version: version }) },
+  }, async request => {
+    const { projectId, taskId } = request.params;
+    const { request_id, state_version } = request.body;
+    const fingerprint = JSON.stringify(['publication.start', projectId, taskId, state_version]);
+    const prior = store.replay(request_id, fingerprint);
+    if (prior !== undefined) return prior;
+    if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
+    const run = store.mutate(request_id, fingerprint, () => store.beginPublication(projectId, taskId, state_version)) as AgentRun;
+    controller.enqueuePublication(run);
+    publish(); return run;
+  });
   app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/approve', {
     schema: { params: taskParams, body: object({ request_id: uuid, state_version: version }) },
   }, async request => {

@@ -33,6 +33,14 @@ function TaskCard({ task, project, runs, questions, refresh }: { task: Task; pro
     <span className="project-name">{project.host}/{project.repository} · {project.checkout}</span>
     <h3>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3>
     <p className="meta">Редакция {task.revision} · {{ idle: task.stage === 'build' ? 'Spec готова · можно запустить Build' : task.stage === 'review' ? 'Ожидает запуска следующего Review' : task.stage === 'approve' ? 'Четыре PASS · ожидает Approve' : 'Не запущена', queued: 'В очереди · ожидает слот', running: task.stage === 'spec' ? 'Codex готовит Spec' : task.stage === 'build' ? 'Codex реализует задачу' : task.stage === 'review' ? 'Codex выполняет Review' : task.stage === 'approve' ? 'Codex принимает решение о публикации' : 'Проверяем checkout и создаём worktree', waiting: 'Нужен ответ человека', interrupted: 'Прервана — нужна ручная проверка', completed: task.stage === 'approve' ? 'Разрешена только публикация PR/MR · публикация ещё не выполнена' : 'Завершена' }[task.run_state]}</p>
+    {task.publication_status === 'pending' && <p role="status">Публикуем GitHub PR… Повторный запуск заблокирован.</p>}
+    {task.publication_status === 'unknown' && <p role="alert">Исход публикации неизвестен. Нужна ручная сверка GitHub и source branch из отчёта (task marker: {task.id}). Слепой повтор запрещён; worktree сохранён.</p>}
+    {task.publication_status === 'confirmed' && task.pr_url && <p><a href={task.pr_url} target="_blank" rel="noreferrer">GitHub PR #{task.pr_number}</a> · CI не проверен; merge выполняется на GitHub.</p>}
+    {task.stage === 'approve' && task.run_state === 'completed' && !task.publication_status && project.hosting === 'github' && <button disabled={busy} onClick={async () => {
+      setBusy(true); setError('');
+      try { await api(`${taskPath(task)}/publish`, 'POST', { state_version: task.state_version }); await refresh(); }
+      catch (error) { setError((error as Error).message); } finally { setBusy(false); }
+    }}>{busy ? 'Запускаем публикацию…' : 'Опубликовать GitHub PR'}</button>}
     {!task.title && <p role="status" className="meta">{task.title_state === 'pending' ? 'Заголовок ожидает свободного слота…'
       : task.title_state === 'running' ? 'Codex формирует заголовок…'
       : task.title_state === 'interrupted' ? 'Генерация заголовка прервана. Описание сохранено; заголовок можно получить в Spec.'
@@ -155,7 +163,7 @@ function RunReport({ task, run }: { task: Task; run: AgentRun }) {
   }, [open, run.id, run.report, task.id]);
   return <details onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>{run.role} · редакция {run.description_revision}{run.stale || run.description_revision !== task.revision ? ' · Неактуальна' : ''} · {run.outcome ?? run.status} · {run.config.models[run.role]}</summary>
-    <p className="meta">Доработки: {run.repair_attempt}/2 · {run.round_id && `Раунд: ${run.round_id}`} {run.spec_run_id && `Spec: ${run.spec_run_id}`}<br />{run.base_sha && `Base: ${run.base_sha}`}<br />{run.head_sha && `Head: ${run.head_sha}`}<br />{run.worktree}</p>
+    <p className="meta">Доработки: {run.repair_attempt}/2 · {run.round_id && `Раунд: ${run.round_id}`} {run.spec_run_id && `Spec: ${run.spec_run_id}`}<br />{run.base_sha && `Base: ${run.base_sha}`}<br />{run.head_sha && `Head: ${run.head_sha}`}<br />Branch: {run.branch}<br />{run.worktree}</p>
     <p className="meta">Модели запуска: {roles.map(role => `${role}: ${run.config.models[role]}`).join(' · ')}</p>
     {run.error && <pre role="alert" className="error">{run.error}</pre>}
     {error && <p role="alert">{error}</p>}

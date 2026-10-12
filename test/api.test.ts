@@ -292,3 +292,16 @@ test('Concurrent decision replay queues the persisted repair exactly once', asyn
   assert.equal(store.runs().filter(r => r.role === 'build').length, 2);
   assert.equal(store.events(0).filter(e => e.type === 'approve.decided').length, 1);
 });
+
+test('Publication API requires owned task, valid schema and an approved current version', async t => {
+  const { app, store, headers, project } = await fixture(t);
+  const task = store.createTask(project.id, 'Publish only after review', 1);
+  const payload = { request_id: randomUUID(), state_version: task.state_version };
+  const url = `/api/projects/${project.id}/tasks/${task.id}/publish`;
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload })).statusCode, 409);
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...payload, unexpected: true } })).statusCode, 400);
+  assert.equal((await app.inject({ method: 'POST', url, headers: { ...headers, origin: 'https://other.test' }, payload })).statusCode, 403);
+  assert.equal((await app.inject({ method: 'POST', url: `/api/projects/${randomUUID()}/tasks/${task.id}/publish`, headers, payload })).statusCode, 404);
+  assert.equal(store.task(project.id, task.id).publication_status, null);
+  assert.equal(store.replay(payload.request_id, JSON.stringify(['publication.start', project.id, task.id, task.state_version])), undefined);
+});

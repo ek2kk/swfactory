@@ -112,7 +112,7 @@ Browser UI получает данные приложения и сохранё�
 передаются. Текст выводится как текст, без HTML. API произвольных файлов отсутствует; отчёты проверяют принадлежность task/project/run. UI обслуживается тем же
 Fastify origin; Vite используется для сборки, отдельный dev server не требуется.
 
-Не реализованы публикация, resume/cancel, backup/restore и crash/disk-full
+Не реализованы публикация GitLab, resume/cancel, backup/restore и crash/disk-full
 испытания. Никакого автоматического retry незавершённого исполнения после restart:
 состояния queued/running/waiting помечаются interrupted с сохранением истории.
 Реальная GitLab-интеграция требует отдельного тестового remote; в этом срезе
@@ -265,7 +265,7 @@ SQLite v6 сохраняет round/Spec bindings и восстанавливае
 
 После четырёх PASS approver получает Spec, immutable base/head SHA, доступ к
 изменениям в worktree и все четыре отчёта в новой сессии. Только структурированный APPROVE разрешает публикацию PR/MR;
-публикация пока не выполняется. Merge приложением запрещён.
+после этого доступна кнопка «Опубликовать GitHub PR». Merge приложением запрещён.
 
 ESCALATE показывает риски, затронутые файлы и ссылки на отчёты. Человек может
 разрешить публикацию этой версии либо указать причину и отправить её в Build.
@@ -274,3 +274,35 @@ ESCALATE показывает риски, затронутые файлы и с�
 reviews и разрешения; перед решением и после Approve Git state проверяется снова.
 NEEDS_INPUT использует общий вопрос/ответ. После restart незавершённая работа
 не продолжается автоматически и требует ручной сверки.
+
+
+## Публикация GitHub
+
+Кнопка публикации проверяет четыре актуальных PASS и APPROVE либо сохранённое
+решение человека по ESCALATE. Backend повторно проверяет source перед push и create,
+ищет PR по branch, target и task marker во всех состояниях. Существующий PR принимается
+только с точными repository, head SHA, branch, target и marker; закрытый или изменённый
+PR требует ручной сверки. Push отправляет одобренный SHA без force; отдельный push URL запрещён.
+
+Стадия PR/MR created и ссылка появляются только после подтверждения объекта через
+GitHub API. CI не проверяется и не объявляется PASS: его отсутствие, ожидание или
+ошибка не блокируют создание. Merge, auto-merge и синхронизация с изменившимся target
+не выполняются. Branch и worktree сохраняются.
+
+Попытка записывается до сетевых действий. Повтор запроса не создаёт вторую работу.
+При ошибке, потере ответа или restart во время публикации карточка показывает
+неизвестный исход и запрещает retry: вручную сверяйте GitHub, task marker и source
+branch из отчёта. Автоматической reconciliation или кнопки повторной публикации нет.
+SQLite v8 сохраняет статус публикации, номер и URL PR вместе с событиями.
+
+Ручной real smoke: `node --import tsx scripts/smoke-github.ts`. Скрипт использует
+авторизованные Codex/gh, private `ek2kk/swfactory-smoke` из checkout
+`/tmp/swfactory-real-smoke`, создаёт только toy CLI `hello.mjs`, его `node:test` и README.
+Он проходит настоящий вопрос/ответ и pipeline до PR; source приложения не копируется.
+Evidence сохраняется в `/tmp/swfactory-real-evidence-2`, remote/ветки не удаляются.
+12 октября 2026 реальный smoke с `gpt-6.1-sol` прошёл Spec NEEDS_INPUT → ответ →
+Spec READY → Build READY → Code/Security/UI/UX PASS → APPROVE → подтверждённый
+[GitHub PR #1](https://github.com/ek2kk/swfactory-smoke/pull/1).
+Одобренный и опубликованный head: `3920b9f1c45bb1174a21bfa8fdf64efb1f9bf16b`.
+CI в тестовом repository отсутствует и не обозначен PASS. PR, source branch,
+worktree и `evidence.json` сохранены; merge не выполнялся.
