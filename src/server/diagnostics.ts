@@ -11,12 +11,37 @@ export class CodexFailure extends Problem {
 }
 // Only classify CLI error envelopes/stderr, never agent messages or tool output.
 export function classifyFailure(value: unknown): CodexFailure {
-  const text = typeof value === 'string' ? value : JSON.stringify(value) ?? '';
-  const kind = /rate_limit_exceeded|usage_limit_reached|rate limit|usage limit|quota exceeded|\b429\b/i.test(text) ? 'rate_limit'
-    : /authentication|unauthorized|invalid_api_key|not authenticated|please (?:log|sign) in|\b401\b/i.test(text) ? 'authentication'
-    : /model_not_found|model_not_available|unsupported_model|model.{0,100}(?:not available|not supported|does not exist)/i.test(text) ? 'model_unavailable' : 'protocol_error';
+  if (typeof value === 'string') {
+    // exec stderr includes banners and the user's prompt; only the final diagnostic is evidence.
+    const lines = [value, ...value.split('\n').reverse()];
+    value = {};
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed && typeof parsed === 'object' && (parsed.error || parsed.code || parsed.status || parsed.status_code || ['error', 'turn.failed'].includes(parsed.type))) { value = parsed; break; }
+      } catch { /* Not a structured diagnostic. */ }
+      const message = /^ERROR:\s*(.*)$/i.exec(line.trim())?.[1];
+      if (message !== undefined) {
+        try { value = JSON.parse(message); } catch { value = { message }; }
+        break;
+      }
+    }
+  }
   const data = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   const nested = data.error && typeof data.error === 'object' ? data.error as Record<string, unknown> : data;
+  const text = typeof nested.message === 'string' ? nested.message : typeof data.error === 'string' ? data.error : '';
+  const codes: Record<string, FailureKind> = { rate_limit_exceeded: 'rate_limit', usage_limit_reached: 'rate_limit', insufficient_quota: 'rate_limit',
+    invalid_api_key: 'authentication', authentication_error: 'authentication', unauthorized: 'authentication',
+    model_not_found: 'model_unavailable', model_not_available: 'model_unavailable', unsupported_model: 'model_unavailable' };
+  const code = typeof nested.code === 'string' ? nested.code : typeof nested.type === 'string' ? nested.type : '';
+  const status = nested.status ?? nested.status_code ?? data.status ?? data.status_code
+    ?? /^(?:(?:unexpected )?status(?: code)?[:=]?\s+|HTTP(?:\/\d(?:\.\d)?)?\s+)?(401|403|429)\b/i.exec(text)?.[1];
+  const kind = Object.hasOwn(codes, code) ? codes[code]
+    : status === 401 || status === '401' || status === 403 || status === '403' ? 'authentication'
+    : status === 429 || status === '429' ? 'rate_limit'
+    : /authentication|unauthorized|invalid_api_key|not authenticated|please (?:log|sign) in/i.test(text) ? 'authentication'
+    : /model.{0,100}(?:not available|not supported|does not exist)/i.test(text) ? 'model_unavailable'
+    : /rate_limit_exceeded|usage_limit_reached|rate limit (?:reached|exceeded)|(?:hit|reached|exceeded) (?:your |the )?(?:usage|rate) limit|usage limit (?:reached|exceeded)|quota exceeded/i.test(text) ? 'rate_limit' : 'protocol_error';
   const reset = nested.reset_at;
   const time = typeof reset === 'number' ? reset * 1000 : typeof reset === 'string' ? Date.parse(reset) : NaN;
   const retry = nested.retry_after;

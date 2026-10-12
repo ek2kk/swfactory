@@ -196,3 +196,19 @@ test('confirmed Title rate limit reaches the shared pause handler', async t => {
   await titles.close();
   assert.equal(store.executionPause().paused, 1); assert.equal(store.task(project.id, task.id).title_state, 'failed');
 });
+
+test('Title stderr prompt mentioning rate limit cannot override the actual authentication error', async () => {
+  const { writeFileSync } = await import('node:fs');
+  const { generateTitle } = await import('../src/server/title.js');
+  const { CodexFailure } = await import('../src/server/diagnostics.js');
+  const root = mkdtempSync(join(tmpdir(), 'factory-title-classification-'));
+  writeFileSync(join(root, 'codex'), `#!${process.execPath}\nlet prompt = ''; process.stdin.on('data', c => prompt += c); process.stdin.on('end', () => {
+    process.stderr.write('user\\n' + prompt + '\\nERROR: unexpected status 401 Unauthorized\\n', () => process.exit(1));
+  });`, { mode: 0o700 });
+  const previous = process.env.PATH; process.env.PATH = `${root}:${previous}`;
+  try {
+    await assert.rejects(generateTitle('Investigate rate limit exceeded and model 429', new AbortController().signal), error => {
+      assert.ok(error instanceof CodexFailure); assert.equal(error.kind, 'authentication'); return true;
+    });
+  } finally { process.env.PATH = previous; rmSync(root, { recursive: true, force: true }); }
+});

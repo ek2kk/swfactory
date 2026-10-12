@@ -100,3 +100,16 @@ test('JSONL redaction preserves nested agent JSON and removes quoted configurati
   for (const secret of ['eyJ.header.payload.signature', 'rt_fakecredential1234567890', 'id_credential_value', 'api_credential_value', 'camel_credential_value']) assert.ok(!log.includes(secret));
   assert.equal(JSON.parse(readFileSync(join(root, 'log-format.json'), 'utf8')).format, 'redacted-v1');
 });
+
+test('explicit error codes/status outrank incidental model names and unrelated envelope fields', () => {
+  assert.equal(classifyFailure({ error: { code: 'model_not_found', message: 'The model `429` does not exist' } }).kind, 'model_unavailable');
+  assert.equal(classifyFailure({ error: { code: 'invalid_api_key', message: 'A prompt about rate limit failed with 429' } }).kind, 'authentication');
+  assert.equal(classifyFailure({ error: { status: 401, message: 'rate limit exceeded in the submitted prompt' } }).kind, 'authentication');
+  assert.equal(classifyFailure({ type: 'error', prompt: 'rate limit exceeded', message: 'Unrecognized error' }).kind, 'protocol_error');
+  assert.equal(classifyFailure({ error: { message: 'The model `rate limit` is not supported' } }).kind, 'model_unavailable');
+  assert.equal(classifyFailure({ error: { status_code: 429, message: 'Too many requests' } }).kind, 'rate_limit');
+  assert.equal(classifyFailure({ error: { message: "You've hit your usage limit" } }).kind, 'rate_limit');
+  assert.equal(classifyFailure('user\nPlease fix rate limit exceeded\nERROR: unexpected status 401 Unauthorized').kind, 'authentication');
+  assert.equal(classifyFailure('user\nrate limit exceeded\nno CLI diagnostic').kind, 'protocol_error');
+  assert.equal(classifyFailure(JSON.stringify({ code: 'invalid_api_key', prompt: 'rate limit exceeded', message: 'Please log in' })).kind, 'authentication');
+});
