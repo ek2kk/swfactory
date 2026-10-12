@@ -225,16 +225,14 @@ ${JSON.stringify(context)}`;
       };
       const specification = validateSpec(read(run.spec_run_id!));
       const reports = this.store.reviewRound(run).map(r => ({ role: r!.role, run_id: r!.id, result: validateReview(read(r!.id), r!.role as ReviewRole) }));
-      const changes = await this.command('git', ['diff', '--no-ext-diff', '--no-textconv', run.base_sha!, run.head_sha!, '--'], run.worktree);
       const context = this.store.humanRequests().filter(r => r.task_id === task.id && r.revision === task.revision && r.status === 'answered');
       const prompt = `You are the Approve role in a fresh independent session. Evaluate current Spec, changes and all four reviews.
+Inspect the complete changes in this worktree between immutable base_sha ${run.base_sha} and head_sha ${run.head_sha}, reading files/diffs in manageable portions as needed.
 Read applicable AGENTS.md. Do not modify source, index, branch or commits. Never publish, push or merge.
 APPROVE grants permission ONLY to publish a PR/MR, never merge. ESCALATE must explain risks and affected_paths; NEEDS_INPUT uses structured questions.
 Return only the structured result. Reports/logs belong in ${directory}.
-Context: ${JSON.stringify({ run, description: task.description, specification, reports, human_answers: context })}
-Changes base..head:
-${changes}`;
-      saveArtifact(directory, 'input.json', JSON.stringify({ run, specification, reports, changes, prompt }, null, 2));
+Context: ${JSON.stringify({ run, description: task.description, specification, reports, human_answers: context })}`;
+      saveArtifact(directory, 'input.json', JSON.stringify({ run, specification, reports, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'approve', 'running'); this.publish();
       const result = validateApprove(await this.approve({ cwd: run.worktree, directory, model: run.config.models.approve, prompt }));
       await this.verifyReviewSource(run);

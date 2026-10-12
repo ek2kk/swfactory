@@ -12,7 +12,7 @@ import type { BuildResult, SpecResult, ReviewResult } from '../src/shared.js';
 
 const spec: SpecResult = { title: 'Hello', outcome: 'READY', summary: 'Implement hello', requirements: ['Say hello'], acceptance_criteria: ['README says hello'], assumptions: [], out_of_scope: [], questions: [] };
 const ready: BuildResult = { outcome: 'READY', summary: 'Implemented', changed_paths: ['README.md'], actions: ['Edited README'], checks: ['Read README: hello'], questions: [] };
-async function fixture(t: { after: (fn: () => void) => void }, completedRepairs = 2) {
+async function fixture(t: { after: (fn: () => void) => void }, completedRepairs = 2, content = 'hello') {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'factory-review-'))), checkout = join(root, 'repo'), directory = join(root, 'data');
   mkdirSync(checkout);
   const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -31,7 +31,7 @@ async function fixture(t: { after: (fn: () => void) => void }, completedRepairs 
   const queue = () => store.queueBuild(project.id, task.id, store.task(project.id, task.id).state_version);
   const controller = (execute: ExecuteBuild) => new SpecController(store, directory, () => {}, command, undefined, undefined, execute, undefined, approved);
   const build = queue();
-  const builder = controller(async input => { writeFileSync(join(input.cwd, 'README.md'), 'hello'); return ready; });
+  const builder = controller(async input => { writeFileSync(join(input.cwd, 'README.md'), content); return ready; });
   builder.enqueue(build); await builder.close();
   store.db.prepare('UPDATE runs SET repair_attempt = ? WHERE id = ?').run(completedRepairs, build.id);
   const reviewQueue = () => store.queueReview(project.id, task.id, store.task(project.id, task.id).state_version);
@@ -273,7 +273,7 @@ for (const decision of ['publish', 'repair'] as const) test(`Escalation ${decisi
   let calls = 0;
   const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, async () => pass, async input => {
     calls++;
-    assert.match(input.prompt, /README says hello/); assert.match(input.prompt, /diff --git/);
+    assert.match(input.prompt, /README says hello/); assert.match(input.prompt, /Inspect the complete changes.*immutable base_sha/);
     for (const role of ['review-code', 'review-security', 'review-ui', 'review-ux']) assert.ok(input.prompt.includes(role));
     return { ...await approved(), outcome: 'ESCALATE', risks: ['Check rollout'] };
   });
@@ -332,4 +332,24 @@ for (const mode of ['question', 'drift', 'invalid', 'save'] as const) test(`Appr
     assert.equal(store.runs().at(-1)!.outcome, null);
   }
   await runner.close();
+});
+
+
+test('Approve starts for supported 2 MiB source even when diff exceeds coordinator buffer', async t => {
+  const content = 'a\n'.repeat(1024 * 1024);
+  const { store, task, directory, queue } = await fixture(t, 2, content);
+  let calls = 0;
+  const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, async () => pass, async input => {
+    calls++;
+    const run = store.runs().at(-1)!;
+    assert.match(input.prompt, new RegExp(`base_sha ${run.base_sha} and head_sha ${run.head_sha}`));
+    assert.equal(readFileSync(join(input.cwd, 'README.md'), 'utf8'), content);
+    const diff = execFileSync('git', ['diff', '--no-ext-diff', '--no-textconv', run.base_sha!, run.head_sha!, '--'], { cwd: input.cwd, maxBuffer: 4 * 1024 * 1024 });
+    assert.ok(diff.length > 2 * 1024 * 1024);
+    return approved();
+  });
+  runner.enqueue(queue());
+  assert.equal((await settled(store, task.id)).run_state, 'completed');
+  await runner.close(); assert.equal(calls, 1);
+  assert.equal(store.runs().at(-1)!.outcome, 'APPROVE');
 });
