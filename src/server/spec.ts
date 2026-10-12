@@ -4,6 +4,7 @@ import { reviewRoles, type ReviewRole, type AgentRun } from '../shared.js';
 import { Store, Problem } from './store.js';
 import { preflight, verifyRepository, fetchBase, run as git, type Run } from './git.js';
 import { executeApprove, validateApprove, type ExecuteApprove, executeSpec, validateSpec, executeBuild, validateBuild, executeReview, validateReview, type ExecuteReview, type ExecuteBuild, type ExecuteSpec } from './codex.js';
+import { publishGithub } from './publication.js';
 import { sourceHash, commitBuild } from './build.js';
 import { Titles, generateTitle } from './title.js';
 import { Scheduler } from './scheduler.js';
@@ -31,6 +32,25 @@ export class SpecController {
       else if (run.role === 'approve') await this.performApprove(run);
       else if (run.role.startsWith('review-')) await this.performReview(run);
       else await this.perform(run);
+    }).finally(() => { this.active.delete(work); });
+    this.active.add(work);
+  }
+  enqueuePublication(run: AgentRun) {
+    const work = this.scheduler.enqueue(run.task_id, async () => {
+      try {
+        if (this.closing || this.error || this.titles.error) return;
+        const verify = async () => {
+          this.store.publicationRun(run.project_id, run.task_id);
+          await this.verifyReviewSource(run);
+        };
+        const identity = await publishGithub(this.store.project(run.project_id), this.store.task(run.project_id, run.task_id),
+          run, this.store.reviewRound(run) as AgentRun[], this.directory, this.command, verify);
+        this.store.finishPublication(run, identity);
+      } catch {
+        try { this.store.finishPublication(run); }
+        catch { this.error = 'Не удалось сохранить исход публикации. Остановлено; нужна ручная сверка GitHub.'; }
+      }
+      this.publish();
     }).finally(() => { this.active.delete(work); });
     this.active.add(work);
   }
@@ -119,7 +139,7 @@ ${JSON.stringify(context)}`;
   }
 
   async refreshReviewState() {
-    for (const task of this.store.snapshot().tasks.filter(t => !['queued', 'running'].includes(t.run_state))) {
+    for (const task of this.store.snapshot().tasks.filter(t => !['queued', 'running'].includes(t.run_state) && !t.publication_status)) {
       const run = this.store.runs().filter(r => r.task_id === task.id && r.description_revision === task.revision && (r.role.startsWith('review-') || r.role === 'approve')).at(-1);
       if (!run || run.stale || this.store.runs().filter(r => r.task_id === task.id).at(-1)?.role === 'build') continue;
       try { await this.verifyReviewSource(run); }

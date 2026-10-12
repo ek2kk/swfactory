@@ -31,7 +31,7 @@ export class Store {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       const version = this.db.pragma('user_version', { simple: true });
-      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7) throw new Error('Версия базы новее приложения. Обновите приложение.');
+      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8) throw new Error('Версия базы новее приложения. Обновите приложение.');
       this.db.transaction(() => {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS projects (
@@ -71,7 +71,7 @@ export class Store {
         const runColumns = this.db.pragma('table_info(runs)') as { name: string }[];
         if (!runColumns.some(column => column.name === 'parent_run_id')) this.db.exec('ALTER TABLE runs ADD COLUMN parent_run_id TEXT REFERENCES runs(id)');
         this.db.prepare("UPDATE runs SET status = 'interrupted', error = 'Backend перезапущен. Нужна ручная сверка.' WHERE status IN ('queued','running')").run();
-        if (version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7) {
+        if (version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8) {
           // Both pre-integration branches used v2; inspect the column before upgrading either shape.
           const columns = this.db.pragma('table_info(tasks)') as { name: string }[];
           if (!columns.some(column => column.name === 'title_state')) {
@@ -89,7 +89,15 @@ export class Store {
               .run(run.parent_run_id, run.id);
           }
         }
-        this.db.pragma('user_version = 7');
+        const taskColumns = this.db.pragma('table_info(tasks)') as { name: string }[];
+        for (const [name, type] of [['publication_status', 'TEXT'], ['pr_url', 'TEXT'], ['pr_number', 'INTEGER']]) {
+          if (!taskColumns.some(c => c.name === name)) this.db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
+        }
+        for (const task of this.db.prepare("SELECT id FROM tasks WHERE publication_status = 'pending'").all() as { id: string }[]) {
+          this.db.prepare("UPDATE tasks SET publication_status = 'unknown', stage = 'needs-human', run_state = 'interrupted', state_version = state_version + 1 WHERE id = ?").run(task.id);
+          this.event('publication.unknown', task.id, { reason: 'Backend перезапущен. Нужна ручная сверка GitHub; повтор запрещён.' });
+        }
+        this.db.pragma('user_version = 8');
         for (const task of this.db.prepare("SELECT * FROM tasks WHERE title_state IN ('pending','running')").all() as Task[]) {
           this.db.prepare("UPDATE tasks SET title_state = 'interrupted' WHERE id = ?").run(task.id);
           this.event('title.interrupted', task.id, { revision: task.revision });
@@ -275,6 +283,39 @@ export class Store {
       this.db.prepare("UPDATE tasks SET run_state = 'queued', state_version = state_version + 1 WHERE id = ?").run(taskId);
       this.event('review.queued', taskId, { run_id: run.id, role: run.role, round_id: run.round_id });
       return run;
+    })();
+  }
+  publicationRun(projectId: string, taskId: string) {
+    const task = this.task(projectId, taskId);
+    const run = this.runs().filter(r => r.task_id === taskId).at(-1);
+    if (!run || run.role !== 'approve' || run.status !== 'completed' || run.stale
+      || run.description_revision !== task.revision
+      || !this.reviewPasses(run) || !(run.outcome === 'APPROVE' || (run.outcome === 'ESCALATE'
+        && this.humanRequests().some(r => r.run_id === run.id && r.status === 'answered' && r.answers?.[0] === 'publish')))) {
+      throw new Problem(409, 'Нужны четыре актуальных PASS и разрешение публикации этой версии.');
+    }
+    return run;
+  }
+  beginPublication(projectId: string, taskId: string, version: number) {
+    return this.db.transaction(() => {
+      const task = this.task(projectId, taskId);
+      if (task.state_version !== version || task.stage !== 'approve' || task.run_state !== 'completed' || task.publication_status) {
+        throw new Problem(409, 'Публикация недоступна или уже начата. При неизвестном исходе нужна ручная сверка GitHub.');
+      }
+      if (this.project(projectId).hosting !== 'github') throw new Problem(422, 'Публикация поддерживает GitHub.');
+      const run = this.publicationRun(projectId, taskId);
+      this.db.prepare("UPDATE tasks SET publication_status = 'pending', run_state = 'queued', state_version = state_version + 1 WHERE id = ?").run(taskId);
+      this.event('publication.started', taskId, { run_id: run.id, head_sha: run.head_sha, source_hash: run.source_hash, branch: run.branch });
+      return run;
+    })();
+  }
+  finishPublication(run: AgentRun, identity?: { number: number; url: string }) {
+    this.db.transaction(() => {
+      this.db.prepare("UPDATE tasks SET publication_status = ?, pr_number = ?, pr_url = ?, stage = ?, run_state = ?, state_version = state_version + 1 WHERE id = ?")
+        .run(identity ? 'confirmed' : 'unknown', identity?.number ?? null, identity?.url ?? null,
+          identity ? 'pr-created' : 'needs-human', identity ? 'completed' : 'interrupted', run.task_id);
+      this.event(identity ? 'publication.confirmed' : 'publication.unknown', run.task_id,
+        identity ?? { reason: 'Исход публикации не подтверждён. Проверьте GitHub и branch вручную; слепой повтор запрещён.' });
     })();
   }
   queueApprove(projectId: string, taskId: string, version: number) {

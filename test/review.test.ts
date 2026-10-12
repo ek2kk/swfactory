@@ -292,6 +292,7 @@ for (const decision of ['publish', 'repair'] as const) test(`Escalation ${decisi
   assert.throws(() => store.decide(project.id, task.id, request.id, version, decision, 'again'));
   if (decision === 'publish') {
     assert.equal(result.run, null); assert.equal(store.task(project.id, task.id).run_state, 'completed');
+    assert.equal(store.publicationRun(project.id, task.id).id, request.run_id);
     writeFileSync(join(store.runs().at(-1)!.worktree, 'README.md'), 'external');
     await runner.refreshReviewState();
     assert.equal(store.task(project.id, task.id).stage, 'needs-human');
@@ -352,4 +353,66 @@ test('Approve starts for supported 2 MiB source even when diff exceeds coordinat
   assert.equal((await settled(store, task.id)).run_state, 'completed');
   await runner.close(); assert.equal(calls, 1);
   assert.equal(store.runs().at(-1)!.outcome, 'APPROVE');
+});
+
+for (const mode of ['success', 'existing', 'unknown', 'changed', 'changed-after-push', 'push-url', 'wrong-marker', 'wrong-head', 'save', 'missing-pass'] as const) test(`GitHub publication ${mode}: guarded, confirmed and durable`, async t => {
+  const { store, project, task, directory, queue, controller, build } = await fixture(t);
+  const reviewer = controller(async () => pass);
+  reviewer.enqueue(queue()); await settled(store, task.id); await reviewer.close();
+  const approval = store.runs().at(-1)!;
+  if (mode === 'missing-pass') {
+    store.db.prepare("UPDATE runs SET outcome = 'CHANGES' WHERE role = 'review-code'").run();
+    assert.throws(() => store.beginPublication(project.id, task.id, store.task(project.id, task.id).state_version), /PASS/);
+    return;
+  }
+  let creates = 0, pushes = 0;
+  const pr = { number: 12, html_url: 'https://github.com/test/repo/pull/12', state: 'open', merged_at: null,
+    head: { ref: approval.branch, sha: approval.head_sha, repo: { full_name: 'test/repo' } },
+    base: { ref: 'main', repo: { full_name: 'test/repo' } }, body: `<!-- swfactory-task:${task.id} -->` };
+  const cli: typeof command = async (file, args, cwd) => {
+    if (file === 'git') {
+      if (mode === 'push-url' && args.includes('--push')) return 'https://github.com/other/repo.git';
+      if (args[0] === 'push') {
+        pushes++;
+        if (mode === 'changed-after-push') writeFileSync(join(cwd, 'README.md'), 'changed during push');
+      }
+      return command(file, args, cwd);
+    }
+    if (args.includes('--slurp')) return JSON.stringify([['existing', 'wrong-marker', 'wrong-head'].includes(mode) ? [pr] : []]);
+    if (args[0] === 'pr') { creates++; if (mode === 'unknown') throw new Error('Connection lost after create'); return pr.html_url; }
+    return JSON.stringify(mode === 'wrong-marker' ? { ...pr, body: 'another task' } : mode === 'wrong-head' ? { ...pr, head: { ...pr.head, sha: 'bad' } } : pr);
+  };
+  const publisher = new SpecController(store, directory, () => {}, cli);
+  const version = store.task(project.id, task.id).state_version;
+  assert.throws(() => store.beginPublication(project.id, task.id, version - 1));
+  store.db.exec("CREATE TRIGGER fail_publication BEFORE INSERT ON events WHEN NEW.type = 'publication.started' BEGIN SELECT RAISE(ABORT, 'disk'); END");
+  assert.throws(() => store.mutate('failed-publication', 'publish', () => store.beginPublication(project.id, task.id, version)));
+  assert.equal(store.task(project.id, task.id).publication_status, null);
+  store.db.exec('DROP TRIGGER fail_publication');
+  if (mode === 'save') store.db.exec("CREATE TRIGGER fail_confirmation BEFORE INSERT ON events WHEN NEW.type = 'publication.confirmed' BEGIN SELECT RAISE(ABORT, 'disk'); END");
+  const run = store.mutate('publication', 'publish', () => store.beginPublication(project.id, task.id, version)) as typeof approval;
+  assert.equal((store.replay('publication', 'publish') as typeof approval).id, run.id);
+  assert.throws(() => store.beginPublication(project.id, task.id, version));
+  if (mode === 'changed') writeFileSync(join(build.worktree, 'README.md'), 'changed after approval');
+  publisher.enqueuePublication(run); await settled(store, task.id); await publisher.close();
+  const saved = store.task(project.id, task.id);
+  const success = mode === 'success' || mode === 'existing';
+  assert.equal(saved.publication_status, success ? 'confirmed' : 'unknown');
+  assert.equal(saved.stage, success ? 'pr-created' : 'needs-human');
+  assert.equal(saved.pr_url, success ? pr.html_url : null);
+  assert.equal(creates, ['success', 'unknown', 'save'].includes(mode) ? 1 : 0);
+  assert.equal(pushes, ['success', 'unknown', 'save', 'changed-after-push'].includes(mode) ? 1 : 0);
+  assert.throws(() => store.beginPublication(project.id, task.id, saved.state_version));
+  store.close(); const restored = new Store(directory);
+  assert.equal(restored.task(project.id, task.id).publication_status, saved.publication_status);
+  assert.equal(restored.task(project.id, task.id).pr_url, saved.pr_url); restored.close();
+});
+
+test('Pending publication becomes unknown on restart without executing a retry', async t => {
+  const { store, project, task, directory } = await fixture(t);
+  store.db.prepare("UPDATE tasks SET publication_status = 'pending', run_state = 'queued' WHERE id = ?").run(task.id);
+  store.close(); const restored = new Store(directory);
+  assert.equal(restored.task(project.id, task.id).publication_status, 'unknown');
+  assert.equal(restored.task(project.id, task.id).stage, 'needs-human');
+  assert.ok(restored.events(0).some(e => e.type === 'publication.unknown')); restored.close();
 });
