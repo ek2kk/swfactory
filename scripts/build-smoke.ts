@@ -1,0 +1,18 @@
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { executeBuild } from '../src/server/codex.ts';
+import { commitBuild } from '../src/server/build.ts';
+import { defaultModels } from '../src/shared.ts';
+import assert from 'node:assert/strict';
+const root = realpathSync(mkdtempSync('/tmp/swfactory-real-build-')), cwd = `${root}/repo`, directory = `${root}/artifacts`;
+mkdirSync(cwd); mkdirSync(directory);
+const git = (...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+git('init', '-b', 'smoke'); git('config', 'user.name', 'Smoke'); git('config', 'user.email', 'smoke@example.invalid');
+writeFileSync(`${cwd}/hello.txt`, 'before\n'); git('add', '--', 'hello.txt'); git('commit', '-m', 'base');
+const base = git('rev-parse', 'HEAD');
+console.log(`Smoke artifacts: ${root}`);
+const result = await executeBuild({ cwd, directory, model: defaultModels.build, prompt: 'You are Build in a disposable repository. Change hello.txt to exactly "hello from Build\\n". Read the file to verify. Do not commit, push or merge. Return structured READY with changed_paths ["hello.txt"], actions and actual checks, empty questions. Do not modify any other file.' });
+assert.equal(result.outcome, 'READY'); assert.equal(readFileSync(`${cwd}/hello.txt`, 'utf8'), 'hello from Build\n');
+const head = await commitBuild({ id: 'smoke', task_id: 'smoke', project_id: 'smoke', role: 'build', branch: 'smoke', worktree: cwd, base_sha: base, head_sha: null, source_hash: null, parent_run_id: null, config: { models: defaultModels, instructions: '' }, project_version: 1, description_revision: 1, status: 'running', outcome: null, error: null, report: 0 }, result);
+assert.notEqual(head, base); assert.equal(git('status', '--porcelain'), '');
+console.log(JSON.stringify({ model: defaultModels.build, result, base, head, clean: true }));

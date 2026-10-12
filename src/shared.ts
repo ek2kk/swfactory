@@ -12,7 +12,7 @@ export type Task = {
 };
 export type Revision = { task_id: string; revision: number; description: string; created_at: string };
 export type SavedEvent = { id: number; type: string; task_id: string | null; payload: string; created_at: string };
-export type Snapshot = { projects: Project[]; tasks: Task[]; runs: SpecRun[]; human_requests: HumanRequest[]; execution_error?: string | null; title_error?: string | null; cursor: number };
+export type Snapshot = { projects: Project[]; tasks: Task[]; runs: AgentRun[]; human_requests: HumanRequest[]; execution_error?: string | null; title_error?: string | null; cursor: number };
 
 export const roles = ['spec', 'build', 'review-code', 'review-security', 'review-ui', 'review-ux', 'approve'] as const;
 export type Models = Record<typeof roles[number], string>;
@@ -22,16 +22,20 @@ export type SpecResult = {
   outcome: 'READY' | 'NEEDS_INPUT'; title: string; summary: string; requirements: string[];
   acceptance_criteria: string[]; assumptions: string[]; out_of_scope: string[]; questions: Question[];
 };
-export type SpecRun = {
+export type BuildResult = {
+  outcome: 'READY' | 'NEEDS_INPUT' | 'BLOCKED'; summary: string; changed_paths: string[]; actions: string[]; checks: string[]; questions: Question[];
+};
+export type AgentRun = {
+  role: 'spec' | 'build'; head_sha: string | null; source_hash: string | null;
   id: string; task_id: string; project_id: string; description_revision: number;
   config: Settings; project_version: number;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'interrupted';
   parent_run_id: string | null; branch: string; worktree: string; base_sha: string | null;
-  outcome: SpecResult['outcome'] | null; error: string | null; report: number;
+  outcome: BuildResult['outcome'] | null; error: string | null; report: number;
 };
 
 export type Question = { text: string; context: string; impact: string; options: string[]; required: boolean };
 export type HumanRequest = {
-  id: string; task_id: string; run_id: string; revision: number; role: 'spec';
-  status: 'pending' | 'answered' | 'revoked'; result: SpecResult; answers: string[] | null;
+  id: string; task_id: string; run_id: string; revision: number; role: 'spec' | 'build';
+  status: 'pending' | 'answered' | 'revoked'; result: SpecResult | BuildResult; answers: string[] | null;
 };

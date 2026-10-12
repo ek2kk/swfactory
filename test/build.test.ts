@@ -1,0 +1,169 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { Store } from '../src/server/store.js';
+import { SpecController } from '../src/server/spec.js';
+import { run as command } from '../src/server/git.js';
+import { validateBuild, type ExecuteBuild } from '../src/server/codex.js';
+import type { BuildResult, SpecResult } from '../src/shared.js';
+
+const spec: SpecResult = { title: 'Hello', outcome: 'READY', summary: 'Implement hello', requirements: ['Say hello'], acceptance_criteria: ['README says hello'], assumptions: [], out_of_scope: [], questions: [] };
+const ready: BuildResult = { outcome: 'READY', summary: 'Implemented', changed_paths: ['README.md'], actions: ['Edited README'], checks: ['Read README: hello'], questions: [] };
+async function fixture(t: { after: (fn: () => void) => void }) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'factory-build-'))), checkout = join(root, 'repo'), directory = join(root, 'data');
+  mkdirSync(checkout);
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git(checkout, 'init', '-b', 'main'); git(checkout, 'config', 'user.name', 'Test'); git(checkout, 'config', 'user.email', 'test@example.com');
+  writeFileSync(join(checkout, 'README.md'), 'initial'); git(checkout, 'add', '--', 'README.md'); git(checkout, 'commit', '-m', 'initial');
+  const remote = join(root, 'remote.git'); git(checkout, 'clone', '--bare', checkout, remote); git(checkout, 'remote', 'add', 'origin', remote);
+  const store = new Store(directory);
+  t.after(() => { if (store.db.open) store.close(); rmSync(root, { recursive: true, force: true }); });
+  const project = store.addProject({ checkout, common_dir: join(checkout, '.git'), remote: 'origin', remote_url: remote, hosting: 'github', host: 'github.com', repository: 'test/repo', target_branch: 'main' });
+  const config = store.settings(project.id); config.models.build = 'selected-build'; config.instructions = 'Keep it simple';
+  store.saveSettings(project.id, config, 1);
+  const task = store.createTask(project.id, 'Say hello', 2);
+  const initial = store.queueSpec(project.id, task.id, 1, directory);
+  const specRunner = new SpecController(store, directory, () => {}, command, async () => spec);
+  specRunner.enqueue(initial); await specRunner.close();
+  const queue = () => store.queueBuild(project.id, task.id, store.task(project.id, task.id).state_version);
+  const controller = (execute: ExecuteBuild) => new SpecController(store, directory, () => {}, command, undefined, undefined, execute);
+  return { root, checkout, directory, store, project, task, initial, git, queue, controller };
+}
+
+test('Build schema rejects incomplete, extra, inconsistent and duplicate fields', () => {
+  assert.deepEqual(validateBuild(ready), ready);
+  for (const bad of [null, {}, { ...ready, extra: true }, { ...ready, changed_paths: [] }, { ...ready, changed_paths: ['a', 'a'] },
+    { ...ready, checks: [] }, { ...ready, summary: ' ' }, { ...ready, outcome: 'NEEDS_INPUT' }, { ...ready, outcome: 'PASS' }]) assert.throws(() => validateBuild(bad));
+});
+
+for (const scenario of ['edit', 'committed', 'committed-plus-edit', 'literal-path', 'delete'] as const) test(`Build READY ${scenario}: exact commit, clean tree, immutable context and durable SHA`, async t => {
+  const { store, project, task, initial, checkout, directory, git, queue, controller } = await fixture(t);
+  const run = queue();
+  assert.throws(queue, /Spec/);
+  writeFileSync(join(checkout, 'user-work'), 'untouched');
+  const runner = controller(async input => {
+    assert.equal(input.model, 'selected-build'); assert.match(input.prompt, /Keep it simple/); assert.match(input.prompt, /README says hello/); assert.match(input.prompt, /AGENTS.md/);
+    writeFileSync(join(input.cwd, 'README.md'), 'hello');
+    if (scenario.startsWith('committed')) { git(input.cwd, 'add', '--', 'README.md'); git(input.cwd, 'commit', '-m', 'builder'); }
+    if (scenario === 'committed-plus-edit') writeFileSync(join(input.cwd, 'README.md'), 'hello again');
+    if (scenario === 'delete') rmSync(join(input.cwd, 'README.md'));
+    if (scenario === 'literal-path') { writeFileSync(join(input.cwd, ':literal name'), 'hello'); return { ...ready, changed_paths: ['README.md', ':literal name'] }; }
+    return ready;
+  });
+  runner.enqueue(run); await runner.close();
+  const saved = store.specRun(project.id, task.id, run.id);
+  assert.equal(saved.status, 'completed', saved.error ?? ''); assert.equal(saved.outcome, 'READY');
+  assert.equal(store.task(project.id, task.id).stage, 'review');
+  assert.equal(saved.base_sha, initial.base_sha); assert.equal(saved.head_sha, git(run.worktree, 'rev-parse', 'HEAD'));
+  assert.equal(git(run.worktree, 'status', '--porcelain'), '');
+  assert.equal(git(run.worktree, 'rev-list', '--count', `${run.base_sha}..HEAD`), scenario === 'committed-plus-edit' ? '2' : '1');
+  assert.equal(readFileSync(join(checkout, 'README.md'), 'utf8'), 'initial'); assert.equal(readFileSync(join(checkout, 'user-work'), 'utf8'), 'untouched');
+  assert.match(readFileSync(join(directory, 'artifacts', run.id, 'report.md'), 'utf8'), /Read README/);
+  store.close(); const restarted = new Store(directory);
+  assert.equal(restarted.specRun(project.id, task.id, run.id).head_sha, saved.head_sha); restarted.close();
+});
+
+for (const scenario of ['unexpected', 'secret', 'secret-content', 'symlink', 'staged-secret', 'hidden-committed-secret', 'branch', 'hidden-index', 'reverted-commits', 'merge', 'no-change', 'blocked', 'invalid', 'event-failure', 'artifact-failure'] as const) test(`Build ${scenario} never reaches Review and preserves evidence`, async t => {
+  const { store, project, task, queue, controller, git } = await fixture(t);
+  const run = queue();
+  const runner = controller(async input => {
+    if (scenario !== 'no-change') writeFileSync(join(input.cwd, 'README.md'), 'hello');
+    if (scenario === 'unexpected') writeFileSync(join(input.cwd, 'surprise'), 'keep');
+    if (scenario === 'secret' || scenario === 'staged-secret') {
+      writeFileSync(join(input.cwd, '.env'), 'TOKEN=private-value');
+      if (scenario === 'staged-secret') git(input.cwd, 'add', '--', '.env');
+      return { ...ready, changed_paths: ['README.md', '.env'] };
+    }
+    if (scenario === 'secret-content') writeFileSync(join(input.cwd, 'README.md'), 'api_key = "private-value-123"');
+    if (scenario === 'symlink') { symlinkSync('/etc/passwd', join(input.cwd, 'link')); return { ...ready, changed_paths: ['README.md', 'link'] }; }
+    if (scenario === 'hidden-committed-secret') {
+      writeFileSync(join(input.cwd, '.env'), 'TOKEN=private-value'); git(input.cwd, 'add', '--', '.env'); git(input.cwd, 'commit', '-m', 'secret');
+      git(input.cwd, 'rm', '--', '.env'); git(input.cwd, 'commit', '-m', 'remove');
+      return { ...ready, changed_paths: ['README.md', '.env'] };
+    }
+    if (scenario === 'hidden-index') git(input.cwd, 'update-index', '--assume-unchanged', 'README.md');
+    if (scenario === 'reverted-commits') {
+      git(input.cwd, 'add', '--', 'README.md'); git(input.cwd, 'commit', '-m', 'edit');
+      git(input.cwd, 'revert', '--no-edit', 'HEAD');
+    }
+    if (scenario === 'merge') {
+      git(input.cwd, 'add', '--', 'README.md'); git(input.cwd, 'commit', '-m', 'edit');
+      git(input.cwd, 'checkout', '-b', 'side', run.base_sha!);
+      writeFileSync(join(input.cwd, 'side.txt'), 'side'); git(input.cwd, 'add', '--', 'side.txt'); git(input.cwd, 'commit', '-m', 'side');
+      git(input.cwd, 'checkout', run.branch); git(input.cwd, 'merge', '--no-edit', 'side');
+      return { ...ready, changed_paths: ['README.md', 'side.txt'] };
+    }
+    if (scenario === 'branch') git(input.cwd, 'checkout', '-b', 'unexpected');
+    if (scenario === 'blocked') return { ...ready, outcome: 'BLOCKED' };
+    if (scenario === 'invalid') return { ...ready, checks: [] };
+    if (scenario === 'event-failure') store.db.exec("CREATE TRIGGER fail BEFORE INSERT ON events WHEN NEW.type = 'build.completed' BEGIN SELECT RAISE(ABORT, 'disk failed'); END");
+    if (scenario === 'artifact-failure') writeFileSync(join(input.directory, 'report.md.tmp'), 'partial');
+    return ready;
+  });
+  runner.enqueue(run); await runner.close();
+  const saved = store.specRun(project.id, task.id, run.id);
+  assert.equal(store.task(project.id, task.id).stage, 'needs-human'); assert.equal(store.task(project.id, task.id).run_state, 'interrupted');
+  assert.equal(saved.outcome, scenario === 'blocked' ? 'BLOCKED' : null);
+  if (scenario !== 'no-change') assert.ok(readFileSync(join(run.worktree, 'README.md'), 'utf8'));
+  if (scenario === 'secret') assert.equal(git(run.worktree, 'diff', '--cached', '--name-only'), '');
+});
+
+for (const scenario of ['answer', 'changed', 'restart'] as const) test(`Build question ${scenario}: preserves partial edits, answers and role`, async t => {
+  const { store, directory, project, task, queue, controller } = await fixture(t);
+  const run = queue();
+  const runner = controller(async input => {
+    writeFileSync(join(input.cwd, 'README.md'), 'partial');
+    return { ...ready, outcome: 'NEEDS_INPUT', questions: [{ text: 'Greeting?', context: 'Text', impact: 'Output', options: ['hello'], required: true }] };
+  });
+  runner.enqueue(run); await runner.close();
+  const request = store.humanRequests().at(-1)!;
+  assert.equal(request.role, 'build');
+  if (scenario === 'restart') {
+    store.close(); const restarted = new Store(directory);
+    assert.deepEqual(restarted.answer(project.id, task.id, request.id, restarted.task(project.id, task.id).state_version, ['hello']), { run: null });
+    assert.equal(restarted.task(project.id, task.id).run_state, 'interrupted'); restarted.close(); return;
+  }
+  const next = store.answer(project.id, task.id, request.id, store.task(project.id, task.id).state_version, ['hello']).run!;
+  assert.equal(next.role, 'build'); assert.equal(next.worktree, run.worktree);
+  if (scenario === 'changed') writeFileSync(join(run.worktree, 'README.md'), 'human changed');
+  let calls = 0;
+  const continuation = controller(async input => { calls++; assert.match(input.prompt, /Greeting/); assert.match(input.prompt, /hello/); assert.equal(readFileSync(join(input.cwd, 'README.md'), 'utf8'), 'partial'); writeFileSync(join(input.cwd, 'README.md'), 'hello'); return ready; });
+  continuation.enqueue(next); await continuation.close();
+  assert.equal(calls, scenario === 'changed' ? 0 : 1);
+  assert.equal(store.task(project.id, task.id).stage, scenario === 'changed' ? 'needs-human' : 'review');
+});
+
+test('new Spec automatically queues Build atomically and reaches Review without another action', async t => {
+  const { store, project, directory, controller } = await fixture(t);
+  const task = store.createTask(project.id, 'Automatic pipeline', 2);
+  const run = store.queueSpec(project.id, task.id, 1, directory);
+  const runner = new SpecController(store, directory, () => {}, command, async () => spec, undefined, async input => {
+    writeFileSync(join(input.cwd, 'README.md'), 'hello'); return ready;
+  });
+  runner.enqueue(run);
+  try {
+    for (let i = 0; i < 1000 && store.task(project.id, task.id).stage !== 'review'; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(store.task(project.id, task.id).stage, 'review');
+    assert.equal(store.runs().filter(r => r.task_id === task.id && r.role === 'build').length, 1);
+  } finally { await runner.close(); }
+});
+
+test('failed automatic Build queue rolls back Spec completion and never launches Build', async t => {
+  const { store, project, directory } = await fixture(t);
+  const task = store.createTask(project.id, 'Automatic pipeline', 2);
+  const run = store.queueSpec(project.id, task.id, 1, directory);
+  store.db.exec("CREATE TRIGGER fail_auto BEFORE INSERT ON events WHEN NEW.type = 'build.queued' BEGIN SELECT RAISE(ABORT, 'disk failed'); END");
+  let calls = 0;
+  const runner = new SpecController(store, directory, () => {}, command, async () => spec, undefined, async () => { calls++; return ready; });
+  runner.enqueue(run);
+  try {
+    for (let i = 0; i < 1000 && store.task(project.id, task.id).stage !== 'needs-human'; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(store.task(project.id, task.id).stage, 'needs-human');
+    assert.equal(store.specRun(project.id, task.id, run.id).status, 'failed');
+    assert.equal(store.runs().filter(r => r.task_id === task.id && r.role === 'build').length, 0);
+    assert.equal(calls, 0);
+  } finally { await runner.close(); }
+});

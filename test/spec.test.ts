@@ -167,7 +167,7 @@ test('Title and Spec share three FIFO slots, await abort and save fallback title
     active.delete(description);
     if (signal.aborted) throw new Error('confirmed stopped');
     return `${description} title`;
-  });
+  }, async () => ({ outcome: 'BLOCKED', summary: 'Spec scheduler test stops here', changed_paths: [], actions: [], checks: [], questions: [] }));
   async function until(predicate: () => boolean) {
     for (let i = 0; i < 1000 && !predicate(); i++) await delay(5);
     assert.ok(predicate(), 'Expected scheduler progress');
@@ -198,7 +198,7 @@ test('Title and Spec share three FIFO slots, await abort and save fallback title
     assert.equal(store.task(project.id, e.id).run_state, 'waiting');
     assert.equal(store.task(project.id, e.id).title, 'Existing title');
     titleCalls.get('f')!.finish(); specCalls[0].finish(); specCalls[2].finish();
-    await until(() => store.task(project.id, a.id).stage === 'build' && store.task(project.id, f.id).title !== null);
+    await until(() => store.runs().some(run => run.task_id === a.id && run.role === 'spec' && run.status === 'completed') && store.runs().some(run => run.task_id === d.id && run.role === 'spec' && run.status === 'completed') && store.task(project.id, f.id).title !== null);
     assert.equal(store.task(project.id, a.id).title, ready.title);
     assert.equal(store.task(project.id, d.id).title, ready.title);
     assert.equal(maximum, 3);

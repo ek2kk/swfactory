@@ -172,3 +172,23 @@ test('human answer schema, ownership, stale action, replay and exactly one conti
   assert.equal(store.runs().length, 2);
   assert.deepEqual((await app.inject({ url: '/api/snapshot', headers })).json().human_requests[0].answers, ['Free text']);
 });
+
+test('Build action requires current Spec, schema/ownership/version and replays without a second run', async t => {
+  const { app, store, headers, project } = await fixture(t);
+  const task = store.createTask(project.id, 'Build something', 1);
+  const url = `/api/projects/${project.id}/tasks/${task.id}/build`;
+  const request = (payload: object, path = url) => app.inject({ method: 'POST', url: path, headers, payload });
+  assert.equal((await request({ request_id: randomUUID(), state_version: 1 })).statusCode, 409);
+  assert.equal((await request({ request_id: randomUUID(), state_version: '1' })).statusCode, 400);
+  const spec = store.queueSpec(project.id, task.id, 1, '/tmp');
+  spec.status = 'completed'; spec.outcome = 'READY'; store.updateRun(spec, 'build', 'idle');
+  const version = store.task(project.id, task.id).state_version;
+  const payload = { request_id: randomUUID(), state_version: version };
+  assert.equal((await request({ ...payload, request_id: randomUUID() }, url.replace(project.id, randomUUID()))).statusCode, 404);
+  assert.equal((await request({ ...payload, state_version: version - 1 })).statusCode, 409);
+  const response = await request(payload); assert.equal(response.statusCode, 200);
+  assert.equal(response.json().role, 'build');
+  assert.deepEqual((await request(payload)).json(), response.json());
+  assert.equal((await request({ ...payload, request_id: randomUUID() })).statusCode, 409);
+  assert.equal(store.runs().filter(run => run.role === 'build').length, 1);
+});
