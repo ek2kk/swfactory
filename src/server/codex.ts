@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
-import type { SpecResult } from '../shared.js';
+import type { SpecResult, BuildResult } from '../shared.js';
 import { parseTitle } from './title.js';
 import { Problem } from './store.js';
 import { saveArtifact } from './artifacts.js';
@@ -17,20 +17,23 @@ export const specSchema = {
     } } },
   required: ['title', 'outcome', 'summary', 'requirements', 'acceptance_criteria', 'assumptions', 'out_of_scope', 'questions'],
 };
+const nonempty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
+function validQuestions(value: unknown) {
+  return Array.isArray(value) && value.length <= 20 && value.every(q =>
+    q && typeof q === 'object' && Object.keys(q).sort().join() === 'context,impact,options,required,text'
+    && nonempty(q.text) && nonempty(q.context) && nonempty(q.impact) && typeof q.required === 'boolean'
+    && Array.isArray(q.options) && q.options.every(nonempty));
+}
 export function validateSpec(value: unknown): SpecResult {
   const result = value as SpecResult;
-  const nonempty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
   if (!result || typeof result !== 'object' || Array.isArray(result)
     || Object.keys(result).sort().join() !== [...specSchema.required].sort().join()
     || !['READY', 'NEEDS_INPUT'].includes(result.outcome) || !nonempty(result.summary)
     || !['requirements', 'acceptance_criteria', 'assumptions', 'out_of_scope'].every(key => {
       const values = result[key as keyof SpecResult];
       return Array.isArray(values) && values.every(nonempty);
-    }) || !Array.isArray(result.questions) || result.questions.length > 20 || !result.questions.every(q =>
-      q && typeof q === 'object' && Object.keys(q).sort().join() === 'context,impact,options,required,text'
-      && nonempty(q.text) && nonempty(q.context) && nonempty(q.impact) && typeof q.required === 'boolean'
-      && Array.isArray(q.options) && q.options.every(nonempty)) || (result.outcome === 'READY' && (!result.requirements.length || !result.acceptance_criteria.length || result.questions.length))
-    || (result.outcome === 'NEEDS_INPUT' && !result.questions.length)) throw new Problem(422, 'Codex вернул невалидный Spec. Переход заблокирован.');
+    }) || !validQuestions(result.questions) || (result.outcome === 'READY' && (!result.requirements.length || !result.acceptance_criteria.length || result.questions.length))
+    || (result.outcome === 'NEEDS_INPUT' && !result.questions.length)) throw new Problem(422, 'Codex вернул невалидный результат. Переход заблокирован.');
   try { parseTitle({ title: result.title }); }
   catch { throw new Problem(422, 'Codex вернул невалидный заголовок Spec. Переход заблокирован.'); }
   return { ...result, title: result.title.trim() };
@@ -38,14 +41,21 @@ export function validateSpec(value: unknown): SpecResult {
 export type CodexInput = { cwd: string; directory: string; model: string; prompt: string };
 export type ExecuteSpec = (input: CodexInput) => Promise<SpecResult>;
 
-export async function executeSpec(input: CodexInput, executable = 'codex'): Promise<SpecResult> {
-  saveArtifact(input.directory, 'schema.json', JSON.stringify(specSchema));
+export function executeSpec(input: CodexInput, executable = 'codex') {
+  return executeResult(input, specSchema, validateSpec, executable);
+}
+export type ExecuteBuild = (input: CodexInput) => Promise<BuildResult>;
+export function executeBuild(input: CodexInput, executable = 'codex') {
+  return executeResult(input, buildSchema, validateBuild, executable);
+}
+async function executeResult<T>(input: CodexInput, schema: object, validate: (value: unknown) => T, executable: string): Promise<T> {
+  saveArtifact(input.directory, 'schema.json', JSON.stringify(schema));
   const stdout = openSync(join(input.directory, 'events.jsonl'), 'wx', 0o600);
   let stderr: number;
   try { stderr = openSync(join(input.directory, 'stderr.log'), 'wx', 0o600); }
   catch (error) { closeSync(stdout); throw error; }
   try {
-    return await new Promise<SpecResult>((resolve, reject) => {
+    return await new Promise<T>((resolve, reject) => {
       const child = spawn(executable, ['exec', '--json', '--dangerously-bypass-approvals-and-sandbox',
         '--model', input.model, '--output-schema', join(input.directory, 'schema.json'), '--color', 'never', '-'],
       { cwd: input.cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
@@ -86,10 +96,30 @@ export async function executeSpec(input: CodexInput, executable = 'codex'): Prom
       child.on('close', code => {
         if (failed) return reject(failed);
         if (code !== 0 || !completed || buffer.trim()) return reject(new Problem(422, `Codex завершился с ошибкой или неполным stream (модель ${input.model}). Проверьте CLI, доступ к модели и локальные логи. Переход заблокирован.`));
-        try { resolve(validateSpec(JSON.parse(message))); }
-        catch { reject(new Problem(422, 'Codex вернул невалидный Spec. Переход заблокирован.')); }
+        try { resolve(validate(JSON.parse(message))); }
+        catch { reject(new Problem(422, 'Codex вернул невалидный результат. Переход заблокирован.')); }
       });
       child.stdin.end(input.prompt);
     });
   } finally { closeSync(stdout); closeSync(stderr); }
+}
+
+export const buildSchema = {
+  type: 'object', additionalProperties: false,
+  properties: { outcome: { enum: ['READY', 'NEEDS_INPUT', 'BLOCKED'] }, summary: { type: 'string' },
+    changed_paths: list, actions: list, checks: list, questions: specSchema.properties.questions },
+  required: ['outcome', 'summary', 'changed_paths', 'actions', 'checks', 'questions'],
+};
+export function validateBuild(value: unknown): BuildResult {
+  const result = value as BuildResult;
+  if (!result || typeof result !== 'object' || Array.isArray(result)
+    || Object.keys(result).sort().join() !== [...buildSchema.required].sort().join()
+    || !['READY', 'NEEDS_INPUT', 'BLOCKED'].includes(result.outcome) || !nonempty(result.summary)
+    || !validQuestions(result.questions) || (result.outcome === 'NEEDS_INPUT' ? !result.questions.length : result.questions.length > 0)
+    || !['changed_paths', 'actions', 'checks'].every(key => {
+      const items = result[key as 'changed_paths'];
+      return Array.isArray(items) && items.every(v => typeof v === 'string' && v.trim().length > 0);
+    }) || (result.outcome === 'READY' && (!result.changed_paths.length || !result.actions.length || !result.checks.length))
+    || new Set(result.changed_paths).size !== result.changed_paths.length) throw new Problem(422, 'Невалидный Build.');
+  return result;
 }

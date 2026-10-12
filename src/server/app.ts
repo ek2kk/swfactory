@@ -5,12 +5,12 @@ import type { ServerResponse } from 'node:http';
 import { Store, Problem } from './store.js';
 import { generateTitle } from './title.js';
 import { inspectProject } from './git.js';
-import { roles, type ProjectInput, type Settings, type SpecRun } from '../shared.js';
+import { roles, type ProjectInput, type Settings, type AgentRun } from '../shared.js';
 import { realpathSync } from 'node:fs';
 import { SpecController } from './spec.js';
 import { readReport } from './artifacts.js';
 import type { Run } from './git.js';
-import type { ExecuteSpec } from './codex.js';
+import type { ExecuteSpec, ExecuteBuild } from './codex.js';
 
 const text = { type: 'string', minLength: 1, maxLength: 4096 };
 const uuid = { type: 'string', pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' };
@@ -26,7 +26,7 @@ function equal(a: string, b: string) {
 
 type Action = { request_id: string; state_version: number; description: string };
 export async function createApp(options: {
-  directory: string; origin: string; staticRoot?: string; inspect?: typeof inspectProject; command?: Run; execute?: ExecuteSpec; generateTitle?: typeof generateTitle;
+  directory: string; origin: string; staticRoot?: string; inspect?: typeof inspectProject; command?: Run; execute?: ExecuteSpec; executeBuild?: ExecuteBuild; generateTitle?: typeof generateTitle;
 }) {
   const store = new Store(options.directory);
   const directory = realpathSync(options.directory);
@@ -55,7 +55,7 @@ export async function createApp(options: {
       if (sent !== undefined) clients.set(client, sent);
     }
   }
-  const controller = new SpecController(store, directory, publish, options.command, options.execute, options.generateTitle);
+  const controller = new SpecController(store, directory, publish, options.command, options.execute, options.generateTitle, options.executeBuild);
   const titles = controller.titles;
   app.addHook('onRequest', async (request, reply) => {
     reply.headers({
@@ -139,7 +139,20 @@ export async function createApp(options: {
     const prior = store.replay(request_id, fingerprint);
     if (prior !== undefined) return prior;
     if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
-    const result = store.mutate(request_id, fingerprint, () => store.queueSpec(projectId, taskId, state_version, directory)) as SpecRun;
+    const result = store.mutate(request_id, fingerprint, () => store.queueSpec(projectId, taskId, state_version, directory)) as AgentRun;
+    controller.enqueue(result);
+    publish(); return result;
+  });
+  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/build', {
+    schema: { params: taskParams, body: object({ request_id: uuid, state_version: version }) },
+  }, async request => {
+    const { projectId, taskId } = request.params;
+    const { request_id, state_version } = request.body;
+    const fingerprint = JSON.stringify(['build.start', projectId, taskId, state_version]);
+    const prior = store.replay(request_id, fingerprint);
+    if (prior !== undefined) return prior;
+    if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
+    const result = store.mutate(request_id, fingerprint, () => store.queueBuild(projectId, taskId, state_version)) as AgentRun;
     controller.enqueue(result);
     publish(); return result;
   });
@@ -153,7 +166,7 @@ export async function createApp(options: {
     const prior = store.replay(request_id, fingerprint);
     if (prior !== undefined) return prior;
     if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
-    const result = store.mutate(request_id, fingerprint, () => store.answer(projectId, taskId, humanId, state_version, answers)) as { run: SpecRun | null };
+    const result = store.mutate(request_id, fingerprint, () => store.answer(projectId, taskId, humanId, state_version, answers)) as { run: AgentRun | null };
     if (result.run) controller.enqueue(result.run);
     publish(); return result;
   });

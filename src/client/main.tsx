@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { stages, type Project, type Task, type Snapshot, type Revision, roles, type Settings, type SpecRun, type HumanRequest } from '../shared.js';
+import { stages, type Project, type Task, type Snapshot, type Revision, roles, type Settings, type AgentRun, type HumanRequest } from '../shared.js';
 import './style.css';
 
 const pendingRequests = new Map<string, string>();
@@ -21,7 +21,7 @@ async function api<T>(path: string, method = 'GET', body?: Record<string, unknow
 const labels = ['Backlog', 'Spec', 'Build', 'Review', 'Approve', 'PR/MR created', 'Needs human'];
 const taskPath = (task: Task) => `/projects/${task.project_id}/tasks/${task.id}`;
 
-function TaskCard({ task, project, runs, questions, refresh }: { task: Task; project: Project; runs: SpecRun[]; questions: HumanRequest[]; refresh: () => Promise<void> }) {
+function TaskCard({ task, project, runs, questions, refresh }: { task: Task; project: Project; runs: AgentRun[]; questions: HumanRequest[]; refresh: () => Promise<void> }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(task.description);
   const [editVersion, setEditVersion] = useState(task.state_version);
@@ -32,7 +32,7 @@ function TaskCard({ task, project, runs, questions, refresh }: { task: Task; pro
   return <article className="card">
     <span className="project-name">{project.repository}</span>
     <h3>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3>
-    <p className="meta">Редакция {task.revision} · {{ idle: task.stage === 'build' ? 'Spec готова · Build ещё не реализован' : 'Не запущена', queued: 'В очереди · ожидает слот', running: task.stage === 'spec' ? 'Codex готовит Spec' : 'Проверяем checkout и создаём worktree', waiting: 'Нужен ответ человека', interrupted: 'Прервана — нужна ручная проверка', completed: 'Завершена' }[task.run_state]}</p>
+    <p className="meta">Редакция {task.revision} · {{ idle: task.stage === 'build' ? 'Spec готова · можно запустить Build' : task.stage === 'review' ? 'Build готов · Review ещё не реализован' : 'Не запущена', queued: 'В очереди · ожидает слот', running: task.stage === 'spec' ? 'Codex готовит Spec' : task.stage === 'build' ? 'Codex реализует задачу' : 'Проверяем checkout и создаём worktree', waiting: 'Нужен ответ человека', interrupted: 'Прервана — нужна ручная проверка', completed: 'Завершена' }[task.run_state]}</p>
     {!task.title && <p role="status" className="meta">{task.title_state === 'pending' ? 'Заголовок ожидает свободного слота…'
       : task.title_state === 'running' ? 'Codex формирует заголовок…'
       : task.title_state === 'interrupted' ? 'Генерация заголовка прервана. Описание сохранено; заголовок можно получить в Spec.'
@@ -52,11 +52,11 @@ function TaskCard({ task, project, runs, questions, refresh }: { task: Task; pro
         <button type="button" className="secondary" disabled={busy} onClick={() => { setDraft(task.description); setEditVersion(task.state_version); }}>Загрузить актуальную</button>
         <button type="button" className="secondary" disabled={busy} onClick={() => setEditing(false)}>Отмена</button></div>
     </form> : <><p className="description">{task.description}</p>{((['backlog', 'build'].includes(task.stage) && task.run_state === 'idle') || (task.stage === 'needs-human' && task.run_state === 'waiting')) && <button className="secondary" onClick={() => { setDraft(task.description); setEditVersion(task.state_version); setError(''); setEditing(true); }}>Редактировать</button>}</>}
-    {!editing && task.stage === 'backlog' && task.run_state === 'idle' && <button disabled={busy} onClick={async () => {
+    {!editing && ['backlog', 'build'].includes(task.stage) && task.run_state === 'idle' && <button disabled={busy} onClick={async () => {
       setBusy(true); setError('');
-      try { await api(`${taskPath(task)}/start`, 'POST', { state_version: task.state_version }); await refresh(); }
+      try { await api(`${taskPath(task)}/${task.stage === 'build' ? 'build' : 'start'}`, 'POST', { state_version: task.state_version }); await refresh(); }
       catch (error) { setError((error as Error).message); } finally { setBusy(false); }
-    }}>{busy ? 'Ставим в очередь…' : 'Приступить к реализации'}</button>}
+    }}>{busy ? 'Ставим в очередь…' : task.stage === 'build' ? 'Запустить Build' : 'Приступить к реализации'}</button>}
     {!editing && questions.map(request => <HumanQuestions key={request.id} task={task} request={request} refresh={refresh} />)}
     {runs.map(run => <RunReport key={run.id} task={task} run={run} />)}
     <details onToggle={event => setShowHistory(event.currentTarget.open)}><summary>История описания</summary>
@@ -77,7 +77,7 @@ function HumanQuestions({ task, request, refresh }: { task: Task; request: Human
     try { await api(`${taskPath(task)}/questions/${request.id}/answer`, 'POST', { state_version: version, answers }); await refresh(); }
     catch (error) { setError((error as Error).message); } finally { setBusy(false); }
   }}>
-    <h4>Needs human · Spec · редакция {request.revision}</h4>
+    <h4>Needs human · {request.role} · редакция {request.revision}</h4>
     <p>{request.result.summary}</p>
     {request.result.questions.map((q, i) => <fieldset key={i} disabled={busy}>
       <legend>{q.text}{q.required ? ' (обязательно)' : ' (необязательно)'}</legend>
@@ -90,7 +90,7 @@ function HumanQuestions({ task, request, refresh }: { task: Task; request: Human
     {task.run_state === 'interrupted' && <p role="status">Backend перезапущен. Ответ сохранится, но работа не продолжится: нужна ручная сверка исполнения.</p>}
     {task.state_version !== version && <p role="status">Карточка изменилась. Скопируйте черновик ответов и обновите страницу.</p>}
     <button disabled={busy || task.state_version !== version || request.result.questions.some((q, i) => q.required && !answers[i].trim())}>
-      {busy ? 'Сохраняем…' : task.run_state === 'interrupted' ? 'Сохранить ответ без запуска' : 'Ответить и продолжить Spec'}
+      {busy ? 'Сохраняем…' : task.run_state === 'interrupted' ? 'Сохранить ответ без запуска' : `Ответить и продолжить ${request.role}`}
     </button>{error && <p role="alert" className="error">{error}</p>}
   </form>;
 }
@@ -105,7 +105,7 @@ function History({ task, revisions, setRevisions }: { task: Task; revisions: Rev
   return <>{error && <p role="alert">{error}</p>}{revisions ? revisions.map(r => <div key={r.revision}><p className="meta">Редакция {r.revision} · {new Date(r.created_at).toLocaleString('ru')}</p><pre>{r.description}</pre></div>) : <p role="status">Загружаем историю…</p>}</>;
 }
 
-function RunReport({ task, run }: { task: Task; run: SpecRun }) {
+function RunReport({ task, run }: { task: Task; run: AgentRun }) {
   const [report, setReport] = useState('');
   const [error, setError] = useState('');
   const [open, setOpen] = useState(false);
@@ -118,8 +118,8 @@ function RunReport({ task, run }: { task: Task; run: SpecRun }) {
     return () => { active = false; };
   }, [open, run.id, run.report, task.id]);
   return <details onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>Spec · редакция {run.description_revision}{run.description_revision !== task.revision ? ' · Неактуальна' : ''} · {run.outcome ?? run.status} · {run.config.models.spec}</summary>
-    <p className="meta">{run.base_sha && `Base: ${run.base_sha}`}<br />{run.worktree}</p>
+    <summary>{run.role} · редакция {run.description_revision}{run.description_revision !== task.revision ? ' · Неактуальна' : ''} · {run.outcome ?? run.status} · {run.config.models[run.role]}</summary>
+    <p className="meta">{run.base_sha && `Base: ${run.base_sha}`}<br />{run.head_sha && `Head: ${run.head_sha}`}<br />{run.worktree}</p>
     <p className="meta">Модели запуска: {roles.map(role => `${role}: ${run.config.models[role]}`).join(' · ')}</p>
     {run.error && <pre role="alert" className="error">{run.error}</pre>}
     {error && <p role="alert">{error}</p>}

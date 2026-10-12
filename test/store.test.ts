@@ -68,8 +68,25 @@ test('v3 migration preserves completed Spec evidence and adds empty question sto
   store.updateRun(run, 'build', 'idle', 'Preserved title');
   store.db.exec('DROP TABLE human_requests; ALTER TABLE runs DROP COLUMN parent_run_id; PRAGMA user_version = 3;');
   store.close(); store = new Store(dir);
-  assert.equal(store.db.pragma('user_version', { simple: true }), 4);
+  assert.equal(store.db.pragma('user_version', { simple: true }), 5);
   assert.deepEqual(store.specRun(project.id, task.id, run.id), run);
   assert.equal(store.task(project.id, task.id).title, 'Preserved title');
   assert.deepEqual(store.humanRequests(), []);
+});
+
+test('v4 migration preserves Spec and adds Build metadata before queuing', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'factory-v4-'));
+  let store = new Store(dir);
+  t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
+  const project = store.addProject({ checkout: '/test', common_dir: '/test/.git', remote: 'origin', remote_url: 'git@github.com:owner/repo.git', hosting: 'github', host: 'github.com', repository: 'owner/repo', target_branch: 'main' });
+  const task = store.createTask(project.id, 'preserve', 1), spec = store.queueSpec(project.id, task.id, 1, dir);
+  spec.status = 'completed'; spec.outcome = 'READY'; store.updateRun(spec, 'build', 'idle');
+  store.db.exec('ALTER TABLE runs DROP COLUMN role; ALTER TABLE runs DROP COLUMN head_sha; ALTER TABLE runs DROP COLUMN source_hash; PRAGMA user_version = 4;');
+  store.close(); store = new Store(dir);
+  assert.deepEqual(store.specRun(project.id, task.id, spec.id), spec);
+  const run = store.queueBuild(project.id, task.id, store.task(project.id, task.id).state_version);
+  assert.equal(run.role, 'build'); assert.equal(run.parent_run_id, spec.id);
+  store.close(); store = new Store(dir);
+  assert.equal(store.specRun(project.id, task.id, run.id).status, 'interrupted');
+  assert.equal(store.task(project.id, task.id).run_state, 'interrupted');
 });
