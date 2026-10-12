@@ -63,6 +63,7 @@ test('paused scheduler releases finished slots and resumes FIFO; shutdown settle
 
 test('logs page bounded UTF-8 safely and reject symlinks; saved input secrets are removed', t => {
   const { directory, run } = fixture(t); const path = artifactDirectory(directory, run.id);
+  saveArtifact(path, 'log-format.json', JSON.stringify({ format: 'redacted-v1' }));
   const text = 'я'.repeat(40000); writeFileSync(join(path, 'events.jsonl'), text);
   const first = readLog(directory, run.id, 'events.jsonl', 0); assert.ok(first.next_offset <= 65536); assert.equal(first.more, true);
   const second = readLog(directory, run.id, 'events.jsonl', first.next_offset); assert.equal(first.text + second.text, text);
@@ -80,4 +81,13 @@ test('structured artifact redaction preserves JSON with escaped quoted config ex
   assert.equal(parsed.result.summary, 'Use token="[REDACTED]" in the config');
   assert.equal(parsed.config.token, '[REDACTED]');
   assert.ok(!saved.includes('hidden-value')); assert.ok(!saved.includes('example'));
+});
+
+test('unmarked legacy logs and unsafe markers cannot expose credentials to paginated readers', t => {
+  const { directory, run } = fixture(t); const path = artifactDirectory(directory, run.id);
+  writeFileSync(join(path, 'stderr.log'), ' '.repeat(65530) + 'Bearer fakecredential1234567890\n');
+  for (const offset of [0, 65536]) assert.throws(() => readLog(directory, run.id, 'stderr.log', offset), /redaction/);
+  const external = join(directory, 'marker.json'); saveArtifact(directory, 'marker.json', JSON.stringify({ format: 'redacted-v1' }));
+  symlinkSync(external, join(path, 'log-format.json'));
+  assert.throws(() => readLog(directory, run.id, 'stderr.log', 0), /redaction/);
 });

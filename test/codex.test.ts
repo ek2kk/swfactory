@@ -83,7 +83,10 @@ test('JSONL redaction preserves nested agent JSON and removes quoted configurati
   const result = { ...ready, summary: 'Use token="example" in the config' };
   const events = [{ type: 'thread.started' }, { type: 'turn.started' },
     { type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(result) } },
-    { type: 'item.completed', item: { type: 'command_execution', output: 'config: token="quoted secret"' } }, { type: 'turn.completed' }];
+    { type: 'item.completed', item: { type: 'command_execution', output: 'config: token="quoted secret"' } },
+    { type: 'item.completed', item: { type: 'command_execution', output: JSON.stringify({ tokens: {
+      access_token: 'eyJ.header.payload.signature', refresh_token: 'rt_fakecredential1234567890', id_token: 'id_credential_value', OPENAI_API_KEY: 'api_credential_value', accessToken: 'camel_credential_value',
+    } }) } }, { type: 'turn.completed' }];
   writeFileSync(cli, `#!${process.execPath}\nif (process.argv.includes('--version')) console.log('codex-cli 1.0'); else {
     process.stdin.resume(); process.stdin.on('end', () => console.log(${JSON.stringify(events.map(e => JSON.stringify(e)).join('\n'))}));
   }`, { mode: 0o700 });
@@ -92,4 +95,8 @@ test('JSONL redaction preserves nested agent JSON and removes quoted configurati
   const saved = log.trim().split('\n').map(line => JSON.parse(line));
   assert.equal(JSON.parse(saved[2].item.text).summary, 'Use token="[REDACTED]" in the config');
   assert.ok(!log.includes('example')); assert.ok(!log.includes('quoted secret'));
+  const credentials = JSON.parse(saved[4].item.output).tokens;
+  for (const value of Object.values(credentials)) assert.equal(value, '[REDACTED]');
+  for (const secret of ['eyJ.header.payload.signature', 'rt_fakecredential1234567890', 'id_credential_value', 'api_credential_value', 'camel_credential_value']) assert.ok(!log.includes(secret));
+  assert.equal(JSON.parse(readFileSync(join(root, 'log-format.json'), 'utf8')).format, 'redacted-v1');
 });

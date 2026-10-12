@@ -62,6 +62,7 @@ async function executeResult<T>(input: CodexInput, schema: object, validate: (va
   try { stderr = openSync(join(input.directory, 'stderr.log'), 'wx', 0o600); }
   catch (error) { closeSync(stdout); throw error; }
   try {
+    saveArtifact(input.directory, 'log-format.json', JSON.stringify({ format: 'redacted-v1' }));
     return await new Promise<T>((resolve, reject) => {
       const child = spawn(executable, ['exec', '--json', '--dangerously-bypass-approvals-and-sandbox',
         '--model', input.model, '--output-schema', join(input.directory, 'schema.json'), '--color', 'never', '-'],
