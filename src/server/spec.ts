@@ -1,12 +1,13 @@
 import { mkdirSync, realpathSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { reviewRoles, type ReviewRole, type AgentRun } from '../shared.js';
+import { reviewRoles, type ReviewRole, type AgentRun, type RunDiagnostic } from '../shared.js';
 import { Store, Problem } from './store.js';
 import { preflight, verifyRepository, fetchBase, run as git, type Run } from './git.js';
 import { executeApprove, validateApprove, type ExecuteApprove, executeSpec, validateSpec, executeBuild, validateBuild, executeReview, validateReview, type ExecuteReview, type ExecuteBuild, type ExecuteSpec } from './codex.js';
 import { publishGithub } from './publication.js';
 import { sourceHash, commitBuild } from './build.js';
 import { Titles, generateTitle } from './title.js';
+import { CodexFailure } from './diagnostics.js';
 import { Scheduler } from './scheduler.js';
 import { artifactDirectory, saveArtifact } from './artifacts.js';
 
@@ -15,12 +16,48 @@ export class SpecController {
   private scheduler = new Scheduler();
   readonly titles: Titles;
   private closing = false;
+  private detectingLimits = 0;
   error: string | null = null;
   constructor(private store: Store, private directory: string, private publish: () => void,
     private command: Run = git, private execute: ExecuteSpec = executeSpec, generate = generateTitle, private build: ExecuteBuild = executeBuild, private review: ExecuteReview = executeReview, private approve: ExecuteApprove = executeApprove) {
-    this.titles = new Titles(store, publish, generate, undefined, this.scheduler);
+    this.scheduler = new Scheduler(() => this.canRun());
+    this.titles = new Titles(store, publish, generate, undefined, this.scheduler, error => {
+      if (error instanceof CodexFailure && error.kind === 'rate_limit') this.store.db.transaction(() => this.store.pauseExecution(error.resetAt))();
+    });
   }
 
+  private canRun() {
+    if (this.closing || this.error || this.titles?.error || this.detectingLimits > 0) return false;
+    const pause = this.store.executionPause();
+    if (!pause.paused) return true;
+    if (pause.reset_at && Date.parse(pause.reset_at) <= Date.now()) {
+      try { this.store.db.transaction(() => this.store.resumeExecution(pause.state_version))(); this.publish(); return true; }
+      catch { this.error = 'Не удалось сохранить продолжение очереди. Нужна ручная проверка.'; return false; }
+    }
+    return false;
+  }
+  resume() { this.scheduler.wake(); }
+  private recordMetadata(run: AgentRun, value: RunDiagnostic) {
+    run.diagnostic = { ...run.diagnostic, ...value };
+    this.store.db.transaction(() => {
+      this.store.db.prepare("UPDATE runs SET diagnostic = ? WHERE id = ? AND status = 'running'").run(JSON.stringify(run.diagnostic), run.id);
+      this.store.event('run.metadata', run.task_id, { run_id: run.id, ...value });
+    })();
+    this.publish();
+  }
+  private async diagnose(run: AgentRun, error: unknown) {
+    if (error instanceof CodexFailure) {
+      if (error.kind === 'rate_limit') this.detectingLimits++;
+      run.diagnostic = { ...run.diagnostic, error_kind: error.kind, execution_finished: error.finished, reset_at: error.resetAt };
+      if (error.finished) {
+        try { run.source_hash = await sourceHash(run, this.command); }
+        catch { run.diagnostic.execution_finished = false; }
+      }
+    } else {
+      run.diagnostic = { ...run.diagnostic, execution_finished: false,
+        ...((error as NodeJS.ErrnoException)?.code === 'ENOENT' ? { error_kind: 'missing_artifact' as const } : {}) };
+    }
+  }
   enqueue(run: AgentRun) {
     if (this.closing || this.error || this.titles.error) throw new Problem(503, 'Исполнение остановлено. Нужна ручная проверка backend.');
     const released = this.titles.releaseForSpec(this.store.task(run.project_id, run.task_id));
@@ -56,6 +93,7 @@ export class SpecController {
   }
   async close() {
     this.closing = true;
+    this.scheduler.close();
     await Promise.all([this.titles.close(), ...this.active]);
   }
 
@@ -109,7 +147,7 @@ Previous results and human answers:
 ${JSON.stringify(context)}`;
       saveArtifact(directory, 'input.json', JSON.stringify({ run, description: task.description, specification, feedback, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'build', 'running'); this.publish();
-      const result = validateBuild(await this.build({ cwd: run.worktree, directory, model: run.config.models.build, prompt }));
+      const result = validateBuild(await this.build({ cwd: run.worktree, directory, metadata: value => this.recordMetadata(run, value), model: run.config.models.build, prompt }));
       await verifyRepository(project, run.worktree, this.command);
       run.head_sha = result.outcome === 'READY' ? await commitBuild(run, result, this.command)
         : await this.command('git', ['rev-parse', 'HEAD'], run.worktree);
@@ -129,16 +167,19 @@ ${JSON.stringify(context)}`;
       })();
       if (next) this.enqueue(next);
     } catch (error) {
+      await this.diagnose(run, error);
       run.status = 'failed'; run.outcome = null; run.report = 0;
       run.repair_attempt = this.store.specRun(run.project_id, run.task_id, run.id).repair_attempt;
       run.error = error instanceof Problem ? error.message : 'Ошибка сохранения или исполнения Build. Нужна ручная проверка; частичные изменения сохранены.';
       try { this.store.updateRun(run, 'needs-human', 'interrupted'); }
       catch { this.error = 'Не удалось сохранить Build. Новые запуски остановлены; нужна ручная сверка перед restart.'; }
     }
+    if (run.diagnostic?.error_kind === 'rate_limit') this.detectingLimits--;
     this.publish();
   }
 
   async refreshReviewState() {
+    this.canRun();
     for (const task of this.store.snapshot().tasks.filter(t => !['queued', 'running'].includes(t.run_state) && !t.publication_status)) {
       const run = this.store.runs().filter(r => r.task_id === task.id && r.description_revision === task.revision && (r.role.startsWith('review-') || r.role === 'approve')).at(-1);
       if (!run || run.stale || this.store.runs().filter(r => r.task_id === task.id).at(-1)?.role === 'build') continue;
@@ -199,7 +240,7 @@ Human answers:
 ${JSON.stringify(context)}`;
       saveArtifact(directory, 'input.json', JSON.stringify({ run, specification, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'review', 'running'); this.publish();
-      const result = validateReview(await this.review({ cwd: run.worktree, directory, model: run.config.models[run.role], prompt }), run.role as ReviewRole);
+      const result = validateReview(await this.review({ cwd: run.worktree, directory, metadata: value => this.recordMetadata(run, value), model: run.config.models[run.role], prompt }), run.role as ReviewRole);
       await this.verifyReviewSource(run);
       saveArtifact(directory, 'result.json', JSON.stringify({ schema_version: 1, task_id: task.id, run_id: run.id, role: run.role,
         round_id: run.round_id, description_revision: run.description_revision, spec_revision: run.spec_run_id,
@@ -224,11 +265,13 @@ ${JSON.stringify(context)}`;
       })();
       if (next) this.enqueue(next);
     } catch (error) {
+      await this.diagnose(run, error);
       run.status = 'failed'; run.outcome = null; run.report = 0;
       run.error = error instanceof Problem ? error.message : 'Ошибка исполнения или сохранения Review. Нужна ручная проверка; изменения сохранены.';
       try { this.store.updateRun(run, 'needs-human', 'interrupted'); }
       catch { this.error = 'Не удалось сохранить Review. Новые запуски остановлены; нужна ручная сверка.'; }
     }
+    if (run.diagnostic?.error_kind === 'rate_limit') this.detectingLimits--;
     this.publish();
   }
 
@@ -254,7 +297,7 @@ Return only the structured result. Reports/logs belong in ${directory}.
 Context: ${JSON.stringify({ run, description: task.description, specification, reports, human_answers: context })}`;
       saveArtifact(directory, 'input.json', JSON.stringify({ run, specification, reports, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'approve', 'running'); this.publish();
-      const result = validateApprove(await this.approve({ cwd: run.worktree, directory, model: run.config.models.approve, prompt }));
+      const result = validateApprove(await this.approve({ cwd: run.worktree, directory, metadata: value => this.recordMetadata(run, value), model: run.config.models.approve, prompt }));
       await this.verifyReviewSource(run);
       if (!this.store.reviewPasses(run)) throw new Problem(409, 'Review устарел.');
       saveArtifact(directory, 'result.json', JSON.stringify({ schema_version: 1, run_id: run.id, task_id: task.id,
@@ -266,11 +309,13 @@ Context: ${JSON.stringify({ run, description: task.description, specification, r
       run.status = 'completed'; run.outcome = result.outcome; run.report = 1;
       this.store.updateRun(run, result.outcome === 'APPROVE' ? 'approve' : 'needs-human', result.outcome === 'APPROVE' ? 'completed' : 'waiting', undefined, result);
     } catch (error) {
+      await this.diagnose(run, error);
       run.status = 'failed'; run.outcome = null; run.report = 0;
       run.error = error instanceof Problem ? error.message : 'Ошибка исполнения или сохранения Approve. Нужна ручная проверка.';
       try { this.store.updateRun(run, 'needs-human', 'interrupted'); }
       catch { this.error = 'Не удалось сохранить Approve. Новые запуски остановлены; нужна ручная сверка.'; }
     }
+    if (run.diagnostic?.error_kind === 'rate_limit') this.detectingLimits--;
     this.publish();
   }
 
@@ -310,7 +355,7 @@ ${context.length ? `Previous Spec results and human answers (same revision):\n${
       saveArtifact(directory, 'input.json', JSON.stringify({ run, description: task.description, prompt }, null, 2));
       this.store.updateRun(run, 'spec', 'running');
       this.publish();
-      const result = validateSpec(await this.execute({ cwd: run.worktree, directory, model: run.config.models.spec, prompt }));
+      const result = validateSpec(await this.execute({ cwd: run.worktree, directory, metadata: value => this.recordMetadata(run, value), model: run.config.models.spec, prompt }));
       const head = await this.verifyWorktree(run);
       const report = [result.summary, ...[
         ['Требования', result.requirements], ['Acceptance criteria', result.acceptance_criteria],
@@ -329,11 +374,13 @@ ${context.length ? `Previous Spec results and human answers (same revision):\n${
       })();
       if (next) this.enqueue(next);
     } catch (error) {
+      await this.diagnose(run, error);
       run.status = 'failed'; run.outcome = null; run.report = 0;
       run.error = error instanceof Problem ? error.message : 'Ошибка сохранения или исполнения. Проверьте data directory и локальные логи; автоматического продолжения нет.';
       try { this.store.updateRun(run, prepared ? 'needs-human' : 'backlog', prepared ? 'interrupted' : 'idle'); }
       catch { this.error = 'Не удалось сохранить состояние исполнения. Новые запуски остановлены. Проверьте диск и вручную сверьте worktrees перед restart.'; }
     }
+    if (run.diagnostic?.error_kind === 'rate_limit') this.detectingLimits--;
     this.publish();
   }
 }

@@ -427,3 +427,31 @@ test('Spec answer repeats worktree preflight on dequeue even when an unfinished 
     assert.ok(git('-C', first.worktree, 'rev-parse', '--verify', 'MERGE_HEAD'));
   } finally { const closing = runner.close(); releases.forEach(release => release()); await closing; }
 });
+
+import { CodexFailure } from '../src/server/diagnostics.js';
+for (const timed of [false, true]) test(`confirmed rate limit pauses all projects and retry preserves history; timed=${timed}`, { timeout: 10000 }, async t => {
+  const { store, directory, project, queue } = fixture(t);
+  let calls = 0;
+  const runner = new SpecController(store, directory, () => {}, command, async input => {
+    input.metadata?.({ cli_version: 'codex-cli 1.0', session_id: 'test-session' });
+    calls++;
+    const failure = new CodexFailure(calls === 1 ? 'rate_limit' : 'authentication', timed ? new Date(Date.now() + 700).toISOString() : null);
+    failure.finished = true; throw failure;
+  });
+  const run = queue(); runner.enqueue(run);
+  for (let i = 0; i < 200 && !store.executionPause().paused; i++) await delay(10);
+  assert.equal(store.executionPause().paused, 1); assert.equal(calls, 1);
+  const failed = store.specRun(project.id, run.task_id, run.id);
+  assert.equal(failed.diagnostic?.execution_finished, true); assert.ok(failed.source_hash);
+  assert.equal(failed.diagnostic?.session_id, 'test-session'); assert.ok(failed.started_at); assert.ok(failed.finished_at);
+  const waiting = queue(); runner.enqueue(waiting);
+  await delay(50); assert.equal(calls, 1);
+  const retry = store.mutate('retry-rate', 'retry-rate', () => store.retryRun(project.id, run.task_id, store.task(project.id, run.task_id).state_version)) as typeof run;
+  runner.enqueue(retry);
+  if (!timed) { store.db.transaction(() => store.resumeExecution(store.executionPause().state_version))(); runner.resume(); }
+  for (let i = 0; i < 300 && calls < 3; i++) await delay(10);
+  assert.equal(calls, 3); await runner.close();
+  assert.equal(store.executionPause().paused, 0); assert.equal(store.runs().filter(r => r.task_id === run.task_id).length, 2);
+  assert.equal(store.specRun(project.id, run.task_id, retry.id).repair_attempt, 0);
+  assert.equal(store.specRun(project.id, run.task_id, run.id).diagnostic?.error_kind, 'rate_limit');
+});

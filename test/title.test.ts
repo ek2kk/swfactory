@@ -112,7 +112,7 @@ test('v1 database migration preserves descriptions and does not automatically ru
     store.close(); store = new Store(dir);
     assert.equal(store.task(p.id, task.id).description, 'old description');
     assert.equal(store.task(p.id, task.id).title_state, 'interrupted');
-    assert.equal(store.db.pragma('user_version', { simple: true }), 8);
+    assert.equal(store.db.pragma('user_version', { simple: true }), 9);
     assert.equal(store.claimTitle(store.task(p.id, task.id)), undefined);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
@@ -173,11 +173,26 @@ for (const variant of ['spec-v2', 'title-v2'] as const) test(`migration from ${v
     assert.equal(saved.description, 'keep description'); assert.equal(saved.title, 'Saved title');
     assert.equal(saved.title_state, 'completed');
     assert.equal(store.revisions(p.id, task.id).length, 1);
-    assert.equal(store.db.pragma('user_version', { simple: true }), 8);
+    assert.equal(store.db.pragma('user_version', { simple: true }), 9);
     assert.equal(Object.keys(store.settings(p.id).models).length, 7);
     if (runId) {
       assert.equal(store.specRun(p.id, task.id, runId).outcome, 'READY');
       assert.equal(store.settings(p.id).instructions, 'Keep instructions');
     } else assert.deepEqual(store.runs(), []);
   } finally { if (store.db.open) store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('confirmed Title rate limit reaches the shared pause handler', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'factory-title-limit-'));
+  const store = new Store(directory);
+  t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const project = store.addProject({ checkout: '/repo', common_dir: '/repo/.git', remote: 'origin', remote_url: 'git@github.com:test/repo.git', hosting: 'github', host: 'github.com', repository: 'test/repo', target_branch: 'main' });
+  const task = store.createTask(project.id, 'test', 1);
+  const { CodexFailure } = await import('../src/server/diagnostics.js');
+  const titles = new Titles(store, () => {}, async () => { throw new CodexFailure('rate_limit'); }, undefined, undefined,
+    error => { if (error instanceof CodexFailure) store.db.transaction(() => store.pauseExecution(error.resetAt))(); });
+  titles.kick();
+  for (let i = 0; i < 100 && !store.executionPause().paused; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  await titles.close();
+  assert.equal(store.executionPause().paused, 1); assert.equal(store.task(project.id, task.id).title_state, 'failed');
 });

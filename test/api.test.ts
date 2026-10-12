@@ -305,3 +305,24 @@ test('Publication API requires owned task, valid schema and an approved current 
   assert.equal(store.task(project.id, task.id).publication_status, null);
   assert.equal(store.replay(payload.request_id, JSON.stringify(['publication.start', project.id, task.id, task.state_version])), undefined);
 });
+
+test('diagnostic actions validate versions/schema/ownership, replay once, and logs require owned run', async t => {
+  const { app, store, headers, project } = await fixture(t);
+  const task = store.createTask(project.id, 'diagnostics', 1);
+  const run = store.queueSpec(project.id, task.id, 1, '/tmp');
+  run.status = 'failed'; run.base_sha = 'base'; run.source_hash = 'hash'; run.diagnostic = { error_kind: 'rate_limit', execution_finished: true, reset_at: null };
+  store.updateRun(run, 'needs-human', 'interrupted');
+  const resume = { request_id: randomUUID(), state_version: store.executionPause().state_version };
+  const response = await app.inject({ method: 'POST', url: '/api/execution/resume', headers, payload: resume }); assert.equal(response.statusCode, 200);
+  assert.deepEqual((await app.inject({ method: 'POST', url: '/api/execution/resume', headers, payload: resume })).json(), response.json());
+  assert.equal((await app.inject({ method: 'POST', url: '/api/execution/resume', headers, payload: { ...resume, request_id: randomUUID() } })).statusCode, 409);
+  const path = `/api/projects/${project.id}/tasks/${task.id}`;
+  assert.equal((await app.inject({ url: `${path}/runs/${run.id}/log?name=../state.sqlite&offset=0`, headers })).statusCode, 400);
+  assert.equal((await app.inject({ url: `${path}/runs/${run.id}/log?name=stderr.log&offset=-1`, headers })).statusCode, 400);
+  assert.equal((await app.inject({ url: `${path}/runs/${randomUUID()}/log?name=stderr.log&offset=0`, headers })).statusCode, 404);
+  const retry = { request_id: randomUUID(), state_version: store.task(project.id, task.id).state_version };
+  const enqueue = t.mock.method(SpecController.prototype, 'enqueue', () => {});
+  const retried = await app.inject({ method: 'POST', url: `${path}/retry`, headers, payload: retry }); assert.equal(retried.statusCode, 200);
+  assert.deepEqual((await app.inject({ method: 'POST', url: `${path}/retry`, headers, payload: retry })).json(), retried.json()); assert.equal(enqueue.mock.callCount(), 1);
+  assert.equal((await app.inject({ method: 'POST', url: `${path}/retry`, headers, payload: { ...retry, request_id: randomUUID() } })).statusCode, 409);
+});

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Task } from '../shared.js';
 import { Store, Problem } from './store.js';
+import { CodexFailure, classifyFailure } from './diagnostics.js';
 import { Scheduler } from './scheduler.js';
 
 export function parseTitle(value: unknown): string {
@@ -23,6 +24,7 @@ export async function generateTitle(description: string, signal: AbortSignal): P
     signal.throwIfAborted();
     await new Promise<void>((resolve, reject) => {
       let failed = false;
+      let failure: CodexFailure | undefined;
       let forceStop: ReturnType<typeof setTimeout> | undefined;
       const child = execFile('codex', ['exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
         '--sandbox', 'read-only', '--skip-git-repo-check', '-c', 'approval_policy="never"',
@@ -30,7 +32,7 @@ export async function generateTitle(description: string, signal: AbortSignal): P
         '-c', 'features.apps=false', '-c', 'features.hooks=false', '-c', 'features.plugins=false',
         '-c', 'features.skill_search=false', '-c', 'features.skip_host_skill_discovery=true', '-c', 'features.multi_agent=false',
         '-c', 'project_doc_max_bytes=0', '--output-schema', schema, '--output-last-message', output, '-'],
-      { cwd, maxBuffer: 1024 * 1024 }, error => { failed ||= !!error; });
+      { cwd, maxBuffer: 1024 * 1024 }, (error, _stdout, stderr) => { failed ||= !!error; if (error) failure = classifyFailure(stderr); });
       function stop() {
         failed = true;
         child.kill('SIGTERM');
@@ -41,7 +43,7 @@ export async function generateTitle(description: string, signal: AbortSignal): P
       child.once('close', code => {
         clearTimeout(timeout); clearTimeout(forceStop);
         signal.removeEventListener('abort', stop);
-        if (failed || signal.aborted || code !== 0) reject(new Error('Codex title failed'));
+        if (failed || signal.aborted || code !== 0) reject(failure ?? new Error('Codex title failed'));
         else resolve();
       });
       child.stdin!.on('error', () => {});
@@ -59,7 +61,7 @@ export class Titles {
   error: string | null = null;
   constructor(private store: Store, private publish: () => void,
     private generate = generateTitle, private onError: (error: unknown) => void = console.error,
-    private scheduler = new Scheduler()) {}
+    private scheduler = new Scheduler(), private executionFailure: (error: unknown) => void = () => {}) {}
 
   kick() {
     if (this.stopped) return;
@@ -71,7 +73,7 @@ export class Titles {
           try {
             if (this.stopped || controller.signal.aborted || !this.store.claimTitle(task)) return;
             this.publish();
-            const title = await this.generate(task.description, controller.signal).then(title => parseTitle({ title })).catch(() => null);
+            const title = await this.generate(task.description, controller.signal).then(title => parseTitle({ title })).catch(error => { this.executionFailure(error); return null; });
             if (!this.stopped) { this.store.finishTitle(task, title); this.publish(); }
           } catch (error) { this.fail(error); }
         })
