@@ -124,6 +124,11 @@ for (const graceful of [true, false]) test(`title abort waits for CLI close (${g
   const root = mkdtempSync(join(tmpdir(), 'factory-title-process-'));
   const pidFile = join(root, 'pid'), aborted = join(root, 'aborted'), release = join(root, 'release');
   writeFileSync(join(root, 'codex'), `#!${process.execPath}\nconst fs = require('node:fs');
+    const assert = require('node:assert/strict'), argv = process.argv.slice(2);
+    assert.ok(argv.includes('--ignore-user-config'));
+    for (const feature of ['computer_use', 'browser_use', 'browser_use_external', 'browser_use_full_cdp_access', 'in_app_browser', 'apps', 'plugins', 'remote_plugin', 'hooks']) {
+      assert.ok(argv.some((value, i) => value === '--disable' && argv[i + 1] === feature));
+    }
     process.on('SIGTERM', () => fs.writeFileSync(${JSON.stringify(aborted)}, 'yes'));
     fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
     setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) process.exit(0); }, 5);`, { mode: 0o700 });

@@ -1,3 +1,4 @@
+import { headlessArgs } from './agent-policy.js';
 import { execFile } from 'node:child_process';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -26,7 +27,7 @@ export async function generateTitle(description: string, signal: AbortSignal): P
       let failed = false;
       let failure: CodexFailure | undefined;
       let forceStop: ReturnType<typeof setTimeout> | undefined;
-      const child = execFile('codex', ['exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
+      const child = execFile('codex', ['exec', ...headlessArgs, '--ephemeral', '--ignore-user-config', '--ignore-rules',
         '--sandbox', 'read-only', '--skip-git-repo-check', '-c', 'approval_policy="never"',
         '-c', 'features.shell_tool=false', '-c', 'web_search="disabled"',
         '-c', 'features.apps=false', '-c', 'features.hooks=false', '-c', 'features.plugins=false',
