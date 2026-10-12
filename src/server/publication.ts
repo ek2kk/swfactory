@@ -33,7 +33,9 @@ export async function publishGithub(project: Project, task: Task, run: AgentRun,
   if (existing.length) {
     if (existing.length !== 1) throw new Problem(422, 'Найдено несколько PR; нужна ручная сверка.');
     await verify();
-    return confirm(JSON.parse(await command('gh', ['api', '--hostname', project.host, `${api}/${existing[0].number}`], run.worktree)));
+    const result = confirm(JSON.parse(await command('gh', ['api', '--hostname', project.host, `${api}/${existing[0].number}`], run.worktree)));
+    await verify();
+    return result;
   }
   const body = [marker, task.description, '## Summary', read(run.round_id!).summary, '## Reviews',
     ...reviews.map(r => `${r.role}: ${r.outcome}\n${read(r.id).summary}`), '## Approval', read(run.id).summary,

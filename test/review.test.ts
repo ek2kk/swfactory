@@ -355,7 +355,7 @@ test('Approve starts for supported 2 MiB source even when diff exceeds coordinat
   assert.equal(store.runs().at(-1)!.outcome, 'APPROVE');
 });
 
-for (const mode of ['success', 'existing', 'unknown', 'changed', 'changed-after-push', 'push-url', 'wrong-marker', 'wrong-head', 'save', 'missing-pass'] as const) test(`GitHub publication ${mode}: guarded, confirmed and durable`, async t => {
+for (const mode of ['success', 'existing', 'existing-changed-during-fetch', 'unknown', 'changed', 'changed-after-push', 'push-url', 'wrong-marker', 'wrong-head', 'save', 'missing-pass'] as const) test(`GitHub publication ${mode}: guarded, confirmed and durable`, async t => {
   const { store, project, task, directory, queue, controller, build } = await fixture(t);
   const reviewer = controller(async () => pass);
   reviewer.enqueue(queue()); await settled(store, task.id); await reviewer.close();
@@ -378,8 +378,9 @@ for (const mode of ['success', 'existing', 'unknown', 'changed', 'changed-after-
       }
       return command(file, args, cwd);
     }
-    if (args.includes('--slurp')) return JSON.stringify([['existing', 'wrong-marker', 'wrong-head'].includes(mode) ? [pr] : []]);
+    if (args.includes('--slurp')) return JSON.stringify([['existing', 'existing-changed-during-fetch', 'wrong-marker', 'wrong-head'].includes(mode) ? [pr] : []]);
     if (args[0] === 'pr') { creates++; if (mode === 'unknown') throw new Error('Connection lost after create'); return pr.html_url; }
+    if (mode === 'existing-changed-during-fetch') writeFileSync(join(cwd, 'README.md'), 'changed during PR detail fetch');
     return JSON.stringify(mode === 'wrong-marker' ? { ...pr, body: 'another task' } : mode === 'wrong-head' ? { ...pr, head: { ...pr.head, sha: 'bad' } } : pr);
   };
   const publisher = new SpecController(store, directory, () => {}, cli);
