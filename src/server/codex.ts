@@ -2,7 +2,7 @@ import { execFile, spawn } from 'node:child_process';
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ApproveResult, SpecResult, BuildResult, ReviewResult, ReviewRole } from '../shared.js';
-import { CodexFailure, classifyFailure, redact } from './diagnostics.js';
+import { CodexFailure, classifyFailure, redact, redactStructured } from './diagnostics.js';
 import type { RunDiagnostic } from '../shared.js';
 import { parseTitle } from './title.js';
 import { Problem } from './store.js';
@@ -81,9 +81,11 @@ async function executeResult<T>(input: CodexInput, schema: object, validate: (va
           let newline: number;
           while ((newline = buffer.indexOf('\n')) >= 0) {
             const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
-            writeSync(stdout, redact(line) + '\n');
             if (!line.trim()) continue;
-            const event = JSON.parse(line);
+            let event;
+            try { event = JSON.parse(line); }
+            catch { writeSync(stdout, '[Invalid JSONL event omitted]\n'); throw new Error('Invalid JSONL'); }
+            writeSync(stdout, JSON.stringify(redactStructured(event)) + '\n');
             if (typeof event?.type !== 'string' || completed) throw new Error('Invalid stream');
             if (event.type === 'thread.started') { thread = true; if (typeof event.thread_id === 'string' && event.thread_id.length <= 256) input.metadata?.({ session_id: redact(event.thread_id) }); }
             if (event.type === 'turn.started') { if (started || !thread) throw new Error('Invalid turn'); started = true; }
@@ -104,7 +106,7 @@ async function executeResult<T>(input: CodexInput, schema: object, validate: (va
       child.on('error', () => { failed = new Problem(422, 'Не удалось запустить Codex. Проверьте CLI и checkout.'); });
       child.stdin.on('error', () => { failed ??= new Problem(422, 'Codex не принял prompt. Проверьте CLI и локальные логи.'); });
       child.on('close', code => {
-        try { if (stderrBuffer) writeSync(stderr, redact(stderrBuffer)); if (buffer) writeSync(stdout, redact(buffer)); } catch { failed = new Problem(422, 'Не удалось сохранить локальный лог.'); }
+        try { if (stderrBuffer) writeSync(stderr, redact(stderrBuffer)); if (buffer) writeSync(stdout, '[Incomplete JSONL event omitted]\n'); } catch { failed = new Problem(422, 'Не удалось сохранить локальный лог.'); }
         if (failed instanceof CodexFailure) failed.finished = true;
         if (failed) return reject(failed);
         if (code !== 0 || !completed || buffer.trim()) { const error = code !== 0 ? classifyFailure(stderrTail) : new CodexFailure(message ? 'protocol_error' : 'missing_artifact'); error.finished = true; return reject(error); }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, realpathSync, writeFileSync, symlinkSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, realpathSync, readFileSync, writeFileSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -69,4 +69,15 @@ test('logs page bounded UTF-8 safely and reject symlinks; saved input secrets ar
   assert.throws(() => readLog(directory, run.id, 'events.jsonl', 999999));
   unlinkSync(join(path, 'events.jsonl')); symlinkSync('/etc/passwd', join(path, 'events.jsonl')); assert.throws(() => readLog(directory, run.id, 'events.jsonl', 0));
   saveArtifact(path, 'stderr.log', 'token=abcdefghijklmnop'); assert.ok(!readLog(directory, run.id, 'stderr.log', 0).text.includes('abcdefghijklmnop'));
+});
+
+test('structured artifact redaction preserves JSON with escaped quoted config examples', t => {
+  const { directory, run } = fixture(t); const path = artifactDirectory(directory, run.id);
+  const value = { result: { summary: 'Use token="example" in the config', requirements: ['password="another example"'] }, config: { token: 'hidden-value' } };
+  saveArtifact(path, 'result.json', JSON.stringify(value));
+  const saved = readFileSync(join(path, 'result.json'), 'utf8');
+  const parsed = JSON.parse(saved);
+  assert.equal(parsed.result.summary, 'Use token="[REDACTED]" in the config');
+  assert.equal(parsed.config.token, '[REDACTED]');
+  assert.ok(!saved.includes('hidden-value')); assert.ok(!saved.includes('example'));
 });

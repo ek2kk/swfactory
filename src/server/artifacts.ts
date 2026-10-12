@@ -1,6 +1,6 @@
 import { constants, mkdirSync, realpathSync, writeFileSync, renameSync, openSync, readFileSync, closeSync, fstatSync, readSync } from 'node:fs';
 import { join } from 'node:path';
-import { redact } from './diagnostics.js';
+import { redact, redactStructured } from './diagnostics.js';
 import { Problem } from './store.js';
 
 export function artifactDirectory(directory: string, runId: string) {
@@ -13,7 +13,7 @@ export function artifactDirectory(directory: string, runId: string) {
 }
 export function saveArtifact(directory: string, name: string, text: string) {
   const temporary = join(directory, `${name}.tmp`);
-  writeFileSync(temporary, redact(text), { flag: 'wx', mode: 0o600 });
+  writeFileSync(temporary, name.endsWith('.json') ? JSON.stringify(redactStructured(JSON.parse(text)), null, 2) : redact(text), { flag: 'wx', mode: 0o600 });
   renameSync(temporary, join(directory, name));
 }
 export function readReport(directory: string, runId: string) {

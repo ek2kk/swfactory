@@ -75,3 +75,21 @@ test('error classification remains conservative and configuration secrets are re
   try { assert.equal(redact('test-secret-value password=another-secret'), '[REDACTED] password=[REDACTED]'); }
   finally { delete process.env.SWFACTORY_TEST_TOKEN; }
 });
+
+test('JSONL redaction preserves nested agent JSON and removes quoted configuration secrets', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'factory-json-redaction-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const cli = join(root, 'codex');
+  const result = { ...ready, summary: 'Use token="example" in the config' };
+  const events = [{ type: 'thread.started' }, { type: 'turn.started' },
+    { type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(result) } },
+    { type: 'item.completed', item: { type: 'command_execution', output: 'config: token="quoted secret"' } }, { type: 'turn.completed' }];
+  writeFileSync(cli, `#!${process.execPath}\nif (process.argv.includes('--version')) console.log('codex-cli 1.0'); else {
+    process.stdin.resume(); process.stdin.on('end', () => console.log(${JSON.stringify(events.map(e => JSON.stringify(e)).join('\n'))}));
+  }`, { mode: 0o700 });
+  assert.deepEqual(await executeSpec({ cwd: root, directory: root, model: 'chosen-model', prompt: 'prompt' }, cli), result);
+  const log = readFileSync(join(root, 'events.jsonl'), 'utf8');
+  const saved = log.trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(JSON.parse(saved[2].item.text).summary, 'Use token="[REDACTED]" in the config');
+  assert.ok(!log.includes('example')); assert.ok(!log.includes('quoted secret'));
+});

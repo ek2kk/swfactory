@@ -455,3 +455,19 @@ for (const timed of [false, true]) test(`confirmed rate limit pauses all project
   assert.equal(store.specRun(project.id, run.task_id, retry.id).repair_attempt, 0);
   assert.equal(store.specRun(project.id, run.task_id, run.id).diagnostic?.error_kind, 'rate_limit');
 });
+
+test('quoted config example in Spec stays valid and Build consumes the redacted artifact', { timeout: 10000 }, async t => {
+  const { store, directory, project, queue } = fixture(t);
+  let built = false;
+  const runner = new SpecController(store, directory, () => {}, command,
+    async () => ({ ...ready, summary: 'Use token="example" in the config' }), undefined,
+    async input => {
+      assert.ok(input.prompt.includes('[REDACTED]')); assert.ok(!input.prompt.includes('example'));
+      built = true; return { outcome: 'BLOCKED', summary: 'Regression stops after reading Spec', changed_paths: [], actions: [], checks: [], questions: [] };
+    });
+  const run = queue(); runner.enqueue(run);
+  for (let i = 0; i < 300 && !built; i++) await delay(10);
+  await runner.close(); assert.ok(built);
+  assert.equal(store.specRun(project.id, run.task_id, run.id).status, 'completed');
+  assert.equal(store.runs().at(-1)?.role, 'build'); assert.equal(store.runs().at(-1)?.status, 'completed');
+});
