@@ -61,10 +61,10 @@ export class SpecController {
 
   private async verifyWorktree(run: AgentRun) {
     if (realpathSync(run.worktree) !== run.worktree) throw new Problem(422, 'Worktree содержит symlink. Нужна ручная проверка.');
+    await preflight({ ...this.store.project(run.project_id), checkout: run.worktree }, this.command);
     const head = await this.command('git', ['rev-parse', 'HEAD'], run.worktree);
     const branch = await this.command('git', ['symbolic-ref', '--short', 'HEAD'], run.worktree);
-    const status = await this.command('git', ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'], run.worktree);
-    if (head !== run.base_sha || branch !== run.branch || status) throw new Problem(422, 'Git state или source изменены. Переход заблокирован; изменения сохранены в worktree для ручной проверки.');
+    if (head !== run.base_sha || branch !== run.branch) throw new Problem(422, 'Git state или source изменены. Переход заблокирован; изменения сохранены в worktree для ручной проверки.');
     return head;
   }
 
