@@ -184,7 +184,9 @@ for (const [label, path, content] of [
   ['leading-space', ' leading.txt', 'hello'],
   ['600-KiB', 'large.txt', 'a'.repeat(600 * 1024)],
   ['2-MiB', 'large.txt', 'a'.repeat(2 * 1024 * 1024)],
-]) for (const committed of [false, true]) test(`Build READY ${label}, builder commit=${committed}`, async t => {
+  ['binary-1-MiB', 'binary.bin', Buffer.alloc(1024 * 1024, 255)],
+  ['binary-2-MiB', 'binary.bin', Buffer.alloc(2 * 1024 * 1024, 255)],
+] as const) for (const committed of [false, true]) test(`Build READY ${label}, builder commit=${committed}`, async t => {
   const { store, project, task, queue, controller, git } = await fixture(t);
   const run = queue();
   const runner = controller(async input => {
@@ -199,4 +201,12 @@ for (const [label, path, content] of [
   assert.equal(git(run.worktree, 'status', '--porcelain'), '');
   assert.equal(git(run.worktree, 'rev-list', '--count', `${run.base_sha}..HEAD`), '1');
   assert.equal(git(run.worktree, 'rev-parse', `HEAD:${path}`), git(run.worktree, 'hash-object', '--', path));
+});
+
+test('Git blob output exceeding 2 MiB of raw bytes is rejected', async t => {
+  const { queue, git } = await fixture(t);
+  const run = queue();
+  writeFileSync(join(run.worktree, 'oversized.bin'), Buffer.alloc(2 * 1024 * 1024 + 1, 255));
+  const blob = git(run.worktree, 'hash-object', '-w', '--', 'oversized.bin');
+  await assert.rejects(command('git', ['show', blob], run.worktree), /Команда git show не выполнена/);
 });
