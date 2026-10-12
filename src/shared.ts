@@ -32,6 +32,7 @@ export type ReviewResult = {
   findings: string[]; evidence: string[]; applicable: boolean; applicability: string; questions: Question[];
 };
 export type AgentRun = {
+  repair_round_id: string | null; repair_attempt: number;
   spec_run_id: string | null; round_id: string | null; stale: number;
   role: 'spec' | 'build' | ReviewRole; head_sha: string | null; source_hash: string | null;
   id: string; task_id: string; project_id: string; description_revision: number;

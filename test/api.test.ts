@@ -215,3 +215,31 @@ test('Review action requires committed Build, schema/ownership/version and repla
   assert.equal((await request({ ...payload, request_id: randomUUID() })).statusCode, 409);
   assert.equal(store.runs().filter(run => run.role === 'review-code').length, 1);
 });
+
+test('Repair action validates complete round, ownership, schema, version and replay', async t => {
+  const { app, store, headers, project } = await fixture(t);
+  const task = store.createTask(project.id, 'Repair something', 1);
+  const url = `/api/projects/${project.id}/tasks/${task.id}/repair`;
+  const request = (payload: object, path = url) => app.inject({ method: 'POST', url: path, headers, payload });
+  assert.equal((await request({ request_id: randomUUID(), state_version: 1 })).statusCode, 409);
+  assert.equal((await request({ request_id: randomUUID(), state_version: '1' })).statusCode, 400);
+  const spec = store.queueSpec(project.id, task.id, 1, '/tmp');
+  spec.status = 'completed'; spec.outcome = 'READY'; store.updateRun(spec, 'build', 'idle');
+  const build = store.queueBuild(project.id, task.id, store.task(project.id, task.id).state_version);
+  build.status = 'completed'; build.outcome = 'READY'; build.head_sha = 'head'; build.source_hash = 'hash';
+  store.updateRun(build, 'review', 'idle');
+  for (let i = 0; i < 4; i++) {
+    const review = store.queueReview(project.id, task.id, store.task(project.id, task.id).state_version);
+    review.status = 'completed'; review.outcome = 'CHANGES';
+    store.updateRun(review, i === 3 ? 'needs-human' : 'review', i === 3 ? 'interrupted' : 'idle');
+  }
+  const version = store.task(project.id, task.id).state_version;
+  const payload = { request_id: randomUUID(), state_version: version };
+  assert.equal((await request(payload, url.replace(project.id, randomUUID()))).statusCode, 404);
+  assert.equal((await request({ ...payload, state_version: version - 1 })).statusCode, 409);
+  const response = await request(payload); assert.equal(response.statusCode, 200);
+  assert.equal(response.json().role, 'build');
+  assert.deepEqual((await request(payload)).json(), response.json());
+  assert.equal((await request({ ...payload, request_id: randomUUID() })).statusCode, 409);
+  assert.equal(store.runs().filter(run => run.role === 'build').length, 2);
+});

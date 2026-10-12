@@ -57,6 +57,15 @@ function TaskCard({ task, project, runs, questions, refresh }: { task: Task; pro
       try { await api(`${taskPath(task)}/${task.stage === 'review' ? 'review' : task.stage === 'build' ? 'build' : 'start'}`, 'POST', { state_version: task.state_version }); await refresh(); }
       catch (error) { setError((error as Error).message); } finally { setBusy(false); }
     }}>{busy ? 'Ставим в очередь…' : task.stage === 'review' ? 'Продолжить Review' : task.stage === 'build' ? 'Запустить Build' : 'Приступить к реализации'}</button>}
+    {!editing && task.stage === 'needs-human' && task.run_state === 'interrupted' && runs.at(-1)?.role === 'review-ux'
+      && runs.at(-1)?.status === 'completed' && !runs.at(-1)?.stale && ['PASS', 'CHANGES'].includes(runs.at(-1)?.outcome ?? '') && <>
+      <p>Раунд завершён с замечаниями. Выполнено доработок: {runs.at(-1)?.repair_attempt}/2. Отчёты и оставшиеся findings — ниже.</p>
+      <button disabled={busy} onClick={async () => {
+        setBusy(true); setError('');
+        try { await api(`${taskPath(task)}/repair`, 'POST', { state_version: task.state_version }); await refresh(); }
+        catch (error) { setError((error as Error).message); } finally { setBusy(false); }
+      }}>{busy ? 'Ставим в очередь…' : 'Доработать: новый цикл (до двух доработок)'}</button>
+    </>}
     {!editing && questions.map(request => <HumanQuestions key={request.id} task={task} request={request} refresh={refresh} />)}
     {runs.map(run => <RunReport key={run.id} task={task} run={run} />)}
     <details onToggle={event => setShowHistory(event.currentTarget.open)}><summary>История описания</summary>
@@ -119,7 +128,7 @@ function RunReport({ task, run }: { task: Task; run: AgentRun }) {
   }, [open, run.id, run.report, task.id]);
   return <details onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>{run.role} · редакция {run.description_revision}{run.stale || run.description_revision !== task.revision ? ' · Неактуальна' : ''} · {run.outcome ?? run.status} · {run.config.models[run.role]}</summary>
-    <p className="meta">{run.round_id && `Раунд: ${run.round_id}`} {run.spec_run_id && `Spec: ${run.spec_run_id}`}<br />{run.base_sha && `Base: ${run.base_sha}`}<br />{run.head_sha && `Head: ${run.head_sha}`}<br />{run.worktree}</p>
+    <p className="meta">Доработки: {run.repair_attempt}/2 · {run.round_id && `Раунд: ${run.round_id}`} {run.spec_run_id && `Spec: ${run.spec_run_id}`}<br />{run.base_sha && `Base: ${run.base_sha}`}<br />{run.head_sha && `Head: ${run.head_sha}`}<br />{run.worktree}</p>
     <p className="meta">Модели запуска: {roles.map(role => `${role}: ${run.config.models[role]}`).join(' · ')}</p>
     {run.error && <pre role="alert" className="error">{run.error}</pre>}
     {error && <p role="alert">{error}</p>}

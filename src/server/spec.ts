@@ -62,10 +62,16 @@ export class SpecController {
       if (realpathSync(specPath) !== specPath) throw new Problem(422, 'Небезопасный путь Spec.');
       const specification = validateSpec(JSON.parse(readFileSync(specPath, 'utf8')).result);
       const context = this.store.humanRequests().filter(r => r.task_id === task.id && r.revision === task.revision && r.status === 'answered');
+      const feedback = run.repair_round_id ? this.store.reviewRound({ ...run, round_id: run.repair_round_id }).map(review => {
+        if (!review) throw new Problem(422, 'Отсутствует reviewer для доработки.');
+        const path = join(this.directory, 'artifacts', review.id, 'result.json');
+        if (realpathSync(path) !== path) throw new Problem(422, 'Небезопасный путь Review.');
+        return { role: review.role, result: validateReview(JSON.parse(readFileSync(path, 'utf8')).result, review.role as ReviewRole) };
+      }) : [];
       const directory = artifactDirectory(this.directory, run.id);
       const prompt = `You are the Build role. Implement the task in this worktree using the specification and applicable AGENTS.md instructions.
 Run relevant checks and report their actual results. Return only the requested JSON result.
-Use READY only when implementation is complete, with exact repository-relative changed_paths, actions and checks.
+Use READY only when implementation is complete, with exact repository-relative changed_paths covering ALL changes since the original base_sha, actions and checks.
 Use NEEDS_INPUT with structured questions for unresolved choices; BLOCKED for inability to complete. Never wait for interactive input.
 Do not publish, push, merge, or change other checkouts. Do not create commits; the coordinator will commit explicit paths.
 Never add credentials or secrets. Keep reports/logs outside source, in ${directory}.
@@ -76,9 +82,11 @@ Task description:
 ${task.description}
 Spec:
 ${JSON.stringify(specification)}
+Full previous review round — address every finding:
+${JSON.stringify(feedback)}
 Previous results and human answers:
 ${JSON.stringify(context)}`;
-      saveArtifact(directory, 'input.json', JSON.stringify({ run, description: task.description, specification, prompt }, null, 2));
+      saveArtifact(directory, 'input.json', JSON.stringify({ run, description: task.description, specification, feedback, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'build', 'running'); this.publish();
       const result = validateBuild(await this.build({ cwd: run.worktree, directory, model: run.config.models.build, prompt }));
       await verifyRepository(project, run.worktree, this.command);
@@ -91,6 +99,7 @@ ${JSON.stringify(context)}`;
         ...[['Изменённые пути', result.changed_paths], ['Действия', result.actions], ['Проверки', result.checks]].map(([title, items]) =>
           `## ${title}\n${(items as string[]).map(v => `- ${v}`).join('\n')}`)].join('\n\n'));
       run.status = 'completed'; run.outcome = result.outcome; run.report = 1;
+      if (run.role === 'build' && run.repair_round_id && result.outcome === 'READY') run.repair_attempt++;
       let next: AgentRun | undefined;
       this.store.db.transaction(() => {
         this.store.updateRun(run, result.outcome === 'READY' ? 'review' : 'needs-human',
@@ -100,6 +109,7 @@ ${JSON.stringify(context)}`;
       if (next) this.enqueue(next);
     } catch (error) {
       run.status = 'failed'; run.outcome = null; run.report = 0;
+      run.repair_attempt = this.store.specRun(run.project_id, run.task_id, run.id).repair_attempt;
       run.error = error instanceof Problem ? error.message : 'Ошибка сохранения или исполнения Build. Нужна ручная проверка; частичные изменения сохранены.';
       try { this.store.updateRun(run, 'needs-human', 'interrupted'); }
       catch { this.error = 'Не удалось сохранить Build. Новые запуски остановлены; нужна ручная сверка перед restart.'; }
@@ -110,7 +120,7 @@ ${JSON.stringify(context)}`;
   async refreshReviewState() {
     for (const task of this.store.snapshot().tasks.filter(t => !['queued', 'running'].includes(t.run_state))) {
       const run = this.store.runs().filter(r => r.task_id === task.id && r.description_revision === task.revision && r.role.startsWith('review-')).at(-1);
-      if (!run || run.stale) continue;
+      if (!run || run.stale || this.store.runs().filter(r => r.task_id === task.id).at(-1)?.role === 'build') continue;
       try { await this.verifyReviewSource(run); }
       catch {
         if (!this.store.specRun(task.project_id, task.id, run.id).stale) {
@@ -185,7 +195,8 @@ ${JSON.stringify(context)}`;
             const pass = this.store.reviewPasses(run);
             this.store.db.prepare("UPDATE tasks SET stage = ?, run_state = ?, state_version = state_version + 1 WHERE id = ?")
               .run(pass ? 'approve' : 'needs-human', pass ? 'idle' : 'interrupted', task.id);
-            this.store.event('review.completed', task.id, { round_id: run.round_id, outcome: pass ? 'PASS' : 'CHANGES', reason: pass ? 'Четыре PASS; ожидается Approve' : 'Раунд завершён; требуется доработка' });
+            this.store.event('review.completed', task.id, { round_id: run.round_id, outcome: pass ? 'PASS' : 'CHANGES', reason: pass ? 'Четыре PASS; ожидается Approve' : run.repair_attempt >= 2 ? 'Две доработки исчерпаны; нужен человек' : 'Раунд завершён; требуется доработка' });
+            if (!pass && run.repair_attempt < 2 && !this.closing) next = this.store.queueRepair(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
           } else if (!this.closing) next = this.store.queueReview(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
         }
       })();
