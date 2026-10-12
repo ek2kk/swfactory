@@ -143,6 +143,20 @@ export async function createApp(options: {
     controller.enqueue(result);
     publish(); return result;
   });
+  app.post<{ Params: { projectId: string; taskId: string; humanId: string }; Body: { request_id: string; state_version: number; answers: string[] } }>('/api/projects/:projectId/tasks/:taskId/questions/:humanId/answer', {
+    schema: { params: object({ projectId: uuid, taskId: uuid, humanId: uuid }), body: object({ request_id: uuid, state_version: version,
+      answers: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 4096 } } }) },
+  }, async request => {
+    const { projectId, taskId, humanId } = request.params;
+    const { request_id, state_version, answers } = request.body;
+    const fingerprint = JSON.stringify(['human.answer', projectId, taskId, humanId, state_version, answers]);
+    const prior = store.replay(request_id, fingerprint);
+    if (prior !== undefined) return prior;
+    if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
+    const result = store.mutate(request_id, fingerprint, () => store.answer(projectId, taskId, humanId, state_version, answers)) as { run: SpecRun | null };
+    if (result.run) controller.enqueue(result.run);
+    publish(); return result;
+  });
   app.get<{ Params: { projectId: string; taskId: string; runId: string } }>('/api/projects/:projectId/tasks/:taskId/runs/:runId/report', {
     schema: { params: object({ projectId: uuid, taskId: uuid, runId: uuid }) },
   }, async request => {

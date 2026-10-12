@@ -141,3 +141,34 @@ test('model settings, frozen config, start replay/version/ownership and report a
   assert.equal((await app.inject({ url: `/api/projects/${project.id}/tasks/${task.id}/runs/${started.json().id}/report`, headers })).statusCode, 404);
   assert.equal((await app.inject({ url: `/api/projects/${randomUUID()}/tasks/${task.id}/runs/${started.json().id}/report`, headers })).statusCode, 404);
 });
+
+test('human answer schema, ownership, stale action, replay and exactly one continuation', async t => {
+  const { app, store, project, headers } = await fixture(t);
+  const task = store.createTask(project.id, 'Question', 1);
+  const run = store.queueSpec(project.id, task.id, 1, '/tmp');
+  run.status = 'completed'; run.outcome = 'NEEDS_INPUT';
+  const result = { outcome: 'NEEDS_INPUT' as const, title: 'Question', summary: 'Context', requirements: [], acceptance_criteria: [], assumptions: [], out_of_scope: [],
+    questions: [{ text: 'Which?', context: 'Context', impact: 'Impact', options: ['A', 'B'], required: true }] };
+  store.updateRun(run, 'needs-human', 'waiting', result.title, result);
+  const human = store.humanRequests()[0];
+  const url = `/api/projects/${project.id}/tasks/${task.id}/questions/${human.id}/answer`;
+  const payload = { request_id: randomUUID(), state_version: store.task(project.id, task.id).state_version, answers: ['Free text'] };
+  for (const answers of [null, [3], ['x'.repeat(4097)]]) {
+    assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...payload, answers } })).statusCode, 400);
+  }
+  for (const answers of [[], [' '], ['A', 'B']]) {
+    assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...payload, answers } })).statusCode, 422);
+  }
+  assert.equal((await app.inject({ method: 'POST', url: url.replace(project.id, randomUUID()), headers, payload })).statusCode, 404);
+  const other = store.createTask(project.id, 'Other', 1);
+  assert.equal((await app.inject({ method: 'POST', url: url.replace(task.id, other.id), headers, payload })).statusCode, 404);
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...payload, state_version: 1 } })).statusCode, 409);
+  assert.equal((await app.inject({ method: 'POST', url, headers: { ...headers, origin: 'https://evil.test' }, payload })).statusCode, 403);
+  const response = await app.inject({ method: 'POST', url, headers, payload });
+  assert.equal(response.statusCode, 200); assert.ok(response.json().run.id);
+  assert.deepEqual((await app.inject({ method: 'POST', url, headers, payload })).json(), response.json());
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...payload, request_id: randomUUID() } })).statusCode, 409);
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...payload, answers: ['Changed'] } })).statusCode, 409);
+  assert.equal(store.runs().length, 2);
+  assert.deepEqual((await app.inject({ url: '/api/snapshot', headers })).json().human_requests[0].answers, ['Free text']);
+});

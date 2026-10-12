@@ -66,13 +66,18 @@ export async function inspectProject(input: ProjectInput, command: Run = run): P
   return { ...input, checkout, common_dir, remote_url, ...identity };
 }
 
-export async function preflight(project: Project, command: Run = run) {
-  const checkout = await realpath(await command('git', ['rev-parse', '--show-toplevel'], project.checkout));
+export async function verifyRepository(project: Project, path: string, command: Run = run) {
+  const checkout = await realpath(await command('git', ['rev-parse', '--show-toplevel'], path));
   const common = await realpath(await command('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], checkout));
-  if (checkout !== project.checkout || common !== project.common_dir
+  if (checkout !== path || common !== project.common_dir
     || await command('git', ['remote', 'get-url', '--', project.remote], checkout) !== project.remote_url) {
     throw new Problem(422, 'Checkout или remote изменился. Подключите актуальный проект.');
   }
+}
+
+export async function preflight(project: Project, command: Run = run) {
+  await verifyRepository(project, project.checkout, command);
+  const checkout = project.checkout;
   const reasons: string[] = [];
   for (const name of ['MERGE_HEAD', 'rebase-merge', 'rebase-apply']) {
     const path = await command('git', ['rev-parse', '--path-format=absolute', '--git-path', name], checkout);

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync, readFileSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync, readFileSync, existsSync, symlinkSync, unlinkSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -90,15 +90,19 @@ test('failed preflight permits an explicit new attempt without launching Codex',
   assert.match(store.specRun(project.id, run.task_id, run.id).error!, /dirty/);
 });
 
-for (const scenario of ['question', 'invalid', 'source-change', 'event-failure', 'title-event-failure', 'artifact-failure'] as const) test(`Spec ${scenario} blocks Build and keeps evidence`, async t => {
+for (const scenario of ['question', 'invalid', 'source-change', 'event-failure', 'title-event-failure', 'human-event-failure', 'artifact-failure'] as const) test(`Spec ${scenario} blocks Build and keeps evidence`, async t => {
   const { store, project, queue, controller } = fixture(t);
   const run = queue();
   const runner = controller(async input => {
-    if (scenario === 'question') return { ...ready, outcome: 'NEEDS_INPUT', questions: ['Какой язык? От ответа зависит интерфейс.'] };
+    if (scenario === 'question') return { ...ready, outcome: 'NEEDS_INPUT', questions: [{ text: 'Какой язык?', context: 'Интерфейс', impact: 'Локализация', options: ['Русский', 'English'], required: true }] };
     if (scenario === 'invalid') return { ...ready, acceptance_criteria: [] };
     if (scenario === 'source-change') writeFileSync(join(input.cwd, 'changed'), 'preserve');
     if (scenario === 'event-failure') store.db.exec("CREATE TRIGGER fail_completion BEFORE INSERT ON events WHEN NEW.type = 'spec.completed' BEGIN SELECT RAISE(ABORT, 'disk failed'); END");
     if (scenario === 'title-event-failure') store.db.exec("CREATE TRIGGER fail_title BEFORE INSERT ON events WHEN NEW.type = 'title.completed' BEGIN SELECT RAISE(ABORT, 'disk failed'); END");
+    if (scenario === 'human-event-failure') {
+      store.db.exec("CREATE TRIGGER fail_human BEFORE INSERT ON events WHEN NEW.type = 'human.requested' BEGIN SELECT RAISE(ABORT, 'disk failed'); END");
+      return needsInput;
+    }
     if (scenario === 'artifact-failure') writeFileSync(join(input.directory, 'report.md.tmp'), 'partial');
     return ready;
   });
@@ -108,7 +112,7 @@ for (const scenario of ['question', 'invalid', 'source-change', 'event-failure',
   assert.equal(saved.status, scenario === 'question' ? 'completed' : 'failed');
   assert.equal(task.run_state, scenario === 'question' ? 'waiting' : 'interrupted');
   if (scenario === 'source-change') assert.ok(existsSync(join(run.worktree, 'changed')));
-  if (scenario !== 'question') { assert.equal(saved.outcome, null); assert.equal(task.title, null); }
+  if (scenario !== 'question') { assert.equal(store.humanRequests().length, 0); assert.equal(saved.outcome, null); assert.equal(task.title, null); }
 });
 
 test('three slots, queue retained on shutdown, restart interrupts without launching', async t => {
@@ -156,7 +160,7 @@ test('Title and Spec share three FIFO slots, await abort and save fallback title
     enter(description);
     await new Promise<void>(resolve => specCalls.push({ description, finish: resolve }));
     active.delete(description);
-    return description === 'e' ? { ...ready, outcome: 'NEEDS_INPUT', questions: ['Which format?'] } : ready;
+    return description === 'e' ? { ...ready, outcome: 'NEEDS_INPUT', questions: [{ text: 'Which format?', context: 'Export', impact: 'File type', options: ['CSV'], required: true }] } : ready;
   }, async (description, signal) => {
     enter(description);
     await new Promise<void>(resolve => titleCalls.set(description, { signal, finish: resolve }));
@@ -203,5 +207,114 @@ test('Title and Spec share three FIFO slots, await abort and save fallback title
     for (const call of titleCalls.values()) call.finish();
     for (const call of specCalls) call.finish();
     await closing;
+  }
+});
+
+const needsInput: SpecResult = { ...ready, outcome: 'NEEDS_INPUT', questions: [
+  { text: 'Язык?', context: 'Приветствие', impact: 'Текст вывода', options: ['Русский', 'English'], required: true },
+  { text: 'Формат?', context: 'Вывод', impact: 'Совместимость', options: ['Text', 'JSON'], required: true },
+  { text: 'Комментарий?', context: 'Дополнения', impact: 'Детали', options: [], required: false },
+] };
+
+test('answers continue Spec in the same worktree with all previous context, fixed config and no new revision', async t => {
+  const { store, project, queue, controller } = fixture(t);
+  const first = queue();
+  let runner = controller(async () => needsInput); runner.enqueue(first); await runner.close();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const question = store.humanRequests().at(-1)!;
+    const task = store.task(project.id, first.task_id);
+    assert.equal(question.status, 'pending'); assert.equal(question.answers, null);
+    assert.throws(() => store.answer(project.id, task.id, question.id, task.state_version, ['Русский', '', '']), /обязательные/);
+    assert.equal(store.humanRequests().at(-1)!.status, 'pending');
+    const response = store.answer(project.id, task.id, question.id, task.state_version, ['Русский', 'JSON', '']);
+    assert.ok(response.run);
+    assert.equal(response.run.worktree, first.worktree); assert.equal(response.run.base_sha, first.base_sha);
+    assert.deepEqual(response.run.config, first.config);
+    assert.equal(store.task(project.id, task.id).revision, 1);
+    assert.throws(() => store.answer(project.id, task.id, question.id, store.task(project.id, task.id).state_version, ['Русский', 'JSON', '']), /устарел/);
+    runner = controller(async input => {
+      const saved = JSON.parse(readFileSync(join(input.directory, 'input.json'), 'utf8'));
+      assert.equal(saved.run.parent_run_id, question.run_id);
+      assert.match(input.prompt, /Русский/); assert.match(input.prompt, /JSON/);
+      for (const request of store.humanRequests()) assert.ok(input.prompt.includes(request.id));
+      return attempt ? ready : needsInput;
+    });
+    runner.enqueue(response.run); await runner.close();
+  }
+  assert.equal(store.task(project.id, first.task_id).stage, 'build');
+  assert.equal(store.runs().length, 3); assert.equal(store.revisions(project.id, first.task_id).length, 1);
+  assert.equal(store.specRun(project.id, first.task_id, first.id).report, 1);
+});
+
+for (const scenario of ['revision', 'restart', 'save-failure', 'dirty-worktree'] as const) test(`human answer ${scenario}`, async t => {
+  const { store, project, directory, queue, controller } = fixture(t);
+  const run = queue(); const runner = controller(async () => needsInput); runner.enqueue(run); await runner.close();
+  const request = store.humanRequests()[0], task = store.task(project.id, run.task_id);
+  const answers = ['English', 'Text', ''];
+  if (scenario === 'revision') {
+    store.mutate('edit', 'edit', () => store.editTask(project.id, task.id, 'Новые требования', task.state_version));
+    assert.equal(store.humanRequests()[0].status, 'revoked');
+    assert.equal(store.task(project.id, task.id).revision, 2);
+    assert.equal(store.task(project.id, task.id).stage, 'backlog');
+    assert.equal(store.specRun(project.id, task.id, run.id).description_revision, 1);
+    assert.throws(() => store.answer(project.id, task.id, request.id, task.state_version + 1, answers), /устарел/);
+  } else if (scenario === 'restart') {
+    store.close(); const restarted = new Store(directory);
+    try {
+      assert.equal(restarted.humanRequests()[0].status, 'pending');
+      const current = restarted.task(project.id, task.id);
+      assert.equal(current.run_state, 'interrupted');
+      assert.deepEqual(restarted.answer(project.id, task.id, request.id, current.state_version, answers), { run: null });
+      assert.deepEqual(restarted.humanRequests()[0].answers, answers);
+      assert.equal(restarted.runs().length, 1);
+      assert.equal(restarted.task(project.id, task.id).run_state, 'interrupted');
+    } finally { restarted.close(); }
+  } else if (scenario === 'save-failure') {
+    store.db.exec("CREATE TRIGGER fail_answer BEFORE INSERT ON events WHEN NEW.type = 'spec.queued' BEGIN SELECT RAISE(ABORT, 'disk failed'); END");
+    assert.throws(() => store.mutate('answer', 'answer', () => store.answer(project.id, task.id, request.id, task.state_version, answers)), /disk failed/);
+    assert.equal(store.humanRequests()[0].status, 'pending'); assert.equal(store.humanRequests()[0].answers, null);
+    assert.equal(store.task(project.id, task.id).state_version, task.state_version);
+    assert.equal(store.events(0).filter(event => event.type === 'human.answered').length, 0);
+    assert.equal(store.runs().length, 1); assert.equal(store.replay('answer', 'answer'), undefined);
+  } else {
+    writeFileSync(join(run.worktree, 'human-file'), 'preserve');
+    const response = store.answer(project.id, task.id, request.id, task.state_version, answers);
+    let called = false; const next = controller(async () => { called = true; return ready; });
+    next.enqueue(response.run!); await next.close();
+    assert.equal(called, false); assert.equal(store.task(project.id, task.id).run_state, 'interrupted');
+    assert.equal(readFileSync(join(run.worktree, 'human-file'), 'utf8'), 'preserve');
+  }
+});
+
+for (const scenario of ['dirty-checkout', 'changed-remote', 'foreign-worktree'] as const) test(`Spec continuation ${scenario}`, async t => {
+  const { checkout, store, project, git, queue, controller } = fixture(t);
+  const first = queue(), initial = controller(async () => needsInput);
+  initial.enqueue(first); await initial.close();
+  const request = store.humanRequests()[0], task = store.task(project.id, first.task_id);
+  if (scenario === 'dirty-checkout') writeFileSync(join(checkout, 'README.md'), 'User changes while answering');
+  else if (scenario === 'changed-remote') git('remote', 'set-url', 'origin', join(checkout, 'different.git'));
+  else {
+    renameSync(first.worktree, `${first.worktree}.original`);
+    git('clone', '--no-checkout', project.remote_url, first.worktree);
+    git('-C', first.worktree, 'checkout', '-b', first.branch, first.base_sha!);
+  }
+  const { run } = store.answer(project.id, task.id, request.id, task.state_version, ['English', 'Text', '']);
+  let calls = 0;
+  const next = controller(async input => {
+    calls++;
+    assert.equal(input.cwd, first.worktree);
+    assert.equal(readFileSync(join(input.cwd, 'README.md'), 'utf8'), 'initial');
+    assert.match(input.prompt, /English/);
+    return ready;
+  });
+  next.enqueue(run!); await next.close();
+  const saved = store.specRun(project.id, task.id, run!.id);
+  if (scenario === 'dirty-checkout') {
+    assert.equal(saved.status, 'completed', saved.error ?? '');
+    assert.equal(calls, 1); assert.equal(store.task(project.id, task.id).stage, 'build');
+    assert.equal(readFileSync(join(checkout, 'README.md'), 'utf8'), 'User changes while answering');
+  } else {
+    assert.equal(calls, 0); assert.equal(saved.status, 'failed');
+    assert.match(saved.error!, /remote изменился/);
   }
 });
