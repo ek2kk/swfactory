@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { reviewRoles, type ReviewRole, type AgentRun } from '../shared.js';
 import { Store, Problem } from './store.js';
 import { preflight, verifyRepository, fetchBase, run as git, type Run } from './git.js';
-import { executeSpec, validateSpec, executeBuild, validateBuild, executeReview, validateReview, type ExecuteReview, type ExecuteBuild, type ExecuteSpec } from './codex.js';
+import { executeApprove, validateApprove, type ExecuteApprove, executeSpec, validateSpec, executeBuild, validateBuild, executeReview, validateReview, type ExecuteReview, type ExecuteBuild, type ExecuteSpec } from './codex.js';
 import { sourceHash, commitBuild } from './build.js';
 import { Titles, generateTitle } from './title.js';
 import { Scheduler } from './scheduler.js';
@@ -16,7 +16,7 @@ export class SpecController {
   private closing = false;
   error: string | null = null;
   constructor(private store: Store, private directory: string, private publish: () => void,
-    private command: Run = git, private execute: ExecuteSpec = executeSpec, generate = generateTitle, private build: ExecuteBuild = executeBuild, private review: ExecuteReview = executeReview) {
+    private command: Run = git, private execute: ExecuteSpec = executeSpec, generate = generateTitle, private build: ExecuteBuild = executeBuild, private review: ExecuteReview = executeReview, private approve: ExecuteApprove = executeApprove) {
     this.titles = new Titles(store, publish, generate, undefined, this.scheduler);
   }
 
@@ -28,6 +28,7 @@ export class SpecController {
       await released;
       if (this.titles.error) return;
       if (run.role === 'build') await this.performBuild(run);
+      else if (run.role === 'approve') await this.performApprove(run);
       else if (run.role.startsWith('review-')) await this.performReview(run);
       else await this.perform(run);
     }).finally(() => { this.active.delete(work); });
@@ -119,7 +120,7 @@ ${JSON.stringify(context)}`;
 
   async refreshReviewState() {
     for (const task of this.store.snapshot().tasks.filter(t => !['queued', 'running'].includes(t.run_state))) {
-      const run = this.store.runs().filter(r => r.task_id === task.id && r.description_revision === task.revision && r.role.startsWith('review-')).at(-1);
+      const run = this.store.runs().filter(r => r.task_id === task.id && r.description_revision === task.revision && (r.role.startsWith('review-') || r.role === 'approve')).at(-1);
       if (!run || run.stale || this.store.runs().filter(r => r.task_id === task.id).at(-1)?.role === 'build') continue;
       try { await this.verifyReviewSource(run); }
       catch {
@@ -196,6 +197,7 @@ ${JSON.stringify(context)}`;
             this.store.db.prepare("UPDATE tasks SET stage = ?, run_state = ?, state_version = state_version + 1 WHERE id = ?")
               .run(pass ? 'approve' : 'needs-human', pass ? 'idle' : 'interrupted', task.id);
             this.store.event('review.completed', task.id, { round_id: run.round_id, outcome: pass ? 'PASS' : 'CHANGES', reason: pass ? 'Четыре PASS; ожидается Approve' : run.repair_attempt >= 2 ? 'Две доработки исчерпаны; нужен человек' : 'Раунд завершён; требуется доработка' });
+            if (pass && !this.closing) next = this.store.queueApprove(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
             if (!pass && run.repair_attempt < 2 && !this.closing) next = this.store.queueRepair(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
           } else if (!this.closing) next = this.store.queueReview(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
         }
@@ -206,6 +208,48 @@ ${JSON.stringify(context)}`;
       run.error = error instanceof Problem ? error.message : 'Ошибка исполнения или сохранения Review. Нужна ручная проверка; изменения сохранены.';
       try { this.store.updateRun(run, 'needs-human', 'interrupted'); }
       catch { this.error = 'Не удалось сохранить Review. Новые запуски остановлены; нужна ручная сверка.'; }
+    }
+    this.publish();
+  }
+
+  private async performApprove(run: AgentRun) {
+    try {
+      await this.verifyReviewSource(run);
+      if (!this.store.reviewPasses(run)) throw new Problem(409, 'Нужны четыре актуальных PASS.');
+      const task = this.store.task(run.project_id, run.task_id);
+      const directory = artifactDirectory(this.directory, run.id);
+      const read = (id: string) => {
+        const path = join(this.directory, 'artifacts', id, 'result.json');
+        if (realpathSync(path) !== path) throw new Problem(422, 'Небезопасный путь отчёта.');
+        return JSON.parse(readFileSync(path, 'utf8')).result;
+      };
+      const specification = validateSpec(read(run.spec_run_id!));
+      const reports = this.store.reviewRound(run).map(r => ({ role: r!.role, run_id: r!.id, result: validateReview(read(r!.id), r!.role as ReviewRole) }));
+      const context = this.store.humanRequests().filter(r => r.task_id === task.id && r.revision === task.revision && r.status === 'answered');
+      const prompt = `You are the Approve role in a fresh independent session. Evaluate current Spec, changes and all four reviews.
+Inspect the complete changes in this worktree between immutable base_sha ${run.base_sha} and head_sha ${run.head_sha}, reading files/diffs in manageable portions as needed.
+Read applicable AGENTS.md. Do not modify source, index, branch or commits. Never publish, push or merge.
+APPROVE grants permission ONLY to publish a PR/MR, never merge. ESCALATE must explain risks and affected_paths; NEEDS_INPUT uses structured questions.
+Return only the structured result. Reports/logs belong in ${directory}.
+Context: ${JSON.stringify({ run, description: task.description, specification, reports, human_answers: context })}`;
+      saveArtifact(directory, 'input.json', JSON.stringify({ run, specification, reports, prompt }, null, 2));
+      run.status = 'running'; this.store.updateRun(run, 'approve', 'running'); this.publish();
+      const result = validateApprove(await this.approve({ cwd: run.worktree, directory, model: run.config.models.approve, prompt }));
+      await this.verifyReviewSource(run);
+      if (!this.store.reviewPasses(run)) throw new Problem(409, 'Review устарел.');
+      saveArtifact(directory, 'result.json', JSON.stringify({ schema_version: 1, run_id: run.id, task_id: task.id,
+        description_revision: run.description_revision, spec_run_id: run.spec_run_id, round_id: run.round_id,
+        base_sha: run.base_sha, head_sha: run.head_sha, scope: 'publish-only', result }, null, 2));
+      saveArtifact(directory, 'report.md', [result.summary, `Outcome: ${result.outcome}`, 'Разрешение касается только публикации PR/MR; merge запрещён.',
+        `Head: ${run.head_sha}`, 'Risks:', ...result.risks, 'Affected files:', ...result.affected_paths,
+        'Reviews:', ...reports.map(r => `${r.role}: ${r.run_id}`)].join('\n\n'));
+      run.status = 'completed'; run.outcome = result.outcome; run.report = 1;
+      this.store.updateRun(run, result.outcome === 'APPROVE' ? 'approve' : 'needs-human', result.outcome === 'APPROVE' ? 'completed' : 'waiting', undefined, result);
+    } catch (error) {
+      run.status = 'failed'; run.outcome = null; run.report = 0;
+      run.error = error instanceof Problem ? error.message : 'Ошибка исполнения или сохранения Approve. Нужна ручная проверка.';
+      try { this.store.updateRun(run, 'needs-human', 'interrupted'); }
+      catch { this.error = 'Не удалось сохранить Approve. Новые запуски остановлены; нужна ручная сверка.'; }
     }
     this.publish();
   }

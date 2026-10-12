@@ -31,19 +31,22 @@ export type ReviewResult = {
   outcome: 'PASS' | 'CHANGES' | 'NEEDS_INPUT' | 'BLOCKED'; summary: string;
   findings: string[]; evidence: string[]; applicable: boolean; applicability: string; questions: Question[];
 };
+export type ApproveResult = {
+  outcome: 'APPROVE' | 'ESCALATE' | 'NEEDS_INPUT'; summary: string; risks: string[]; affected_paths: string[]; questions: Question[];
+};
 export type AgentRun = {
   repair_round_id: string | null; repair_attempt: number;
   spec_run_id: string | null; round_id: string | null; stale: number;
-  role: 'spec' | 'build' | ReviewRole; head_sha: string | null; source_hash: string | null;
+  role: 'spec' | 'build' | ReviewRole | 'approve'; head_sha: string | null; source_hash: string | null;
   id: string; task_id: string; project_id: string; description_revision: number;
   config: Settings; project_version: number;
   status: 'queued' | 'running' | 'completed' | 'failed' | 'interrupted';
   parent_run_id: string | null; branch: string; worktree: string; base_sha: string | null;
-  outcome: BuildResult['outcome'] | ReviewResult['outcome'] | null; error: string | null; report: number;
+  outcome: BuildResult['outcome'] | ReviewResult['outcome'] | ApproveResult['outcome'] | null; error: string | null; report: number;
 };
 
 export type Question = { text: string; context: string; impact: string; options: string[]; required: boolean };
 export type HumanRequest = {
-  id: string; task_id: string; run_id: string; revision: number; role: 'spec' | 'build' | ReviewRole;
-  status: 'pending' | 'answered' | 'revoked'; result: SpecResult | BuildResult | ReviewResult; answers: string[] | null;
+  id: string; task_id: string; run_id: string; revision: number; role: 'spec' | 'build' | ReviewRole | 'approve';
+  status: 'pending' | 'answered' | 'revoked'; result: SpecResult | BuildResult | ReviewResult | ApproveResult; answers: string[] | null;
 };

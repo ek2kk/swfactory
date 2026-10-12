@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setImmediate } from 'node:timers/promises';
 import { get } from 'node:http';
+import { SpecController } from '../src/server/spec.js';
 import { createApp } from '../src/server/app.js';
 import type { Project, Task } from '../src/shared.js';
 
@@ -242,4 +243,52 @@ test('Repair action validates complete round, ownership, schema, version and rep
   assert.deepEqual((await request(payload)).json(), response.json());
   assert.equal((await request({ ...payload, request_id: randomUUID() })).statusCode, 409);
   assert.equal(store.runs().filter(run => run.role === 'build').length, 2);
+});
+
+test('Approve actions reject missing PASS, foreign requests and malformed decisions', async t => {
+  const { app, store, headers, project } = await fixture(t);
+  const task = store.createTask(project.id, 'Approve something', 1);
+  const url = `/api/projects/${project.id}/tasks/${task.id}`;
+  const payload = { request_id: randomUUID(), state_version: 1 };
+  assert.equal((await app.inject({ method: 'POST', url: `${url}/approve`, headers, payload })).statusCode, 409);
+  assert.equal((await app.inject({ method: 'POST', url: `${url}/approve`, headers, payload: { ...payload, state_version: '1' } })).statusCode, 400);
+  const path = `${url}/decisions/${randomUUID()}`;
+  assert.equal((await app.inject({ method: 'POST', url: path, headers, payload: { ...payload, decision: 'merge', feedback: '' } })).statusCode, 400);
+  assert.equal((await app.inject({ method: 'POST', url: path, headers, payload: { ...payload, decision: 'publish', feedback: '' } })).statusCode, 404);
+});
+
+
+test('Concurrent decision replay queues the persisted repair exactly once', async t => {
+  const { app, store, headers, project } = await fixture(t);
+  const task = store.createTask(project.id, 'Repair after escalation', 1);
+  const spec = store.queueSpec(project.id, task.id, 1, '/tmp');
+  spec.status = 'completed'; spec.outcome = 'READY'; store.updateRun(spec, 'build', 'idle');
+  const build = store.queueBuild(project.id, task.id, store.task(project.id, task.id).state_version);
+  build.status = 'completed'; build.outcome = 'READY'; build.head_sha = 'head'; build.source_hash = 'hash';
+  store.updateRun(build, 'review', 'idle');
+  for (let i = 0; i < 4; i++) {
+    const review = store.queueReview(project.id, task.id, store.task(project.id, task.id).state_version);
+    review.status = 'completed'; review.outcome = 'PASS';
+    store.updateRun(review, i === 3 ? 'approve' : 'review', 'idle');
+  }
+  const approve = store.queueApprove(project.id, task.id, store.task(project.id, task.id).state_version);
+  approve.status = 'completed'; approve.outcome = 'ESCALATE';
+  store.updateRun(approve, 'needs-human', 'waiting', undefined, { outcome: 'ESCALATE', summary: 'Risk', risks: ['Rollout'], affected_paths: [], questions: [] });
+  const human = store.humanRequests().at(-1)!;
+  let checks = 0, release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  t.mock.method(SpecController.prototype, 'verifyReviewSource', async () => {
+    if (++checks === 2) release();
+    await barrier;
+  });
+  const enqueued: string[] = [];
+  t.mock.method(SpecController.prototype, 'enqueue', (run: { id: string }) => { enqueued.push(run.id); });
+  const payload = { request_id: randomUUID(), state_version: store.task(project.id, task.id).state_version, decision: 'repair', feedback: 'Use canary' };
+  const send = () => app.inject({ method: 'POST', url: `/api/projects/${project.id}/tasks/${task.id}/decisions/${human.id}`, headers, payload });
+  const responses = await Promise.all([send(), send()]);
+  assert.deepEqual(responses.map(r => r.statusCode), [200, 200]);
+  assert.deepEqual(responses[0].json(), responses[1].json());
+  assert.equal(checks, 2); assert.deepEqual(enqueued, [responses[0].json().run.id]);
+  assert.equal(store.runs().filter(r => r.role === 'build').length, 2);
+  assert.equal(store.events(0).filter(e => e.type === 'approve.decided').length, 1);
 });

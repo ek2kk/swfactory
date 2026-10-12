@@ -10,7 +10,7 @@ import { realpathSync } from 'node:fs';
 import { SpecController } from './spec.js';
 import { readReport } from './artifacts.js';
 import type { Run } from './git.js';
-import type { ExecuteSpec, ExecuteBuild, ExecuteReview } from './codex.js';
+import type { ExecuteApprove, ExecuteSpec, ExecuteBuild, ExecuteReview } from './codex.js';
 
 const text = { type: 'string', minLength: 1, maxLength: 4096 };
 const uuid = { type: 'string', pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' };
@@ -26,7 +26,7 @@ function equal(a: string, b: string) {
 
 type Action = { request_id: string; state_version: number; description: string };
 export async function createApp(options: {
-  directory: string; origin: string; staticRoot?: string; inspect?: typeof inspectProject; command?: Run; execute?: ExecuteSpec; executeBuild?: ExecuteBuild; executeReview?: ExecuteReview; generateTitle?: typeof generateTitle;
+  directory: string; origin: string; staticRoot?: string; inspect?: typeof inspectProject; command?: Run; execute?: ExecuteSpec; executeBuild?: ExecuteBuild; executeReview?: ExecuteReview; executeApprove?: ExecuteApprove; generateTitle?: typeof generateTitle;
 }) {
   const store = new Store(options.directory);
   const directory = realpathSync(options.directory);
@@ -55,7 +55,7 @@ export async function createApp(options: {
       if (sent !== undefined) clients.set(client, sent);
     }
   }
-  const controller = new SpecController(store, directory, publish, options.command, options.execute, options.generateTitle, options.executeBuild, options.executeReview);
+  const controller = new SpecController(store, directory, publish, options.command, options.execute, options.generateTitle, options.executeBuild, options.executeReview, options.executeApprove);
   const titles = controller.titles;
   app.addHook('onRequest', async (request, reply) => {
     reply.headers({
@@ -172,6 +172,19 @@ export async function createApp(options: {
     controller.enqueue(result);
     publish(); return result;
   });
+  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/approve', {
+    schema: { params: taskParams, body: object({ request_id: uuid, state_version: version }) },
+  }, async request => {
+    const { projectId, taskId } = request.params;
+    const { request_id, state_version } = request.body;
+    const fingerprint = JSON.stringify(['approve.start', projectId, taskId, state_version]);
+    const prior = store.replay(request_id, fingerprint);
+    if (prior !== undefined) return prior;
+    if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
+    const result = store.mutate(request_id, fingerprint, () => store.queueApprove(projectId, taskId, state_version)) as AgentRun;
+    controller.enqueue(result);
+    publish(); return result;
+  });
   app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/repair', {
     schema: { params: taskParams, body: object({ request_id: uuid, state_version: version }) },
   }, async request => {
@@ -197,6 +210,26 @@ export async function createApp(options: {
     if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
     const result = store.mutate(request_id, fingerprint, () => store.answer(projectId, taskId, humanId, state_version, answers)) as { run: AgentRun | null };
     if (result.run) controller.enqueue(result.run);
+    publish(); return result;
+  });
+  app.post<{ Params: { projectId: string; taskId: string; humanId: string }; Body: { request_id: string; state_version: number; decision: 'publish' | 'repair'; feedback: string } }>('/api/projects/:projectId/tasks/:taskId/decisions/:humanId', {
+    schema: { params: object({ projectId: uuid, taskId: uuid, humanId: uuid }), body: object({ request_id: uuid, state_version: version,
+      decision: { enum: ['publish', 'repair'] }, feedback: { type: 'string', maxLength: 4096 } }) },
+  }, async request => {
+    const { projectId, taskId, humanId } = request.params;
+    const { request_id, state_version, decision, feedback } = request.body;
+    const fingerprint = JSON.stringify(['approve.decide', projectId, taskId, humanId, state_version, decision, feedback]);
+    const prior = store.replay(request_id, fingerprint);
+    if (prior !== undefined) return prior;
+    if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
+    const human = store.humanRequests().find(r => r.id === humanId && r.task_id === taskId);
+    if (!human) throw new Problem(404, 'Запрос не найден.');
+    await controller.verifyReviewSource(store.specRun(projectId, taskId, human.run_id));
+    let changed = false;
+    const result = store.mutate(request_id, fingerprint, () => {
+      changed = true; return store.decide(projectId, taskId, humanId, state_version, decision, feedback);
+    }) as { run: AgentRun | null };
+    if (changed && result.run) controller.enqueue(result.run);
     publish(); return result;
   });
   app.get<{ Params: { projectId: string; taskId: string; runId: string } }>('/api/projects/:projectId/tasks/:taskId/runs/:runId/report', {
