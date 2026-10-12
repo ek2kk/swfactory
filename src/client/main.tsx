@@ -32,7 +32,7 @@ function TaskCard({ task, project, runs, questions, refresh }: { task: Task; pro
   return <article className="card">
     <span className="project-name">{project.host}/{project.repository} · {project.checkout}</span>
     <h3>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3>
-    <p className="meta">Редакция {task.revision} · {{ idle: task.stage === 'build' ? 'Spec готова · можно запустить Build' : task.stage === 'review' ? 'Ожидает запуска следующего Review' : task.stage === 'approve' ? 'Четыре PASS · ожидает Approve' : 'Не запущена', queued: 'В очереди · ожидает слот', running: task.stage === 'spec' ? 'Codex готовит Spec' : task.stage === 'build' ? 'Codex реализует задачу' : task.stage === 'review' ? 'Codex выполняет Review' : 'Проверяем checkout и создаём worktree', waiting: 'Нужен ответ человека', interrupted: 'Прервана — нужна ручная проверка', completed: 'Завершена' }[task.run_state]}</p>
+    <p className="meta">Редакция {task.revision} · {{ idle: task.stage === 'build' ? 'Spec готова · можно запустить Build' : task.stage === 'review' ? 'Ожидает запуска следующего Review' : task.stage === 'approve' ? 'Четыре PASS · ожидает Approve' : 'Не запущена', queued: 'В очереди · ожидает слот', running: task.stage === 'spec' ? 'Codex готовит Spec' : task.stage === 'build' ? 'Codex реализует задачу' : task.stage === 'review' ? 'Codex выполняет Review' : task.stage === 'approve' ? 'Codex принимает решение о публикации' : 'Проверяем checkout и создаём worktree', waiting: 'Нужен ответ человека', interrupted: 'Прервана — нужна ручная проверка', completed: task.stage === 'approve' ? 'Разрешена только публикация PR/MR · публикация ещё не выполнена' : 'Завершена' }[task.run_state]}</p>
     {!task.title && <p role="status" className="meta">{task.title_state === 'pending' ? 'Заголовок ожидает свободного слота…'
       : task.title_state === 'running' ? 'Codex формирует заголовок…'
       : task.title_state === 'interrupted' ? 'Генерация заголовка прервана. Описание сохранено; заголовок можно получить в Spec.'
@@ -52,11 +52,11 @@ function TaskCard({ task, project, runs, questions, refresh }: { task: Task; pro
         <button type="button" className="secondary" disabled={busy} onClick={() => { setDraft(task.description); setEditVersion(task.state_version); }}>Загрузить актуальную</button>
         <button type="button" className="secondary" disabled={busy} onClick={() => setEditing(false)}>Отмена</button></div>
     </form> : <><p className="description">{task.description}</p>{((['backlog', 'build'].includes(task.stage) && task.run_state === 'idle') || (task.stage === 'needs-human' && task.run_state === 'waiting')) && <button className="secondary" onClick={() => { setDraft(task.description); setEditVersion(task.state_version); setError(''); setEditing(true); }}>Редактировать</button>}</>}
-    {!editing && ['backlog', 'build', 'review'].includes(task.stage) && task.run_state === 'idle' && <button disabled={busy} onClick={async () => {
+    {!editing && ['backlog', 'build', 'review', 'approve'].includes(task.stage) && task.run_state === 'idle' && <button disabled={busy} onClick={async () => {
       setBusy(true); setError('');
-      try { await api(`${taskPath(task)}/${task.stage === 'review' ? 'review' : task.stage === 'build' ? 'build' : 'start'}`, 'POST', { state_version: task.state_version }); await refresh(); }
+      try { await api(`${taskPath(task)}/${task.stage === 'approve' ? 'approve' : task.stage === 'review' ? 'review' : task.stage === 'build' ? 'build' : 'start'}`, 'POST', { state_version: task.state_version }); await refresh(); }
       catch (error) { setError((error as Error).message); } finally { setBusy(false); }
-    }}>{busy ? 'Ставим в очередь…' : task.stage === 'review' ? 'Продолжить Review' : task.stage === 'build' ? 'Запустить Build' : 'Приступить к реализации'}</button>}
+    }}>{busy ? 'Ставим в очередь…' : task.stage === 'approve' ? 'Запустить Approve' : task.stage === 'review' ? 'Продолжить Review' : task.stage === 'build' ? 'Запустить Build' : 'Приступить к реализации'}</button>}
     {!editing && task.stage === 'needs-human' && task.run_state === 'interrupted' && runs.at(-1)?.role === 'review-ux'
       && runs.at(-1)?.status === 'completed' && !runs.at(-1)?.stale && ['PASS', 'CHANGES'].includes(runs.at(-1)?.outcome ?? '') && <>
       <p>Раунд завершён с замечаниями. Выполнено доработок: {runs.at(-1)?.repair_attempt}/2. Отчёты и оставшиеся findings — ниже.</p>
@@ -66,7 +66,7 @@ function TaskCard({ task, project, runs, questions, refresh }: { task: Task; pro
         catch (error) { setError((error as Error).message); } finally { setBusy(false); }
       }}>{busy ? 'Ставим в очередь…' : 'Доработать: новый цикл (до двух доработок)'}</button>
     </>}
-    {!editing && questions.map(request => <HumanQuestions key={request.id} task={task} request={request} refresh={refresh} />)}
+    {!editing && questions.map(request => request.result.outcome === 'ESCALATE' ? <HumanDecision key={request.id} task={task} request={request} refresh={refresh} /> : <HumanQuestions key={request.id} task={task} request={request} refresh={refresh} />)}
     {runs.map(run => <RunReport key={run.id} task={task} run={run} />)}
     <details onToggle={event => setShowHistory(event.currentTarget.open)}><summary>История описания</summary>
       {showHistory && <History task={task} revisions={revisions} setRevisions={setRevisions} />}
@@ -74,6 +74,33 @@ function TaskCard({ task, project, runs, questions, refresh }: { task: Task; pro
     {error && <p role="alert" className="error">{error}</p>}
   </article>;
 }
+function HumanDecision({ task, request, refresh }: { task: Task; request: HumanRequest; refresh: () => Promise<void> }) {
+  const [version] = useState(task.state_version);
+  const [feedback, setFeedback] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  if (request.result.outcome !== 'ESCALATE') return null;
+  const decide = async (decision: 'publish' | 'repair') => {
+    setBusy(true); setError('');
+    try { await api(`${taskPath(task)}/decisions/${request.id}`, 'POST', { state_version: version, decision, feedback }); await refresh(); }
+    catch (error) { setError((error as Error).message); } finally { setBusy(false); }
+  };
+  return <section aria-label="Решение о публикации">
+    <h4>ESCALATE · требуется решение человека</h4><p>{request.result.summary}</p>
+    <p>Разрешение касается только публикации PR/MR этой версии. Merge запрещён. Четыре отчёта Review доступны ниже.</p>
+    <ul>{request.result.risks.map((risk, i) => <li key={i}>{risk}</li>)}</ul>
+    <p>Затронутые файлы: {request.result.affected_paths.join(', ') || 'Не указаны; см. отчёты.'}</p>
+    {request.status === 'pending' ? <>
+      <label>Причина доработки<textarea value={feedback} maxLength={4096} onChange={e => setFeedback(e.target.value)} /></label>
+      <button disabled={busy || task.state_version !== version || task.run_state !== 'waiting'} onClick={() => decide('publish')}>Разрешить публикацию PR/MR</button>
+      <button disabled={busy || !feedback.trim() || task.state_version !== version || task.run_state !== 'waiting'} onClick={() => decide('repair')}>Отправить на доработку</button>
+      {task.state_version !== version && <p role="status">Карточка изменилась. Обновите страницу перед решением.</p>}
+      {task.run_state === 'interrupted' && <p>После restart нужна ручная сверка; исполнение не возобновляется автоматически.</p>}
+    </> : <p>{request.status === 'revoked' ? 'Разрешение отозвано: версия изменилась.' : `Решение сохранено: ${request.answers?.[0] === 'publish' ? 'разрешена публикация' : 'доработка'}`}</p>}
+    {error && <p role="alert">{error}</p>}
+  </section>;
+}
+
 function HumanQuestions({ task, request, refresh }: { task: Task; request: HumanRequest; refresh: () => Promise<void> }) {
   const [answers, setAnswers] = useState<string[]>(request.result.questions.map(() => ''));
   const [version] = useState(task.state_version);

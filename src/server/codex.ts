@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
-import type { SpecResult, BuildResult, ReviewResult, ReviewRole } from '../shared.js';
+import type { ApproveResult, SpecResult, BuildResult, ReviewResult, ReviewRole } from '../shared.js';
 import { parseTitle } from './title.js';
 import { Problem } from './store.js';
 import { saveArtifact } from './artifacts.js';
@@ -146,4 +146,25 @@ export function validateReview(value: unknown, role?: ReviewRole): ReviewResult 
 export type ExecuteReview = (input: CodexInput) => Promise<ReviewResult>;
 export function executeReview(input: CodexInput, executable = 'codex') {
   return executeResult(input, reviewSchema, validateReview, executable);
+}
+
+export const approveSchema = {
+  type: 'object', additionalProperties: false,
+  properties: { outcome: { enum: ['APPROVE', 'ESCALATE', 'NEEDS_INPUT'] }, summary: { type: 'string' },
+    risks: list, affected_paths: list, questions: specSchema.properties.questions },
+  required: ['outcome', 'summary', 'risks', 'affected_paths', 'questions'],
+};
+export function validateApprove(value: unknown): ApproveResult {
+  const result = value as ApproveResult;
+  if (!result || typeof result !== 'object' || Array.isArray(result)
+    || Object.keys(result).sort().join() !== [...approveSchema.required].sort().join()
+    || !['APPROVE', 'ESCALATE', 'NEEDS_INPUT'].includes(result.outcome) || !nonempty(result.summary)
+    || !['risks', 'affected_paths'].every(key => Array.isArray(result[key as 'risks']) && result[key as 'risks'].every(nonempty))
+    || !validQuestions(result.questions) || (result.outcome === 'NEEDS_INPUT' ? !result.questions.length : result.questions.length > 0)
+    || (result.outcome === 'ESCALATE' && !result.risks.length)) throw new Problem(422, 'Невалидный Approve.');
+  return result;
+}
+export type ExecuteApprove = (input: CodexInput) => Promise<ApproveResult>;
+export function executeApprove(input: CodexInput, executable = 'codex') {
+  return executeResult(input, approveSchema, validateApprove, executable);
 }

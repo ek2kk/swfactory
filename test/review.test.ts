@@ -29,17 +29,18 @@ async function fixture(t: { after: (fn: () => void) => void }, completedRepairs 
   const specRunner = new SpecController(store, directory, () => {}, command, async () => spec);
   specRunner.enqueue(initial); await specRunner.close();
   const queue = () => store.queueBuild(project.id, task.id, store.task(project.id, task.id).state_version);
-  const controller = (execute: ExecuteBuild) => new SpecController(store, directory, () => {}, command, undefined, undefined, execute);
+  const controller = (execute: ExecuteBuild) => new SpecController(store, directory, () => {}, command, undefined, undefined, execute, undefined, approved);
   const build = queue();
   const builder = controller(async input => { writeFileSync(join(input.cwd, 'README.md'), 'hello'); return ready; });
   builder.enqueue(build); await builder.close();
   store.db.prepare('UPDATE runs SET repair_attempt = ? WHERE id = ?').run(completedRepairs, build.id);
   const reviewQueue = () => store.queueReview(project.id, task.id, store.task(project.id, task.id).state_version);
-  const reviewer = (execute: ExecuteReview) => new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, execute);
+  const reviewer = (execute: ExecuteReview) => new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, execute, approved);
   return { root, checkout, directory, store, project, task, initial, git, build, queue: reviewQueue, controller: reviewer };
 }
 
 
+const approved = async () => ({ outcome: 'APPROVE' as const, summary: 'Publish only', risks: [], affected_paths: ['README.md'], questions: [] });
 const pass: ReviewResult = { outcome: 'PASS', summary: 'Looks good', findings: [], evidence: ['Inspected change'], applicable: true, applicability: '', questions: [] };
 async function settled(store: Store, taskId: string) {
   for (let i = 0; i < 1000; i++) {
@@ -203,7 +204,7 @@ for (const passAfterRepair of [false, true]) test(`Repair aggregates every revie
     reviews++;
     const role = /You are the ([\w-]+)/.exec(input.prompt)![1];
     return passAfterRepair && builds ? pass : { ...pass, outcome: 'CHANGES', findings: [`Finding ${role}`] };
-  });
+  }, approved);
   runner.enqueue(queue());
   assert.equal((await settled(store, task.id)).stage, passAfterRepair ? 'approve' : 'needs-human');
   assert.equal(builds, passAfterRepair ? 1 : 2);
@@ -239,7 +240,7 @@ for (const failure of ['cli', 'invalid', 'question', 'save'] as const) test(`Rep
     writeFileSync(join(input.cwd, 'README.md'), `repaired ${builds}`);
     if (failure === 'save') store.db.exec("CREATE TRIGGER fail_repair BEFORE INSERT ON events WHEN NEW.type = 'build.completed' BEGIN SELECT RAISE(ABORT, 'disk'); END");
     return ready;
-  }, async () => builds ? pass : { ...pass, outcome: 'CHANGES', findings: ['Fix it'] });
+  }, async () => builds ? pass : { ...pass, outcome: 'CHANGES', findings: ['Fix it'] }, approved);
   runner.enqueue(queue()); await settled(store, task.id);
   assert.equal(store.runs().at(-1)!.repair_attempt, 0);
   if (failure === 'question') {
@@ -260,4 +261,75 @@ test('Repair queue failure rolls back round completion and never starts Build', 
   runner.enqueue(queue()); await settled(store, task.id); await runner.close();
   assert.equal(builds, 0); assert.equal(store.runs().at(-1)!.status, 'failed');
   assert.equal(store.runs().at(-1)!.repair_attempt, 0);
+});
+
+test('Approve structured schema rejects prose and incomplete decisions', async () => {
+  const { validateApprove } = await import('../src/server/codex.js');
+  assert.deepEqual(validateApprove(await approved()), await approved());
+  for (const value of ['готово', {}, { ...await approved(), outcome: 'PASS' }, { ...await approved(), outcome: 'ESCALATE' }, { ...await approved(), outcome: 'NEEDS_INPUT' }, { ...await approved(), extra: true }]) assert.throws(() => validateApprove(value));
+});
+for (const decision of ['publish', 'repair'] as const) test(`Escalation ${decision} binds request/version and invalidates dependent decisions`, async t => {
+  const { store, project, task, directory, queue } = await fixture(t);
+  let calls = 0;
+  const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, async () => pass, async input => {
+    calls++;
+    assert.match(input.prompt, /README says hello/); assert.match(input.prompt, /diff --git/);
+    for (const role of ['review-code', 'review-security', 'review-ui', 'review-ux']) assert.ok(input.prompt.includes(role));
+    return { ...await approved(), outcome: 'ESCALATE', risks: ['Check rollout'] };
+  });
+  runner.enqueue(queue()); await settled(store, task.id); await runner.close();
+  assert.equal(calls, 1);
+  const request = store.humanRequests().at(-1)!, version = store.task(project.id, task.id).state_version;
+  assert.throws(() => store.decide(project.id, task.id, request.id, version - 1, decision, 'fix rollout'));
+  assert.throws(() => store.decide(project.id, 'foreign', request.id, version, decision, 'fix rollout'));
+  store.db.exec("CREATE TRIGGER fail_decision BEFORE INSERT ON events WHEN NEW.type = 'approve.decided' BEGIN SELECT RAISE(ABORT, 'disk'); END");
+  assert.throws(() => store.decide(project.id, task.id, request.id, version, decision, 'fix rollout'));
+  assert.equal(store.humanRequests().at(-1)!.status, 'pending');
+  assert.equal(store.task(project.id, task.id).state_version, version);
+  store.db.exec('DROP TRIGGER fail_decision');
+  const result = store.mutate('decision', decision, () => store.decide(project.id, task.id, request.id, version, decision, 'fix rollout')) as { run: import('../src/shared.js').AgentRun | null };
+  assert.deepEqual(store.mutate('decision', decision, () => { throw new Error('duplicate'); }), result);
+  assert.throws(() => store.decide(project.id, task.id, request.id, version, decision, 'again'));
+  if (decision === 'publish') {
+    assert.equal(result.run, null); assert.equal(store.task(project.id, task.id).run_state, 'completed');
+    writeFileSync(join(store.runs().at(-1)!.worktree, 'README.md'), 'external');
+    await runner.refreshReviewState();
+    assert.equal(store.task(project.id, task.id).stage, 'needs-human');
+    assert.equal(store.humanRequests().at(-1)!.status, 'revoked');
+  } else {
+    assert.equal(result.run!.role, 'build');
+    assert.ok(store.runs().filter(r => r.role.startsWith('review-') || r.role === 'approve').every(r => r.stale));
+    assert.equal(store.humanRequests().at(-1)!.status, 'answered');
+    const repair = new SpecController(store, directory, () => {}, command, undefined, undefined, async input => {
+      assert.match(input.prompt, /fix rollout/); writeFileSync(join(input.cwd, 'README.md'), 'repaired'); return ready;
+    });
+    repair.enqueue(result.run!); await repair.close();
+    assert.equal(store.runs().at(-1)!.outcome, 'READY');
+  }
+  const history = store.humanRequests(); store.close(); const restored = new Store(directory);
+  assert.deepEqual(restored.humanRequests(), history); restored.close();
+});
+for (const mode of ['question', 'drift', 'invalid', 'save'] as const) test(`Approve ${mode} blocks unauthorized continuation`, async t => {
+  const { store, project, task, directory, queue } = await fixture(t);
+  let calls = 0;
+  const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, async () => pass, async input => {
+    calls++;
+    if (mode === 'question' && calls === 1) return { ...await approved(), outcome: 'NEEDS_INPUT', questions: [{ text: 'Rollout?', context: 'Policy', impact: 'Risk', options: [], required: true }] };
+    if (mode === 'question') assert.match(input.prompt, /Canary/);
+    if (mode === 'drift') writeFileSync(join(input.cwd, 'README.md'), 'external');
+    if (mode === 'invalid') return 'готово' as never;
+    if (mode === 'save') store.db.exec("CREATE TRIGGER fail_approve BEFORE INSERT ON events WHEN NEW.type = 'approve.completed' BEGIN SELECT RAISE(ABORT, 'disk'); END");
+    return approved();
+  });
+  runner.enqueue(queue()); await settled(store, task.id);
+  if (mode === 'question') {
+    const request = store.humanRequests().at(-1)!;
+    const next = store.answer(project.id, task.id, request.id, store.task(project.id, task.id).state_version, ['Canary']).run!;
+    assert.equal(next.role, 'approve'); runner.enqueue(next); await settled(store, task.id);
+    assert.equal(store.task(project.id, task.id).run_state, 'completed');
+  } else {
+    assert.equal(store.task(project.id, task.id).run_state, 'interrupted');
+    assert.equal(store.runs().at(-1)!.outcome, null);
+  }
+  await runner.close();
 });

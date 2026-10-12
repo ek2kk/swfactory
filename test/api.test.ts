@@ -243,3 +243,15 @@ test('Repair action validates complete round, ownership, schema, version and rep
   assert.equal((await request({ ...payload, request_id: randomUUID() })).statusCode, 409);
   assert.equal(store.runs().filter(run => run.role === 'build').length, 2);
 });
+
+test('Approve actions reject missing PASS, foreign requests and malformed decisions', async t => {
+  const { app, store, headers, project } = await fixture(t);
+  const task = store.createTask(project.id, 'Approve something', 1);
+  const url = `/api/projects/${project.id}/tasks/${task.id}`;
+  const payload = { request_id: randomUUID(), state_version: 1 };
+  assert.equal((await app.inject({ method: 'POST', url: `${url}/approve`, headers, payload })).statusCode, 409);
+  assert.equal((await app.inject({ method: 'POST', url: `${url}/approve`, headers, payload: { ...payload, state_version: '1' } })).statusCode, 400);
+  const path = `${url}/decisions/${randomUUID()}`;
+  assert.equal((await app.inject({ method: 'POST', url: path, headers, payload: { ...payload, decision: 'merge', feedback: '' } })).statusCode, 400);
+  assert.equal((await app.inject({ method: 'POST', url: path, headers, payload: { ...payload, decision: 'publish', feedback: '' } })).statusCode, 404);
+});
