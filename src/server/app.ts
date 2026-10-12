@@ -225,8 +225,11 @@ export async function createApp(options: {
     const human = store.humanRequests().find(r => r.id === humanId && r.task_id === taskId);
     if (!human) throw new Problem(404, 'Запрос не найден.');
     await controller.verifyReviewSource(store.specRun(projectId, taskId, human.run_id));
-    const result = store.mutate(request_id, fingerprint, () => store.decide(projectId, taskId, humanId, state_version, decision, feedback)) as { run: AgentRun | null };
-    if (result.run) controller.enqueue(result.run);
+    let changed = false;
+    const result = store.mutate(request_id, fingerprint, () => {
+      changed = true; return store.decide(projectId, taskId, humanId, state_version, decision, feedback);
+    }) as { run: AgentRun | null };
+    if (changed && result.run) controller.enqueue(result.run);
     publish(); return result;
   });
   app.get<{ Params: { projectId: string; taskId: string; runId: string } }>('/api/projects/:projectId/tasks/:taskId/runs/:runId/report', {
