@@ -172,6 +172,19 @@ export async function createApp(options: {
     controller.enqueue(result);
     publish(); return result;
   });
+  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/repair', {
+    schema: { params: taskParams, body: object({ request_id: uuid, state_version: version }) },
+  }, async request => {
+    const { projectId, taskId } = request.params;
+    const { request_id, state_version } = request.body;
+    const fingerprint = JSON.stringify(['repair.restart', projectId, taskId, state_version]);
+    const prior = store.replay(request_id, fingerprint);
+    if (prior !== undefined) return prior;
+    if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
+    const result = store.mutate(request_id, fingerprint, () => store.queueRepair(projectId, taskId, state_version, true)) as AgentRun;
+    controller.enqueue(result);
+    publish(); return result;
+  });
   app.post<{ Params: { projectId: string; taskId: string; humanId: string }; Body: { request_id: string; state_version: number; answers: string[] } }>('/api/projects/:projectId/tasks/:taskId/questions/:humanId/answer', {
     schema: { params: object({ projectId: uuid, taskId: uuid, humanId: uuid }), body: object({ request_id: uuid, state_version: version,
       answers: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 4096 } } }) },

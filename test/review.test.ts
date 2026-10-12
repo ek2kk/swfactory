@@ -12,7 +12,7 @@ import type { BuildResult, SpecResult, ReviewResult } from '../src/shared.js';
 
 const spec: SpecResult = { title: 'Hello', outcome: 'READY', summary: 'Implement hello', requirements: ['Say hello'], acceptance_criteria: ['README says hello'], assumptions: [], out_of_scope: [], questions: [] };
 const ready: BuildResult = { outcome: 'READY', summary: 'Implemented', changed_paths: ['README.md'], actions: ['Edited README'], checks: ['Read README: hello'], questions: [] };
-async function fixture(t: { after: (fn: () => void) => void }) {
+async function fixture(t: { after: (fn: () => void) => void }, completedRepairs = 2) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'factory-review-'))), checkout = join(root, 'repo'), directory = join(root, 'data');
   mkdirSync(checkout);
   const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -33,6 +33,7 @@ async function fixture(t: { after: (fn: () => void) => void }) {
   const build = queue();
   const builder = controller(async input => { writeFileSync(join(input.cwd, 'README.md'), 'hello'); return ready; });
   builder.enqueue(build); await builder.close();
+  store.db.prepare('UPDATE runs SET repair_attempt = ? WHERE id = ?').run(completedRepairs, build.id);
   const reviewQueue = () => store.queueReview(project.id, task.id, store.task(project.id, task.id).state_version);
   const reviewer = (execute: ExecuteReview) => new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, execute);
   return { root, checkout, directory, store, project, task, initial, git, build, queue: reviewQueue, controller: reviewer };
@@ -189,3 +190,74 @@ for (const scenario of ['changes', 'cli-error', 'question'] as const) for (const
     assert.equal(calls, scenario === 'changes' ? 4 : 2);
   });
 }
+
+for (const passAfterRepair of [false, true]) test(`Repair aggregates every reviewer, caps at two and reviews each version; pass=${passAfterRepair}`, async t => {
+  const { store, project, task, directory, queue } = await fixture(t, 0);
+  let builds = 0, reviews = 0;
+  const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, async input => {
+    builds++;
+    for (const role of ['review-code', 'review-security', 'review-ui', 'review-ux']) assert.ok(input.prompt.includes(`Finding ${role}`));
+    writeFileSync(join(input.cwd, 'README.md'), `hello repair ${builds}`);
+    return ready;
+  }, async input => {
+    reviews++;
+    const role = /You are the ([\w-]+)/.exec(input.prompt)![1];
+    return passAfterRepair && builds ? pass : { ...pass, outcome: 'CHANGES', findings: [`Finding ${role}`] };
+  });
+  runner.enqueue(queue());
+  assert.equal((await settled(store, task.id)).stage, passAfterRepair ? 'approve' : 'needs-human');
+  assert.equal(builds, passAfterRepair ? 1 : 2);
+  assert.equal(reviews, (builds + 1) * 4);
+  const history = store.runs();
+  assert.equal(new Set(history.filter(r => r.role.startsWith('review-')).map(r => r.round_id)).size, builds + 1);
+  assert.equal(history.at(-1)!.repair_attempt, builds);
+  if (!passAfterRepair) {
+    const version = store.task(project.id, task.id).state_version;
+    assert.throws(() => store.queueRepair(project.id, task.id, version));
+    assert.throws(() => store.queueRepair(project.id, task.id, version - 1, true));
+    const next = store.mutate('manual-repair', 'repair', () => store.queueRepair(project.id, task.id, version, true));
+    assert.deepEqual(store.mutate('manual-repair', 'repair', () => { throw new Error('duplicate'); }), next);
+    assert.throws(() => store.queueRepair(project.id, task.id, version, true));
+    runner.enqueue(next as ReturnType<Store['queueRepair']>);
+    await settled(store, task.id);
+    assert.equal(builds, 4);
+    assert.equal(store.runs().at(-1)!.repair_attempt, 2);
+    assert.ok(store.runs().length > history.length);
+  }
+  await runner.close();
+  const expected = store.runs(); store.close();
+  const restored = new Store(directory); assert.deepEqual(restored.runs(), expected); restored.close();
+});
+for (const failure of ['cli', 'invalid', 'question', 'save'] as const) test(`Repair ${failure} does not consume budget`, async t => {
+  const { store, project, task, directory, queue } = await fixture(t, 0);
+  let builds = 0;
+  const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, async input => {
+    builds++;
+    if (failure === 'cli') throw new Error('CLI failed');
+    if (failure === 'invalid') return {} as BuildResult;
+    if (failure === 'question' && builds === 1) return { ...ready, outcome: 'NEEDS_INPUT', questions: [{ text: 'Which?', context: 'Choice', impact: 'Implementation', options: [], required: true }] };
+    writeFileSync(join(input.cwd, 'README.md'), `repaired ${builds}`);
+    if (failure === 'save') store.db.exec("CREATE TRIGGER fail_repair BEFORE INSERT ON events WHEN NEW.type = 'build.completed' BEGIN SELECT RAISE(ABORT, 'disk'); END");
+    return ready;
+  }, async () => builds ? pass : { ...pass, outcome: 'CHANGES', findings: ['Fix it'] });
+  runner.enqueue(queue()); await settled(store, task.id);
+  assert.equal(store.runs().at(-1)!.repair_attempt, 0);
+  if (failure === 'question') {
+    const request = store.humanRequests().at(-1)!;
+    const next = store.answer(project.id, task.id, request.id, store.task(project.id, task.id).state_version, ['Use hello']).run!;
+    runner.enqueue(next); assert.equal((await settled(store, task.id)).stage, 'approve');
+    assert.equal(store.runs().at(-1)!.repair_attempt, 1);
+  }
+  await runner.close();
+});
+
+test('Repair queue failure rolls back round completion and never starts Build', async t => {
+  const { store, task, directory, queue } = await fixture(t, 0);
+  let builds = 0;
+  store.db.exec("CREATE TRIGGER fail_queue BEFORE INSERT ON events WHEN NEW.type = 'repair.queued' BEGIN SELECT RAISE(ABORT, 'disk'); END");
+  const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, async () => { builds++; return ready; },
+    async () => ({ ...pass, outcome: 'CHANGES', findings: ['Fix it'] }));
+  runner.enqueue(queue()); await settled(store, task.id); await runner.close();
+  assert.equal(builds, 0); assert.equal(store.runs().at(-1)!.status, 'failed');
+  assert.equal(store.runs().at(-1)!.repair_attempt, 0);
+});
