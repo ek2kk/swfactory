@@ -243,7 +243,7 @@ CHANGES не запускает Build внутри раунда: остальн�
 
 Backend проверяет branch, repository, чистоту source и его hash до и после каждой
 роли; изменение source сохраняется и делает прежние reviews неактуальными.
-Готовый раунд повторно проверяется при snapshot/reconnect; постоянного filesystem
+Сохранённый раунд, включая остановленный или ожидающий ответа, повторно проверяется при snapshot/reconnect; постоянного filesystem
 watcher нет. Будущий запуск Approve обязан повторять `verifyReviewSource` и проверять
 `reviewPasses` непосредственно перед исполнением. Worktree/instructions не являются sandbox.
 SQLite v6 сохраняет round/Spec bindings и восстанавливает Spec binding прежних Build.

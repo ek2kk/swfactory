@@ -108,12 +108,12 @@ ${JSON.stringify(context)}`;
   }
 
   async refreshReviewState() {
-    for (const task of this.store.snapshot().tasks.filter(t => t.stage === 'approve' && t.run_state === 'idle')) {
-      const run = this.store.runs().filter(r => r.task_id === task.id && r.role.startsWith('review-')).at(-1);
-      if (!run) continue;
+    for (const task of this.store.snapshot().tasks.filter(t => !['queued', 'running'].includes(t.run_state))) {
+      const run = this.store.runs().filter(r => r.task_id === task.id && r.description_revision === task.revision && r.role.startsWith('review-')).at(-1);
+      if (!run || run.stale) continue;
       try { await this.verifyReviewSource(run); }
       catch {
-        if (this.store.task(task.project_id, task.id).stage === 'approve') {
+        if (!this.store.specRun(task.project_id, task.id, run.id).stale) {
           this.error = 'Не удалось проверить актуальность Review. Новые запуски остановлены; нужна ручная сверка.';
         }
         this.publish();

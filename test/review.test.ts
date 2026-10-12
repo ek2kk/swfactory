@@ -157,3 +157,35 @@ test('Review refuses a foreign Spec binding before launching Codex', async t => 
   await settled(store, task.id); await runner.close();
   assert.equal(calls, 0); assert.equal(store.task(project.id, task.id).stage, 'needs-human');
 });
+
+for (const scenario of ['changes', 'cli-error', 'question'] as const) for (const drift of [false, true]) {
+  test(`Snapshot rechecks stopped Review: ${scenario}, source drift=${drift}`, async t => {
+    const { store, project, task, queue, controller } = await fixture(t);
+    let calls = 0;
+    const runner = controller(async input => {
+      calls++;
+      if (scenario === 'changes' && calls === 1) return { ...pass, outcome: 'CHANGES', findings: ['Fix it'] };
+      if (scenario === 'cli-error' && calls === 2) {
+        if (drift) writeFileSync(join(input.cwd, 'README.md'), 'CLI partial changes');
+        throw new Error('CLI failed');
+      }
+      if (scenario === 'question' && calls === 2) return { ...pass, outcome: 'NEEDS_INPUT', questions: [{ text: 'Policy?', context: 'Review', impact: 'Verdict', options: [], required: true }] };
+      return pass;
+    });
+    runner.enqueue(queue()); await settled(store, task.id); await runner.close();
+    assert.equal(store.task(project.id, task.id).stage, 'needs-human');
+    const last = store.runs().at(-1)!;
+    if (drift && scenario !== 'cli-error') writeFileSync(join(last.worktree, 'README.md'), 'External changes');
+    const before = store.snapshot();
+    await runner.refreshReviewState();
+    const reviews = store.runs().filter(r => r.role.startsWith('review-'));
+    assert.equal(reviews.length, scenario === 'changes' ? 4 : 2);
+    assert.ok(reviews.every(r => r.stale === (drift ? 1 : 0)));
+    assert.equal(runner.error, null);
+    if (!drift) assert.deepEqual(store.snapshot(), before);
+    const refreshed = store.snapshot();
+    await runner.refreshReviewState();
+    assert.deepEqual(store.snapshot(), refreshed);
+    assert.equal(calls, scenario === 'changes' ? 4 : 2);
+  });
+}
