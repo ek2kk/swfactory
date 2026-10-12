@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync, chmodSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { defaultModels, type BuildResult, type HumanRequest, type SpecResult, type Settings, type AgentRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision } from '../shared.js';
+import { defaultModels, reviewRoles, type ReviewResult, type BuildResult, type HumanRequest, type SpecResult, type Settings, type AgentRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision } from '../shared.js';
 
 export class Problem extends Error {
   constructor(public statusCode: number, message: string) { super(message); }
@@ -31,7 +31,7 @@ export class Store {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       const version = this.db.pragma('user_version', { simple: true });
-      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5) throw new Error('Версия базы новее приложения. Обновите приложение.');
+      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6) throw new Error('Версия базы новее приложения. Обновите приложение.');
       this.db.transaction(() => {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS projects (
@@ -71,7 +71,7 @@ export class Store {
         const runColumns = this.db.pragma('table_info(runs)') as { name: string }[];
         if (!runColumns.some(column => column.name === 'parent_run_id')) this.db.exec('ALTER TABLE runs ADD COLUMN parent_run_id TEXT REFERENCES runs(id)');
         this.db.prepare("UPDATE runs SET status = 'interrupted', error = 'Backend перезапущен. Нужна ручная сверка.' WHERE status IN ('queued','running')").run();
-        if (version !== 3 && version !== 4 && version !== 5) {
+        if (version !== 3 && version !== 4 && version !== 5 && version !== 6) {
           // Both pre-integration branches used v2; inspect the column before upgrading either shape.
           const columns = this.db.pragma('table_info(tasks)') as { name: string }[];
           if (!columns.some(column => column.name === 'title_state')) {
@@ -79,10 +79,17 @@ export class Store {
             this.db.exec("UPDATE tasks SET title_state = 'completed' WHERE title IS NOT NULL;");
           }
         }
-        for (const [name, definition] of [['role', "TEXT NOT NULL DEFAULT 'spec'"], ['head_sha', 'TEXT'], ['source_hash', 'TEXT']]) {
+        for (const [name, definition] of [['role', "TEXT NOT NULL DEFAULT 'spec'"], ['head_sha', 'TEXT'], ['source_hash', 'TEXT'], ['spec_run_id', 'TEXT'], ['round_id', 'TEXT'], ['stale', 'INTEGER NOT NULL DEFAULT 0']]) {
           if (!runColumns.some(column => column.name === name)) this.db.exec(`ALTER TABLE runs ADD COLUMN ${name} ${definition}`);
         }
-        this.db.pragma('user_version = 5');
+        if (version !== 6) {
+          // Recover the immutable Spec binding for existing Build continuations.
+          for (const run of this.db.prepare("SELECT id, parent_run_id FROM runs WHERE role = 'build' ORDER BY rowid").all() as { id: string; parent_run_id: string }[]) {
+            this.db.prepare("UPDATE runs SET spec_run_id = (SELECT CASE WHEN role = 'spec' THEN id ELSE spec_run_id END FROM runs WHERE id = ?) WHERE id = ?")
+              .run(run.parent_run_id, run.id);
+          }
+        }
+        this.db.pragma('user_version = 6');
         for (const task of this.db.prepare("SELECT * FROM tasks WHERE title_state IN ('pending','running')").all() as Task[]) {
           this.db.prepare("UPDATE tasks SET title_state = 'interrupted' WHERE id = ?").run(task.id);
           this.event('title.interrupted', task.id, { revision: task.revision });
@@ -213,13 +220,13 @@ export class Store {
     const task = this.task(projectId, taskId);
     if (task.state_version !== version || task.stage !== 'backlog' || task.run_state !== 'idle') throw new Problem(409, 'Задача изменилась или уже запущена.');
     const id = randomUUID();
-    const run: AgentRun = { role: 'spec', head_sha: null, source_hash: null, id, task_id: taskId, project_id: projectId, description_revision: task.revision,
+    const run: AgentRun = { spec_run_id: null, round_id: null, stale: 0, role: 'spec', head_sha: null, source_hash: null, id, task_id: taskId, project_id: projectId, description_revision: task.revision,
       config: this.settings(projectId), project_version: this.project(projectId).state_version, status: 'queued', parent_run_id: null,
       branch: `swfactory/${taskId}/${id}`, worktree: join(directory, 'worktrees', projectId, id),
       base_sha: null, outcome: null, error: null, report: 0 };
     this.db.prepare(`INSERT INTO runs (id, task_id, project_id, description_revision, config, project_version,
-      status, branch, worktree, base_sha, outcome, error, report, parent_run_id, role, head_sha, source_hash) VALUES (@id, @task_id, @project_id, @description_revision, @config, @project_version,
-      @status, @branch, @worktree, @base_sha, @outcome, @error, @report, @parent_run_id, @role, @head_sha, @source_hash)`).run({ ...run, config: JSON.stringify(run.config) });
+      status, branch, worktree, base_sha, outcome, error, report, parent_run_id, role, head_sha, source_hash, spec_run_id, round_id, stale) VALUES (@id, @task_id, @project_id, @description_revision, @config, @project_version,
+      @status, @branch, @worktree, @base_sha, @outcome, @error, @report, @parent_run_id, @role, @head_sha, @source_hash, @spec_run_id, @round_id, @stale)`).run({ ...run, config: JSON.stringify(run.config) });
     this.db.prepare("UPDATE tasks SET run_state = 'queued', state_version = state_version + 1 WHERE id = ?").run(taskId);
     if (task.title_state === 'pending' || task.title_state === 'running') {
       this.db.prepare("UPDATE tasks SET title_state = 'interrupted' WHERE id = ?").run(taskId);
@@ -234,17 +241,57 @@ export class Store {
     if (task.state_version !== version || task.stage !== 'build' || task.run_state !== 'idle'
       || !previous || previous.role !== 'spec' || previous.outcome !== 'READY' || previous.status !== 'completed'
       || previous.description_revision !== task.revision) throw new Problem(409, 'Нужна актуальная готовая Spec.');
-    const run: AgentRun = { ...previous, id: randomUUID(), parent_run_id: previous.id, role: 'build',
+    const run: AgentRun = { ...previous, id: randomUUID(), parent_run_id: previous.id, spec_run_id: previous.id, role: 'build',
       status: 'queued', outcome: null, error: null, report: 0 };
     this.db.prepare(`INSERT INTO runs (id, task_id, project_id, description_revision, config, project_version,
-      status, branch, worktree, base_sha, outcome, error, report, parent_run_id, role, head_sha, source_hash) VALUES (@id, @task_id, @project_id, @description_revision, @config, @project_version,
-      @status, @branch, @worktree, @base_sha, @outcome, @error, @report, @parent_run_id, @role, @head_sha, @source_hash)`)
+      status, branch, worktree, base_sha, outcome, error, report, parent_run_id, role, head_sha, source_hash, spec_run_id, round_id, stale) VALUES (@id, @task_id, @project_id, @description_revision, @config, @project_version,
+      @status, @branch, @worktree, @base_sha, @outcome, @error, @report, @parent_run_id, @role, @head_sha, @source_hash, @spec_run_id, @round_id, @stale)`)
       .run({ ...run, config: JSON.stringify(run.config) });
     this.db.prepare("UPDATE tasks SET run_state = 'queued', state_version = state_version + 1 WHERE id = ?").run(taskId);
     this.event('build.queued', taskId, { run_id: run.id });
     return run;
   }
-  updateRun(run: AgentRun, stage: Task['stage'], state: Task['run_state'], title?: string, result?: SpecResult | BuildResult) {
+  queueReview(projectId: string, taskId: string, version: number) {
+    return this.db.transaction(() => {
+      const task = this.task(projectId, taskId);
+      const previous = this.runs().filter(run => run.task_id === taskId).at(-1);
+      if (task.state_version !== version || task.stage !== 'review' || task.run_state !== 'idle'
+        || !previous || previous.status !== 'completed' || previous.description_revision !== task.revision
+        || previous.stale || !previous.head_sha || !previous.source_hash || !previous.spec_run_id
+        || !(previous.role === 'build' ? previous.outcome === 'READY' : ['PASS', 'CHANGES'].includes(previous.outcome ?? ''))) {
+        throw new Problem(409, 'Нужна актуальная реализация или завершённый reviewer.');
+      }
+      const index = previous.role === 'build' ? 0 : reviewRoles.indexOf(previous.role as typeof reviewRoles[number]) + 1;
+      if (index >= reviewRoles.length) throw new Problem(409, 'Раунд Review уже завершён.');
+      const run: AgentRun = { ...previous, id: randomUUID(), parent_run_id: previous.id,
+        round_id: previous.round_id ?? previous.id, role: reviewRoles[index], status: 'queued', outcome: null, error: null, report: 0 };
+      this.db.prepare(`INSERT INTO runs (id, task_id, project_id, description_revision, config, project_version,
+        status, branch, worktree, base_sha, outcome, error, report, parent_run_id, role, head_sha, source_hash, spec_run_id, round_id, stale)
+        VALUES (@id, @task_id, @project_id, @description_revision, @config, @project_version,
+        @status, @branch, @worktree, @base_sha, @outcome, @error, @report, @parent_run_id, @role, @head_sha, @source_hash, @spec_run_id, @round_id, @stale)`)
+        .run({ ...run, config: JSON.stringify(run.config) });
+      this.db.prepare("UPDATE tasks SET run_state = 'queued', state_version = state_version + 1 WHERE id = ?").run(taskId);
+      this.event('review.queued', taskId, { run_id: run.id, role: run.role, round_id: run.round_id });
+      return run;
+    })();
+  }
+  reviewPasses(run: AgentRun) {
+    const runs = this.runs();
+    return reviewRoles.every(role => {
+      const result = runs.filter(r => r.task_id === run.task_id && r.round_id === run.round_id && r.role === role).at(-1);
+      return result?.status === 'completed' && result.outcome === 'PASS' && !result.stale
+        && result.description_revision === run.description_revision && result.spec_run_id === run.spec_run_id
+        && result.base_sha === run.base_sha && result.head_sha === run.head_sha && result.source_hash === run.source_hash;
+    });
+  }
+  invalidateReviews(run: AgentRun) {
+    this.db.transaction(() => {
+      this.db.prepare("UPDATE runs SET stale = 1 WHERE task_id = ? AND role LIKE 'review-%'").run(run.task_id);
+      this.db.prepare("UPDATE tasks SET stage = 'needs-human', run_state = 'interrupted', state_version = state_version + 1 WHERE id = ? AND stage IN ('review','approve') AND run_state = 'idle'").run(run.task_id);
+      this.event('review.stale', run.task_id, { run_id: run.id, reason: 'Git state или source изменён' });
+    })();
+  }
+  updateRun(run: AgentRun, stage: Task['stage'], state: Task['run_state'], title?: string, result?: SpecResult | BuildResult | ReviewResult) {
     this.db.transaction(() => {
       const task = this.task(run.project_id, run.task_id);
       const current = this.specRun(run.project_id, run.task_id, run.id);
@@ -293,9 +340,9 @@ export class Store {
       if (task.run_state === 'interrupted') return { run: null };
       const run: AgentRun = { ...previous, id: randomUUID(), parent_run_id: previous.id, status: 'queued', outcome: null, error: null, report: 0 };
       this.db.prepare(`INSERT INTO runs (id, task_id, project_id, description_revision, config, project_version,
-      status, branch, worktree, base_sha, outcome, error, report, parent_run_id, role, head_sha, source_hash) VALUES (@id, @task_id, @project_id, @description_revision, @config, @project_version,
-        @status, @branch, @worktree, @base_sha, @outcome, @error, @report, @parent_run_id, @role, @head_sha, @source_hash)`).run({ ...run, config: JSON.stringify(run.config) });
-      this.db.prepare("UPDATE tasks SET stage = ?, run_state = 'queued' WHERE id = ?").run(run.role, taskId);
+      status, branch, worktree, base_sha, outcome, error, report, parent_run_id, role, head_sha, source_hash, spec_run_id, round_id, stale) VALUES (@id, @task_id, @project_id, @description_revision, @config, @project_version,
+        @status, @branch, @worktree, @base_sha, @outcome, @error, @report, @parent_run_id, @role, @head_sha, @source_hash, @spec_run_id, @round_id, @stale)`).run({ ...run, config: JSON.stringify(run.config) });
+      this.db.prepare("UPDATE tasks SET stage = ?, run_state = 'queued' WHERE id = ?").run(run.role.startsWith('review-') ? 'review' : run.role, taskId);
       this.event(`${run.role}.queued`, taskId, { run_id: run.id, parent_run_id: previous.id });
       return { run };
     })();
