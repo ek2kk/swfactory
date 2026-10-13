@@ -7,6 +7,7 @@ import './style.css';
 import { Composer, Message, RunConversation } from './chat.js';
 import { AgentOutput, RunProgress } from './output.js';
 import { applyTheme, readTheme, type Theme } from './theme.js';
+import { TaskView, type DescriptionDraft } from './taskView.js';
 
 applyTheme(readTheme());
 
@@ -36,6 +37,10 @@ function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () =>
     element.showModal(); cancelButton.current?.focus();
     return () => element.close();
   }, [confirming]);
+  function closeConfirmation() {
+    // Closing before unmount lets the browser restore focus to the card.
+    dialog.current?.close(); setConfirming(false);
+  }
   const [version, setVersion] = useState(task.state_version);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -50,7 +55,7 @@ function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () =>
     {task.archive_source === 'github-filter' && (task.archived || task.deletion_state) && <button className="secondary" disabled={busy} onClick={() => {
       setArchiving(true); setVersion(task.state_version); setConfirming(true); setError('');
     }}>Архивировать вручную</button>}
-    {confirming && <dialog ref={dialog} onCancel={event => { event.preventDefault(); if (!busy) setConfirming(false); }} aria-labelledby={`delete-title-${task.id}`} className="delete-confirmation">
+    {confirming && <dialog ref={dialog} onCancel={event => { event.preventDefault(); if (!busy) closeConfirmation(); }} aria-labelledby={`delete-title-${task.id}`} className="delete-confirmation">
       <h4 id={`delete-title-${task.id}`}>{checkingStop ? 'Проверить остановку' : 'Архивировать'} «{task.title ?? task.description}»?</h4>
       <p>{checkingStop ? 'Повторим остановку известных процессов без изменения видимости карточки. Ручная сверка ниже нужна только для подтверждения отсутствия всех процессов и проверки remote результата. Новые запуски не выполняются.' : <>Карточка будет скрыта с доски, новые запуски и публикация заблокированы. Попытаемся остановить известные процессы. Архивирование не подтверждает остановку всех процессов: неизвестный потомок может продолжать работу. История и результаты остановки доступны в архиве; файлы и существующие PR сохраняются. Уже отправленная remote операция могла завершиться. Вручную архивированные карточки автоматически не восстанавливаются.</>}</p>
       {checkingStop && !!task.stop_unverified && task.deletion_state === 'failed' && <label>Необязательная ручная сверка (оставьте пустым для повторной попытки остановки): проверьте отсутствие процессов задачи, Codex sessions и их дочерних процессов, а также remote результат публикации. Опишите фактические наблюдения (не вводите credentials). Это ваше подтверждение остановки; backend проверить его самостоятельно не может.<textarea minLength={20} maxLength={4096} value={reconciliation} onChange={event => setReconciliation(event.target.value)} /></label>}
@@ -59,18 +64,18 @@ function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () =>
         try {
           if (checkingStop) {
             const result = await api<{ deleted: boolean; error: string | null; warning: string | null }>(`${taskPath(task)}/stop`, 'POST', { state_version: version, ...(reconciliation.trim() ? { reconciliation: reconciliation.trim() } : {}) });
-            setError(result.error ?? ''); setConfirming(false); setReconciliation('');
+            setError(result.error ?? ''); closeConfirmation(); setReconciliation('');
             notify(`${result.deleted ? 'Остановка подтверждена.' : 'Остановка не подтверждена; исполнение заблокировано.'}${result.warning ? ' ' + result.warning : ''}`);
           } else {
             await api(`${taskPath(task)}/archive`, 'POST', { state_version: version });
-            setConfirming(false);
+            closeConfirmation();
             notify('Карточка скрыта. Результат остановки и история доступны в архиве.');
           }
           await refresh();
         } catch (error) { setError((error as Error).message); await refresh().catch(() => {}); }
         finally { setBusy(false); }
       }}>{busy ? 'Выполняем…' : checkingStop ? 'Проверить остановку' : 'Подтвердить архивирование'}</button>{' '}
-      <button ref={cancelButton} className="secondary" disabled={busy} onClick={() => setConfirming(false)}>Отмена</button>
+      <button ref={cancelButton} className="secondary" disabled={busy} onClick={closeConfirmation}>Отмена</button>
       {!busy && version !== task.state_version && <p role="status">Карточка изменилась. Отмените подтверждение и откройте его снова.</p>}
       {error && <p role="alert">{error}</p>}
     </dialog>}
@@ -78,7 +83,7 @@ function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () =>
   </section>;
 }
 
-function ArchivedTask({ task, refresh, notify, expanded = false }: { task: Task; refresh: () => Promise<void>; notify: (text: string) => void; expanded?: boolean }) {
+function ArchivedTask({ task, refresh, notify, expanded = false, draft }: { task: Task; refresh: () => Promise<void>; notify: (text: string) => void; expanded?: boolean; draft?: DescriptionDraft }) {
   const [open, setOpen] = useState(expanded);
   const [history, setHistory] = useState<{ revisions: Revision[]; messages: ChatMessage[]; runs: AgentRun[] } | null>(null);
   const [error, setError] = useState('');
@@ -89,9 +94,10 @@ function ArchivedTask({ task, refresh, notify, expanded = false }: { task: Task;
     return () => { disposed = true; };
   }, [open, task.id, task.state_version]);
   return <details open={open} onToggle={event => { if (event.target === event.currentTarget) setOpen(event.currentTarget.open); }}>
-    <summary>{task.title ?? task.id} · {task.deletion_state === 'deleted' ? 'остановка подтверждена' : task.deletion_state === 'stopping' ? 'остановка выполняется' : 'остановка не подтверждена'}</summary>
+    <summary data-task-heading>{task.title ?? task.id} · {task.deletion_state === 'deleted' ? 'остановка подтверждена' : task.deletion_state === 'stopping' ? 'остановка выполняется' : 'остановка не подтверждена'}</summary>
     {open && <>
-      <p>{task.description}</p>
+      <p className="description">{task.description}</p>
+      {draft && <label>Несохранённый черновик описания — можно скопировать<textarea readOnly value={draft.description} /></label>}
       <SourceIssue task={task} />
       {task.publication_status === 'unknown' || task.publication_status === 'pending' ? <p role="alert">Remote операция могла завершиться. Проверьте hosting; автоматического повтора публикации нет.</p> : null}
       {task.pr_url && <a href={task.pr_url} target="_blank" rel="noreferrer">Существующий PR</a>}
@@ -106,10 +112,8 @@ function ArchivedTask({ task, refresh, notify, expanded = false }: { task: Task;
   </details>;
 }
 
-function TaskCard({ task, project, runs, questions, refresh, active, cursor, notify }: { task: Task; project: Project; runs: AgentRun[]; questions: HumanRequest[]; refresh: () => Promise<void>; active: boolean; cursor: number; notify: (text: string) => void }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(task.description);
-  const [editVersion, setEditVersion] = useState(task.state_version);
+function TaskCard({ task, project, runs, questions, refresh, active, cursor, notify, draft, setDraft }: { task: Task; project: Project; runs: AgentRun[]; questions: HumanRequest[]; refresh: () => Promise<void>; active: boolean; cursor: number; notify: (text: string) => void; draft?: DescriptionDraft; setDraft: (draft: DescriptionDraft | null) => void }) {
+  const editing = !!draft;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [revisions, setRevisions] = useState<Revision[] | null>(null);
@@ -126,7 +130,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
   }, [active, task.id, cursor]);
   return <article className="card">
     <span className="project-name">{project.host}/{project.repository} · {project.checkout}</span>
-    <h3>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3>
+    <h3 data-task-heading tabIndex={-1}>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3>
     <SourceIssue task={task} />
     <p className="meta">Редакция {task.revision} · {{ idle: task.stage === 'build' ? 'Spec готова · можно запустить Build' : task.stage === 'review' ? 'Ожидает запуска следующего Review' : task.stage === 'approve' ? 'Четыре PASS · ожидает Approve' : 'Не запущена', queued: 'В очереди · ожидает слот', running: task.stage === 'spec' ? 'Codex готовит Spec' : task.stage === 'build' ? 'Codex реализует задачу' : task.stage === 'review' ? 'Codex выполняет Review' : task.stage === 'approve' ? 'Codex принимает решение о публикации' : 'Проверяем checkout и создаём worktree', waiting: 'Нужен ответ человека', interrupted: 'Прервана — нужна ручная проверка', completed: task.stage === 'approve' ? 'Разрешена только публикация PR/MR · публикация ещё не выполнена' : 'Завершена' }[task.run_state]}</p>
     <TaskDisposition task={task} refresh={refresh} notify={notify} />
@@ -160,21 +164,21 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
       : task.title_state === 'running' ? 'Codex формирует заголовок…'
       : task.title_state === 'interrupted' ? 'Генерация заголовка прервана. Описание сохранено; заголовок можно получить в Spec.'
       : 'Не удалось получить заголовок. Описание сохранено; проверьте Codex CLI. Заголовок можно получить в Spec.'}</p>}
-    {editing ? <form onSubmit={async event => {
+    {draft ? <form onSubmit={async event => {
       event.preventDefault(); setBusy(true); setError('');
       try {
-        await api(taskPath(task), 'PATCH', { description: draft, state_version: editVersion });
-        setEditing(false); setRevisions(null); await refresh();
+        await api(taskPath(task), 'PATCH', { description: draft.description, state_version: draft.version });
+        setDraft(null); setRevisions(null); await refresh();
       } catch (error) { setError((error as Error).message); }
       finally { setBusy(false); }
     }}>
       <p className="hint">Изменение требований создаст новую редакцию, отзовёт вопросы и потребует повторной Spec. Прежние отчёты останутся в истории.</p>
-      <label>Описание<textarea required maxLength={100000} value={draft} onChange={e => setDraft(e.target.value)} /></label>
-      {task.state_version !== editVersion && <p role="status">Есть новая редакция. Ваш черновик сохранён в форме; скопируйте его перед загрузкой актуальной версии.</p>}
-      <div className="actions"><button disabled={busy || !draft.trim() || task.state_version !== editVersion}>{busy ? 'Сохраняем…' : 'Сохранить'}</button>
-        <button type="button" className="secondary" disabled={busy} onClick={() => { setDraft(task.description); setEditVersion(task.state_version); }}>Загрузить актуальную</button>
-        <button type="button" className="secondary" disabled={busy} onClick={() => setEditing(false)}>Отмена</button></div>
-    </form> : <><p className="description">{task.description}</p>{((['backlog', 'build'].includes(task.stage) && task.run_state === 'idle') || (task.stage === 'needs-human' && task.run_state === 'waiting')) && <button className="secondary" onClick={() => { setDraft(task.description); setEditVersion(task.state_version); setError(''); setEditing(true); }}>Редактировать</button>}</>}
+      <label>Описание<textarea required maxLength={100000} value={draft.description} onChange={e => setDraft({ ...draft, description: e.target.value })} /></label>
+      {task.state_version !== draft.version && <p role="status">Есть новая редакция. Ваш черновик сохранён в форме; скопируйте его перед загрузкой актуальной версии.</p>}
+      <div className="actions"><button disabled={busy || !draft.description.trim() || task.state_version !== draft.version}>{busy ? 'Сохраняем…' : 'Сохранить'}</button>
+        <button type="button" className="secondary" disabled={busy} onClick={() => setDraft({ description: task.description, version: task.state_version })}>Загрузить актуальную</button>
+        <button type="button" className="secondary" disabled={busy} onClick={() => setDraft(null)}>Отмена</button></div>
+    </form> : <><p className="description">{task.description}</p>{((['backlog', 'build'].includes(task.stage) && task.run_state === 'idle') || (task.stage === 'needs-human' && task.run_state === 'waiting')) && <button className="secondary" onClick={() => { setDraft({ description: task.description, version: task.state_version }); setError(''); }}>Редактировать</button>}</>}
     {!editing && ['backlog', 'build', 'review', 'approve'].includes(task.stage) && task.run_state === 'idle' && <button disabled={busy} onClick={async () => {
       setBusy(true); setError('');
       try { await api(`${taskPath(task)}/${task.stage === 'approve' ? 'approve' : task.stage === 'review' ? 'review' : task.stage === 'build' ? 'build' : 'start'}`, 'POST', { state_version: task.state_version }); await refresh(); }
@@ -369,6 +373,14 @@ function App() {
   const readTaskId = () => new URLSearchParams(location.search).get('task') ?? '';
   const [detailId, setDetailId] = useState(readTaskId);
   const [opened, setOpened] = useState<string[]>(() => readTaskId() ? [readTaskId()] : []);
+  const [drafts, setDrafts] = useState<Record<string, DescriptionDraft>>({});
+  function setTaskDraft(id: string, draft: DescriptionDraft | null) {
+    setDrafts(previous => {
+      const next = { ...previous };
+      if (draft) next[id] = draft; else delete next[id];
+      return next;
+    });
+  }
   const boardPosition = useRef({ x: 0, y: 0 });
   const previousDetail = useRef(detailId);
   const returnButton = useRef<HTMLButtonElement>(null);
@@ -508,7 +520,7 @@ function App() {
     </div>
     {!!snapshot.projects.length && <details className="projects"><summary>Подключённые проекты ({snapshot.projects.length})</summary>{snapshot.projects.map(p => <div key={p.id}><strong>{p.host}/{p.repository}</strong><p>{p.checkout}</p><p>{p.hosting} · {p.remote} → {p.remote_url} · target: {p.target_branch}</p></div>)}</details>}
     <section className="projects" aria-label="Настройки моделей">{snapshot.projects.map(project => <ModelSettings key={project.id} project={project} refresh={refresh} />)}</section>
-    <section aria-label="Архив" className="projects"><h2>Архив ({archived.length})</h2>{archived.map(task => <ArchivedTask key={task.id} task={task} refresh={refresh} notify={setNotice} />)}{!archived.length && <p>Архив пуст.</p>}</section>
+    <section aria-label="Архив" className="projects"><h2>Архив ({archived.length})</h2>{archived.map(task => <ArchivedTask key={task.id} task={task} refresh={refresh} notify={setNotice} draft={drafts[task.id]} />)}{!archived.length && <p>Архив пуст.</p>}</section>
     <div className="board-heading"><h2>Доска <span>{visibleTasks.length}</span></h2><label>Проект <select value={filter} onChange={event => setFilter(event.target.value)}><option value="">Все проекты</option>{snapshot.projects.map(p => <option key={p.id} value={p.id}>{p.host}/{p.repository} · {p.checkout}</option>)}</select></label></div>
     <div className="board" tabIndex={0} role="region" aria-label="Kanban, горизонтальная прокрутка">
       {stages.map((stage, index) => {
@@ -533,7 +545,7 @@ function App() {
       {opened.map(id => {
         const task = [...snapshot.tasks, ...(snapshot.archived_tasks ?? [])].find(task => task.id === id);
         const project = task && snapshot.projects.find(project => project.id === task.project_id);
-        return task && project ? <div key={id} hidden={id !== detailId}>{task.archived || task.deletion_state ? <ArchivedTask task={task} refresh={refresh} notify={setNotice} expanded /> : <TaskCard task={task} project={project} runs={snapshot.runs.filter(run => run.task_id === id)} questions={snapshot.human_requests.filter(request => request.task_id === id)} refresh={refresh} active={id === detailId} cursor={snapshot.cursor} notify={setNotice} />}</div> : null;
+        return task && project ? <TaskView key={id} hidden={id !== detailId} blocked={!!(task.archived || task.deletion_state)}>{task.archived || task.deletion_state ? <ArchivedTask task={task} refresh={refresh} notify={setNotice} expanded draft={drafts[id]} /> : <TaskCard task={task} project={project} runs={snapshot.runs.filter(run => run.task_id === id)} questions={snapshot.human_requests.filter(request => request.task_id === id)} refresh={refresh} active={id === detailId} cursor={snapshot.cursor} notify={setNotice} draft={drafts[id]} setDraft={draft => setTaskDraft(id, draft)} />}</TaskView> : null;
       })}
     </div>
   </main>;
