@@ -23,7 +23,7 @@ async function fixture(t: { after: (fn: () => void) => void }) {
   const store = new Store(directory);
   t.after(() => { if (store.db.open) store.close(); rmSync(root, { recursive: true, force: true }); });
   const project = store.addProject({ checkout, common_dir: join(checkout, '.git'), remote: 'origin', remote_url: remote, hosting: 'github', host: 'github.com', repository: 'test/repo', target_branch: 'main' });
-  const config = store.settings(project.id); config.models.build = 'selected-build'; config.instructions = 'Keep it simple';
+  const config = store.settings(project.id); config.models.build = 'selected-build'; config.reasoning_efforts = { build: 'high' }; config.instructions = 'Keep it simple';
   store.saveSettings(project.id, config, 1);
   const task = store.createTask(project.id, 'Say hello', 2);
   const initial = store.queueSpec(project.id, task.id, 1, directory);
@@ -46,7 +46,7 @@ for (const scenario of ['edit', 'committed', 'committed-plus-edit', 'literal-pat
   assert.throws(queue, /Spec/);
   writeFileSync(join(checkout, 'user-work'), 'untouched');
   const runner = controller(async input => {
-    assert.equal(input.model, 'selected-build'); assert.match(input.prompt, /Keep it simple/); assert.match(input.prompt, /README says hello/); assert.match(input.prompt, /AGENTS.md/);
+    assert.equal(input.model, 'selected-build'); assert.equal(input.reasoningEffort, 'high'); assert.match(input.prompt, /Keep it simple/); assert.match(input.prompt, /README says hello/); assert.match(input.prompt, /AGENTS.md/);
     writeFileSync(join(input.cwd, 'README.md'), 'hello');
     if (scenario.startsWith('committed')) { git(input.cwd, 'add', '--', 'README.md'); git(input.cwd, 'commit', '-m', 'builder'); }
     if (scenario === 'committed-plus-edit') writeFileSync(join(input.cwd, 'README.md'), 'hello again');

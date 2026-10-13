@@ -57,12 +57,12 @@ test('READY uses fetched remote SHA, immutable config, separate worktree, durabl
   const { checkout, directory, git, base, store, project, queue, controller } = fixture(t);
   writeFileSync(join(checkout, 'local-only'), 'not pushed'); git('add', '.'); git('commit', '-m', 'local only');
   const local = git('rev-parse', 'HEAD');
-  const config = { ...store.settings(project.id), instructions: 'Use existing patterns' };
+  const config = { ...store.settings(project.id), instructions: 'Use existing patterns', reasoning_efforts: { spec: 'high' } };
   store.mutate('settings', 'settings', () => store.saveSettings(project.id, config, 1));
   const run = queue();
-  store.mutate('settings2', 'settings2', () => store.saveSettings(project.id, { ...config, models: { ...config.models, spec: 'different' } }, 2));
+  store.mutate('settings2', 'settings2', () => store.saveSettings(project.id, { ...config, models: { ...config.models, spec: 'different' }, reasoning_efforts: { spec: 'low' } }, 2));
   const runner = controller(async input => {
-    assert.equal(input.model, config.models.spec); assert.match(input.prompt, /Use existing patterns/);
+    assert.equal(input.model, config.models.spec); assert.equal(input.reasoningEffort, 'high'); assert.match(input.prompt, /Use existing patterns/);
     assert.match(input.prompt, /AGENTS.md/); assert.match(input.prompt, /Добавить hello/);
     assert.equal(existsSync(join(input.cwd, 'local-only')), false);
     assert.equal(readFileSync(join(input.cwd, 'README.md'), 'utf8'), 'initial');
@@ -83,6 +83,8 @@ test('READY uses fetched remote SHA, immutable config, separate worktree, durabl
   assert.equal(saved.config.models.spec, config.models.spec);
   store.close(); const restarted = new Store(directory);
   assert.equal(restarted.specRun(project.id, run.task_id, run.id).outcome, 'READY');
+  assert.equal(restarted.specRun(project.id, run.task_id, run.id).config.reasoning_efforts?.spec, 'high');
+  assert.equal(restarted.settings(project.id).reasoning_efforts?.spec, 'low');
   restarted.close();
 });
 

@@ -1,4 +1,4 @@
-import { ModelPicker } from './models.js';
+import { ModelPicker, ReasoningPicker } from './models.js';
 import { api } from './api.js';
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -248,7 +248,7 @@ function RunReport({ task, run }: { task: Task; run: AgentRun }) {
   return <details onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>{run.role} · редакция {run.description_revision}{run.stale || run.description_revision !== task.revision ? ' · Неактуальна' : ''} · {run.outcome ?? run.status} · {run.config.models[run.role]}</summary>
     <p className="meta">Доработки: {run.repair_attempt}/2 · {run.round_id && `Раунд: ${run.round_id}`} {run.spec_run_id && `Spec: ${run.spec_run_id}`}<br />{run.base_sha && `Base: ${run.base_sha}`}<br />{run.head_sha && `Head: ${run.head_sha}`}<br />Branch: {run.branch}<br />{run.worktree}</p>
-    <p className="meta">Модели запуска: {roles.map(role => `${role}: ${run.config.models[role]}`).join(' · ')}</p>
+    <p className="meta">Модели запуска: {roles.map(role => `${role}: ${run.config.models[role]} (${run.config.reasoning_efforts?.[role] ?? 'по умолчанию Codex'})`).join(' · ')}</p>
     <p className="meta">CLI: {run.diagnostic?.cli_version ?? 'неизвестна'} · Session: {run.diagnostic?.session_id ?? 'не предоставлен'}<br />
       Начало: {run.started_at ?? '—'} · Конец: {run.finished_at ?? '—'} · Duration: {run.started_at && run.finished_at ? `${Date.parse(run.finished_at) - Date.parse(run.started_at)} ms` : '—'}</p>
     {run.diagnostic?.usage && <p>Usage этого запуска: {JSON.stringify(run.diagnostic.usage)}. Это не остаток подписки.</p>}
@@ -290,9 +290,20 @@ function ModelSettings({ project, refresh }: { project: Project; refresh: () => 
       <p role="status">{loading ? 'Получаем модели Codex…' : catalog ? `Источник: ${{ codex: 'Codex', cache: 'последний успешный каталог', defaults: 'встроенные настройки' }[catalog.source]}${catalog.updated_at ? ' · ' + new Date(catalog.updated_at).toLocaleString('ru') : ''}` : 'Каталог пока недоступен.'}</p>
       {(catalogError || catalog?.error) && <p role="alert">{catalogError || catalog?.error}</p>}
       <button type="button" className="secondary" disabled={loading} onClick={() => void refreshCatalog()}>Обновить список моделей</button>
-      <div className="fields">{roles.map(role => <ModelPicker key={role} role={role} value={config.models[role]} catalog={catalog?.models ?? []} onChange={value => setConfig({ ...config, models: { ...config.models, [role]: value } })} />)}</div>
+      <div className="fields">{roles.map(role => <div key={role}>
+        <ModelPicker role={role} value={config.models[role]} catalog={catalog?.models ?? []} onChange={value => {
+          const reasoning_efforts = { ...config.reasoning_efforts };
+          if (value !== config.models[role]) delete reasoning_efforts[role];
+          setConfig({ ...config, models: { ...config.models, [role]: value }, reasoning_efforts });
+        }} />
+        <ReasoningPicker role={role} value={config.reasoning_efforts?.[role] ?? ''} model={catalog?.models.find(model => model.id === config.models[role])} onChange={value => {
+          const reasoning_efforts = { ...config.reasoning_efforts };
+          if (value) reasoning_efforts[role] = value; else delete reasoning_efforts[role];
+          setConfig({ ...config, reasoning_efforts });
+        }} />
+      </div>)}</div>
       <label>Инструкции проекта<textarea maxLength={30000} value={config.instructions} onChange={event => setConfig({ ...config, instructions: event.target.value })} /></label>
-      <p className="hint">Каталог Codex не гарантирует доступ к модели. Модель вне списка можно указать вручную. Конфигурация фиксируется при старте задачи; недоступная модель останавливает запуск без подмены.</p>
+      <p className="hint">Каталог Codex не гарантирует доступ к модели. Модель вне списка можно указать вручную. При смене модели глубина сбрасывается на «По умолчанию Codex». Конфигурация фиксируется при старте задачи; недоступная модель останавливает запуск без подмены.</p>
       {project.state_version !== version && <p role="status">Настройки изменились. Загрузите актуальную версию перед сохранением.</p>}
       <button disabled={busy || project.state_version !== version}>Сохранить настройки</button>{' '}
       <button type="button" className="secondary" disabled={busy} onClick={() => reload().catch(error => setError(error.message))}>Загрузить актуальные</button>

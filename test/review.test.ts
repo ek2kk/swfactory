@@ -22,7 +22,7 @@ async function fixture(t: { after: (fn: () => void) => void }, completedRepairs 
   const store = new Store(directory);
   t.after(() => { if (store.db.open) store.close(); rmSync(root, { recursive: true, force: true }); });
   const project = store.addProject({ checkout, common_dir: join(checkout, '.git'), remote: 'origin', remote_url: remote, hosting: 'github', host: 'github.com', repository: 'test/repo', target_branch: 'main' });
-  const config = store.settings(project.id); config.models.build = 'selected-build'; config.instructions = 'Keep it simple';
+  const config = store.settings(project.id); config.models.build = 'selected-build'; config.reasoning_efforts = { 'review-code': 'low', 'review-security': 'medium', 'review-ui': 'high', 'review-ux': 'ultra', approve: 'max' }; config.instructions = 'Keep it simple';
   store.saveSettings(project.id, config, 1);
   const task = store.createTask(project.id, 'Say hello', 2);
   const initial = store.queueSpec(project.id, task.id, 1, directory);
@@ -64,6 +64,7 @@ for (const changes of [false, true]) test(`Four sequential independent reports; 
   const runner = controller(async input => {
     assert.equal(active++, 0);
     const role = /You are the ([\w-]+)/.exec(input.prompt)![1]; seen.push(role); directories.add(input.directory);
+    assert.equal(input.reasoningEffort, build.config.reasoning_efforts?.[role as keyof typeof build.config.models]);
     assert.match(input.prompt, /README says hello/); assert.match(input.prompt, /Never run Build/);
     assert.equal(store.task(project.id, task.id).stage, 'review');
     assert.throws(() => store.queueBuild(project.id, task.id, store.task(project.id, task.id).state_version));
@@ -314,7 +315,7 @@ for (const mode of ['question', 'drift', 'invalid', 'save'] as const) test(`Appr
   const { store, project, task, directory, queue } = await fixture(t);
   let calls = 0;
   const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, async () => pass, async input => {
-    calls++;
+    calls++; assert.equal(input.reasoningEffort, 'max');
     if (mode === 'question' && calls === 1) return { ...await approved(), outcome: 'NEEDS_INPUT', questions: [{ text: 'Rollout?', context: 'Policy', impact: 'Risk', options: [], required: true }] };
     if (mode === 'question') assert.match(input.prompt, /Canary/);
     if (mode === 'drift') writeFileSync(join(input.cwd, 'README.md'), 'external');

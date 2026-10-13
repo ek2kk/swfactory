@@ -141,7 +141,7 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
         const response = await rpc('thread/start', { cwd: input.cwd, model: input.model, approvalPolicy: 'never', sandbox: 'danger-full-access' });
         threadId = response.thread.id;
         input.metadata?.({ session_id: threadId });
-        await rpc('turn/start', { threadId, input: [{ type: 'text', text: input.prompt }], outputSchema: schema });
+        await rpc('turn/start', { threadId, ...(input.reasoningEffort ? { effort: input.reasoningEffort } : {}), input: [{ type: 'text', text: input.prompt }], outputSchema: schema });
       })().catch(error => { if (!finished) stop(error instanceof CodexFailure ? error : new CodexFailure('protocol_error')); });
     });
   } finally { closeSync(out); closeSync(err); }
