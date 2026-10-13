@@ -1,3 +1,4 @@
+import { api } from './api.js';
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { stages, type Project, type Task, type Snapshot, type Revision, roles, type Settings, type AgentRun, type HumanRequest, type ChatMessage } from '../shared.js';
@@ -8,21 +9,6 @@ import { applyTheme, readTheme, type Theme } from './theme.js';
 
 applyTheme(readTheme());
 
-const pendingRequests = new Map<string, string>();
-async function api<T>(path: string, method = 'GET', body?: Record<string, unknown>): Promise<T> {
-  const key = JSON.stringify([method, path, body]);
-  if (body && path !== '/session') {
-    // Keep the same ID after a lost response so retry cannot duplicate a saved action.
-    const id = pendingRequests.get(key) ?? crypto.randomUUID();
-    pendingRequests.set(key, id);
-    body = { ...body, request_id: id };
-  }
-  const response = await fetch(`/api${path}`, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
-  const data = await response.json();
-  pendingRequests.delete(key);
-  if (!response.ok) throw new Error(data.message ?? 'Backend недоступен. Проверьте терминал.');
-  return data as T;
-}
 const labels = ['Backlog', 'Spec', 'Build', 'Review', 'Approve', 'PR/MR created', 'Needs human'];
 const taskPath = (task: Task) => `/projects/${task.project_id}/tasks/${task.id}`;
 

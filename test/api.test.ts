@@ -376,3 +376,64 @@ test('chat API validates ownership, replay, versions and origin; requirements in
   assert.equal(store.task(project.id, task.id).revision, 2);
   assert.deepEqual((await app.inject({ url, headers })).json().map((m: { status: string }) => m.status), ['revoked', 'applied']);
 });
+
+import { api as clientApi } from '../src/client/api.js';
+
+test('lost chat response followed by SSE version update retries the original request without another revision', async t => {
+  const { app, store, headers, project } = await fixture(t);
+  const task = store.createTask(project.id, 'Original description', 1);
+  const path = `/projects/${project.id}/tasks/${task.id}/messages`;
+  const requests: Record<string, unknown>[] = [];
+  let saved: unknown;
+  t.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+    const payload = JSON.parse(String(init.body)); requests.push(payload);
+    const response = await app.inject({ method: 'POST', url, headers, payload });
+    assert.equal(response.statusCode, 200);
+    if (requests.length === 1) { saved = response.json(); throw new TypeError('Response lost after commit'); }
+    return new Response(response.body, { status: response.statusCode });
+  });
+  const message = { state_version: task.state_version, text: 'Extra requirement', kind: 'requirements' };
+  await assert.rejects(clientApi(path, 'POST', message), /Response lost/);
+
+  // Deliver the updated task through the same SSE snapshot contract used by App.
+  await app.listen({ port: 0, host: '127.0.0.1' });
+  const address = app.server.address(); assert.ok(address && typeof address !== 'string');
+  const updated = await new Promise<Task>((resolve, reject) => {
+    const request = get(`http://127.0.0.1:${address.port}/api/events`, { headers }, response => {
+      let buffer = '';
+      response.on('data', chunk => {
+        buffer += chunk;
+        const snapshot = buffer.match(/event: snapshot\ndata: ([^\n]+)\n\n/);
+        if (snapshot) { resolve(JSON.parse(snapshot[1]).tasks.find((value: Task) => value.id === task.id)); request.destroy(); }
+      });
+    });
+    request.on('error', reject);
+    request.setTimeout(2000, () => { request.destroy(); reject(new Error('SSE timeout')); });
+  });
+  assert.ok(updated.state_version > task.state_version);
+  assert.equal(updated.revision, 2);
+  const result = await clientApi(path, 'POST', { ...message, state_version: updated.state_version });
+  assert.equal(store.task(project.id, task.id).revision, 2, 'retry must not append the requirements again');
+  assert.equal((store.db.prepare('SELECT count(*) AS count FROM chat_messages WHERE task_id = ?').get(task.id) as { count: number }).count, 1);
+  assert.deepEqual(requests[1], requests[0], 'payload and request_id stay frozen despite SSE');
+  assert.deepEqual(result, saved);
+});
+
+for (const status of [401, 409, 500]) test(`client retry resolves only confirmed responses: HTTP ${status}`, async t => {
+  const requests: Record<string, unknown>[] = [];
+  t.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit) => {
+    requests.push(JSON.parse(String(init.body)));
+    return new Response(JSON.stringify({ message: 'Request failed' }), { status: requests.length === 1 ? status : 200 });
+  });
+  const path = `/retry-test-${status}`;
+  await assert.rejects(clientApi(path, 'POST', { state_version: 1, text: 'Same intent' }), /Request failed/);
+  await clientApi(path, 'POST', { state_version: 2, text: 'Same intent' });
+  if (status !== 409) assert.deepEqual(requests[1], requests[0]);
+  else {
+    assert.equal(requests[1].state_version, 2);
+    assert.notEqual(requests[1].request_id, requests[0].request_id);
+  }
+  await clientApi(path, 'POST', { state_version: 3, text: 'Same intent' });
+  assert.equal(requests[2].state_version, 3);
+  assert.notEqual(requests[2].request_id, requests[1].request_id, 'confirmed success permits a new action');
+});
