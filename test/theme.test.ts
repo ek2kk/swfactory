@@ -46,6 +46,7 @@ test('both palettes keep text, links, disabled controls and focus readable', asy
   };
   const palettes = [...css.matchAll(/\{\s*color-scheme: (light|dark);([^}]+)\}/g)];
   assert.equal(palettes.length, 3);
+  assert.equal(palettes[1][2].trim(), palettes[2][2].trim(), 'system and explicit dark palettes match');
   for (const [, theme, body] of palettes) {
     const colors = Object.fromEntries([...body.matchAll(/--([\w-]+): #([\da-f]{6})/g)].map(([, name, hex]) => [name, luminance(hex)]));
     const contrast = (a: string, b: string) => (Math.max(colors[a], colors[b]) + 0.05) / (Math.min(colors[a], colors[b]) + 0.05);
