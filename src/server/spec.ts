@@ -208,7 +208,7 @@ ${JSON.stringify(context)}`;
       prompt += this.chatContext(run);
       saveArtifact(directory, 'input.json', JSON.stringify({ run, description: task.description, specification, feedback, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'build', 'running'); this.publish();
-      const result = validateBuild(await this.build({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.build, prompt }));
+      const result = validateBuild(await this.build({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.build, reasoningEffort: run.config.reasoning_efforts?.build, prompt }));
       await verifyRepository(project, run.worktree, this.command);
       run.head_sha = result.outcome === 'READY' ? await commitBuild(run, result, this.command)
         : await this.command('git', ['rev-parse', 'HEAD'], run.worktree);
@@ -304,7 +304,7 @@ ${JSON.stringify(context)}`;
       prompt += this.chatContext(run);
       saveArtifact(directory, 'input.json', JSON.stringify({ run, specification, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'review', 'running'); this.publish();
-      const result = validateReview(await this.review({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models[run.role], prompt }), run.role as ReviewRole);
+      const result = validateReview(await this.review({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models[run.role], reasoningEffort: run.config.reasoning_efforts?.[run.role], prompt }), run.role as ReviewRole);
       await this.verifyReviewSource(run);
       saveArtifact(directory, 'result.json', JSON.stringify({ schema_version: 1, task_id: task.id, run_id: run.id, role: run.role,
         round_id: run.round_id, description_revision: run.description_revision, spec_revision: run.spec_run_id,
@@ -363,7 +363,7 @@ Context: ${JSON.stringify({ run, description: task.description, specification, r
       prompt += this.chatContext(run);
       saveArtifact(directory, 'input.json', JSON.stringify({ run, specification, reports, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'approve', 'running'); this.publish();
-      const result = validateApprove(await this.approve({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.approve, prompt }));
+      const result = validateApprove(await this.approve({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.approve, reasoningEffort: run.config.reasoning_efforts?.approve, prompt }));
       await this.verifyReviewSource(run);
       if (!this.store.reviewPasses(run)) throw new Problem(409, 'Review устарел.');
       saveArtifact(directory, 'result.json', JSON.stringify({ schema_version: 1, run_id: run.id, task_id: task.id,
@@ -423,7 +423,7 @@ ${context.length ? `Previous Spec results and human answers (same revision):\n${
       saveArtifact(directory, 'input.json', JSON.stringify({ run, description: task.description, prompt }, null, 2));
       this.store.updateRun(run, 'spec', 'running');
       this.publish();
-      const result = validateSpec(await this.execute({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.spec, prompt }));
+      const result = validateSpec(await this.execute({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.spec, reasoningEffort: run.config.reasoning_efforts?.spec, prompt }));
       const head = await this.verifyWorktree(run);
       const report = [result.summary, ...[
         ['Требования', result.requirements], ['Acceptance criteria', result.acceptance_criteria],

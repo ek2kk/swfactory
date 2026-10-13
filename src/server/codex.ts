@@ -41,7 +41,7 @@ export function validateSpec(value: unknown): SpecResult {
   catch { throw new Problem(422, 'Codex вернул невалидный заголовок Spec. Переход заблокирован.'); }
   return { ...result, title: result.title.trim() };
 }
-export type CodexInput = { signal?: AbortSignal; control?: (steer: Steer | null) => void; cwd: string; directory: string; model: string; prompt: string; output?: (text: string) => void; metadata?: (value: RunDiagnostic) => void };
+export type CodexInput = { signal?: AbortSignal; control?: (steer: Steer | null) => void; cwd: string; directory: string; model: string; reasoningEffort?: string; prompt: string; output?: (text: string) => void; metadata?: (value: RunDiagnostic) => void };
 export type ExecuteSpec = (input: CodexInput) => Promise<SpecResult>;
 
 export function executeSpec(input: CodexInput, executable = 'codex') {
@@ -67,7 +67,7 @@ async function executeResult<T>(input: CodexInput, schema: object, validate: (va
     saveArtifact(input.directory, 'log-format.json', JSON.stringify({ format: 'redacted-v1' }));
     return await new Promise<T>((resolve, reject) => {
       const child = spawn(executable, ['exec', '--json', '--dangerously-bypass-approvals-and-sandbox',
-        '--model', input.model, '--output-schema', join(input.directory, 'schema.json'), '--color', 'never', '-'],
+        '--model', input.model, ...(input.reasoningEffort ? ['-c', `model_reasoning_effort=${JSON.stringify(input.reasoningEffort)}`] : []), '--output-schema', join(input.directory, 'schema.json'), '--color', 'never', '-'],
       { cwd: input.cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
       let stderrBuffer = '', stderrTail = '';
       let buffer = '', message = '', started = false, completed = false, thread = false, failed: Error | undefined;

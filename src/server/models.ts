@@ -9,7 +9,20 @@ export function normalizeModels(value: unknown): ModelOption[] {
   for (const entry of value) {
     if (!entry || typeof entry.id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(entry.id)
       || typeof entry.name !== 'string' || !entry.name.trim() || entry.name.length > 256 || /[\x00-\x1f\x7f]/.test(entry.name)) throw new Error('invalid model');
-    models.set(entry.id, { id: entry.id, name: entry.name });
+    const model: ModelOption = { id: entry.id, name: entry.name };
+    if (entry.reasoning_efforts !== undefined) {
+      if (!Array.isArray(entry.reasoning_efforts) || entry.reasoning_efforts.length > 32
+        || entry.reasoning_efforts.some((option: any) => !option || typeof option.effort !== 'string'
+          || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(option.effort)
+          || typeof option.description !== 'string' || option.description.length > 1024 || /[\x00-\x1f\x7f]/.test(option.description))
+        || new Set(entry.reasoning_efforts.map((option: any) => option.effort)).size !== entry.reasoning_efforts.length) throw new Error('invalid reasoning efforts');
+      model.reasoning_efforts = entry.reasoning_efforts.map((option: any) => ({ effort: option.effort, description: option.description }));
+    }
+    if (entry.default_reasoning_effort != null) {
+      if (!model.reasoning_efforts?.some(option => option.effort === entry.default_reasoning_effort)) throw new Error('invalid default effort');
+      model.default_reasoning_effort = entry.default_reasoning_effort;
+    }
+    models.set(entry.id, model);
   }
   return [...models.values()];
 }
@@ -49,7 +62,7 @@ export function discoverModels(cwd: string, executable = 'codex', timeout = 10_0
           } else {
             const page = event.result;
             if (!Array.isArray(page.data) || ++pages > 100) throw new Error('Invalid page');
-            models.push(...page.data.filter((m: any) => !m?.hidden).map((m: any) => ({ id: m?.model, name: m?.displayName })));
+            models.push(...page.data.filter((m: any) => !m?.hidden).map((m: any) => ({ id: m?.model, name: m?.displayName, reasoning_efforts: m?.supportedReasoningEfforts?.map((option: any) => ({ effort: option?.reasoningEffort, description: option?.description })), default_reasoning_effort: m?.defaultReasoningEffort })));
             if (models.length > 1000) throw new Error('Catalog limit');
             if (page.nextCursor == null) { result = normalizeModels(models); finish(); break; }
             if (typeof page.nextCursor !== 'string' || !page.nextCursor || cursors.has(page.nextCursor)) throw new Error('Invalid cursor');

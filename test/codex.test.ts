@@ -11,7 +11,7 @@ test('Spec result validation rejects incomplete, extra, blank and inconsistent f
   for (const bad of [null, {}, { ...ready, extra: true }, { ...ready, summary: ' ' }, { ...ready, requirements: [] },
     { ...ready, assumptions: [''] }, { ...ready, outcome: 'PASS' }, { ...ready, title: '' }, { ...ready, title: 'x'.repeat(121) }, { ...ready, title: 'a\nb' }, { ...ready, questions: ['unresolved'] }, { ...ready, outcome: 'NEEDS_INPUT' }]) assert.throws(() => validateSpec(bad));
 });
-for (const scenario of ['valid', 'exit', 'incomplete', 'jsonl', 'result', 'failed', 'spawn', 'truncated'] as const) test(`Codex process ${scenario}`, async t => {
+for (const scenario of ['valid', 'effort', 'exit', 'incomplete', 'jsonl', 'result', 'failed', 'spawn', 'truncated'] as const) test(`Codex process ${scenario}`, async t => {
   const root = mkdtempSync(join(tmpdir(), 'factory-codex-')), directory = join(root, 'artifacts');
   mkdirSync(directory); t.after(() => rmSync(root, { recursive: true, force: true }));
   const cli = join(root, 'codex');
@@ -26,10 +26,11 @@ for (const scenario of ['valid', 'exit', 'incomplete', 'jsonl', 'result', 'faile
     assert.ok(!argv.includes('--disable'));
     assert.ok(!argv.some(value => value.startsWith('mcp_servers.')));
     assert.equal(argv[argv.indexOf('--model') + 1], 'chosen-model');
+    assert.deepEqual(argv.filter(value => value.startsWith('model_reasoning_effort=')), ${JSON.stringify(scenario === 'effort' ? ['model_reasoning_effort="ultra"'] : [])});
     let input = ''; process.stdin.on('data', chunk => input += chunk);
     process.stdin.on('end', () => { assert.equal(input, 'prompt'); process.stdout.write(${JSON.stringify(output)}, () => process.exit(${scenario === 'exit' ? 1 : 0})); });`, { mode: 0o700 });
-  const result = executeSpec({ cwd: root, directory, model: 'chosen-model', prompt: 'prompt' }, scenario === 'spawn' ? join(root, 'missing') : cli);
-  if (scenario === 'valid') assert.deepEqual(await result, ready); else await assert.rejects(result);
+  const result = executeSpec({ cwd: root, directory, model: 'chosen-model', reasoningEffort: scenario === 'effort' ? 'ultra' : undefined, prompt: 'prompt' }, scenario === 'spawn' ? join(root, 'missing') : cli);
+  if (scenario === 'valid' || scenario === 'effort') assert.deepEqual(await result, ready); else await assert.rejects(result);
 });
 
 test('NEEDS_INPUT requires structured context, impact, options and required flag', () => {

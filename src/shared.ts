@@ -19,7 +19,7 @@ export type Snapshot = { execution_pause?: ExecutionPause; projects: Project[]; 
 export const roles = ['spec', 'build', 'review-code', 'review-security', 'review-ui', 'review-ux', 'approve'] as const;
 export type Models = Record<typeof roles[number], string>;
 export const defaultModels: Models = Object.fromEntries(roles.map(role => [role, 'gpt-6.1-sol'])) as Models;
-export type Settings = { models: Models; instructions: string };
+export type Settings = { models: Models; reasoning_efforts?: Partial<Models>; instructions: string };
 export type SpecResult = {
   outcome: 'READY' | 'NEEDS_INPUT'; title: string; summary: string; requirements: string[];
   acceptance_criteria: string[]; assumptions: string[]; out_of_scope: string[]; questions: Question[];
@@ -66,5 +66,5 @@ export type ChatMessage = {
 };
 export type TranscriptEntry = { id: string; kind: 'agent' | 'tool' | 'event'; title: string; text: string; at: string; status?: string };
 
-export type ModelOption = { id: string; name: string };
+export type ModelOption = { id: string; name: string; reasoning_efforts?: { effort: string; description: string }[]; default_reasoning_effort?: string };
 export type ModelCatalog = { models: ModelOption[]; source: 'codex' | 'cache' | 'defaults'; updated_at: string | null; error?: string };

@@ -188,15 +188,31 @@ export async function createApp(options: {
   app.get<{ Params: { projectId: string; taskId: string } }>('/api/projects/:projectId/tasks/:taskId/revisions', { schema: { params: taskParams } }, async request => store.revisions(request.params.projectId, request.params.taskId));
   app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/settings', { schema: { params: projectParams } }, async request => store.settings(request.params.projectId));
   app.put<{ Params: { projectId: string }; Body: Settings & { request_id: string; state_version: number } }>('/api/projects/:projectId/settings', {
-    schema: { params: projectParams, body: object({ request_id: uuid, state_version: version,
+    schema: { params: projectParams, body: { ...object({ request_id: uuid, state_version: version,
       instructions: { type: 'string', maxLength: 30000 },
       models: object(Object.fromEntries(roles.map(role => [role, { type: 'string', minLength: 1, maxLength: 128, pattern: '^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$' }]))),
-    }) },
+      reasoning_efforts: { ...object(Object.fromEntries(roles.map(role => [role, { type: 'string', minLength: 1, maxLength: 64, pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]*$' }]))), required: [] },
+    }), required: ['request_id', 'state_version', 'instructions', 'models'] } },
   }, async request => {
     const { request_id, state_version, ...config } = request.body;
     const projectId = request.params.projectId;
-    const result = store.mutate(request_id, JSON.stringify(['project.settings', projectId, state_version, config]),
-      () => store.saveSettings(projectId, config, state_version));
+    const fingerprint = JSON.stringify(['project.settings', projectId, state_version, config]);
+    const prior = store.replay(request_id, fingerprint);
+    if (prior !== undefined) return prior;
+    const project = store.project(projectId);
+    if (project.state_version !== state_version) throw new Problem(409, 'Настройки изменились. Загрузите актуальную версию.');
+    const saved = store.settings(projectId);
+    const changed = roles.filter(role => config.reasoning_efforts?.[role] !== undefined
+      && (config.models[role] !== saved.models[role] || config.reasoning_efforts[role] !== saved.reasoning_efforts?.[role]));
+    if (changed.length) {
+      const catalog = await catalogs.get(projectId, project.checkout);
+      for (const role of changed) {
+        if (!catalog.models.find(model => model.id === config.models[role])?.reasoning_efforts?.some(option => option.effort === config.reasoning_efforts![role])) {
+          throw new Problem(422, `Глубина рассуждений для ${role} не подтверждена каталогом Codex. Обновите список или выберите «По умолчанию Codex».`);
+        }
+      }
+    }
+    const result = store.mutate(request_id, fingerprint, () => store.saveSettings(projectId, config, state_version));
     publish(); return result;
   });
   app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/start', {

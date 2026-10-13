@@ -31,6 +31,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
    reply(r.id, {thread:{id:'thread-1'}});
  }
  if (r.method === 'turn/start') {
+   assert.equal(r.params.effort, ${scenario === 'success' ? '"ultra"' : 'undefined'});
    assert.ok(r.params.outputSchema); assert.equal(r.params.input[0].text, 'prompt');
    reply(r.id, {turn:{id:'turn-1'}}); event('turn/started', {turn:{id:'turn-1'}});
  }
@@ -53,7 +54,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
 `, { mode: 0o700 });
   let active: Steer | null = null, delivery: Promise<unknown> | undefined;
   let metadata: RunDiagnostic = {};
-  const execution = executeSpec({ directory, cwd: directory, model: 'test-model', prompt: 'prompt',
+  const execution = executeSpec({ directory, cwd: directory, model: 'test-model', reasoningEffort: scenario === 'success' ? 'ultra' : undefined, prompt: 'prompt',
     metadata: value => { metadata = { ...metadata, ...value }; },
     control: steer => { active = steer; if (steer) delivery = steer('message-1', 'Guidance').then(() => 'delivered', error => error); },
   }, cli);
