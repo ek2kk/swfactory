@@ -31,7 +31,7 @@ export class Store {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       const version = this.db.pragma('user_version', { simple: true });
-      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11) throw new Error('Версия базы новее приложения. Обновите приложение.');
+      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13) throw new Error('Версия базы новее приложения. Обновите приложение.');
       this.db.transaction(() => {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS projects (
@@ -90,7 +90,7 @@ export class Store {
           }
         }
         const taskColumns = this.db.pragma('table_info(tasks)') as { name: string }[];
-        for (const [name, type] of [['publication_status', 'TEXT'], ['pr_url', 'TEXT'], ['pr_number', 'INTEGER']]) {
+        for (const [name, type] of [['publication_status', 'TEXT'], ['pr_url', 'TEXT'], ['pr_number', 'INTEGER'], ['deletion_state', 'TEXT'], ['deletion_error', 'TEXT'], ['execution_unverified', 'INTEGER NOT NULL DEFAULT 0'], ['stop_unverified', 'INTEGER NOT NULL DEFAULT 0']]) {
           if (!taskColumns.some(c => c.name === name)) this.db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
         }
         for (const task of this.db.prepare("SELECT id FROM tasks WHERE publication_status = 'pending'").all() as { id: string }[]) {
@@ -110,7 +110,18 @@ export class Store {
           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), delivered_at TEXT, error TEXT);
           CREATE INDEX IF NOT EXISTS chat_task ON chat_messages(task_id);
           UPDATE chat_messages SET status = 'unknown', error = 'Backend перезапущен без подтверждения доставки. Автоматического повтора нет.' WHERE status = 'sending';`);
-        this.db.pragma('user_version = 11');
+        this.db.pragma('user_version = 13');
+        // No OS proof survives restart. Never infer termination from SQLite run status.
+        if (Number(version) < 13) {
+          this.db.exec(`UPDATE tasks SET stop_unverified = 1
+            WHERE (title_state <> 'pending'
+              OR EXISTS (SELECT 1 FROM runs WHERE runs.task_id = tasks.id)
+              OR EXISTS (SELECT 1 FROM events WHERE events.task_id = tasks.id
+                AND type IN ('title.started', 'title.completed', 'title.failed', 'title.interrupted', 'execution.process-started')))
+            AND NOT EXISTS (SELECT 1 FROM events WHERE events.task_id = tasks.id AND type = 'task.stop-verified-by-human')`);
+        }
+        this.db.prepare("UPDATE tasks SET stop_unverified = 1 WHERE execution_unverified = 1 OR title_state = 'running' OR run_state = 'running'").run();
+        this.db.prepare("UPDATE tasks SET deletion_state = 'failed', deletion_error = 'Backend перезапущен во время удаления. Проверьте процессы вручную; остановка не подтверждена.', stop_unverified = 1 WHERE deletion_state = 'stopping'").run();
         for (const task of this.db.prepare("SELECT * FROM tasks WHERE title_state IN ('pending','running')").all() as Task[]) {
           this.db.prepare("UPDATE tasks SET title_state = 'interrupted' WHERE id = ?").run(task.id);
           this.event('title.interrupted', task.id, { revision: task.revision });
@@ -131,9 +142,9 @@ export class Store {
   snapshot(): Snapshot {
     return {
       projects: this.db.prepare('SELECT * FROM projects ORDER BY rowid').all() as Project[],
-      tasks: this.db.prepare('SELECT * FROM tasks ORDER BY rowid').all() as Task[],
-      runs: this.runs(), execution_pause: this.executionPause(),
-      human_requests: this.humanRequests(),
+      tasks: this.db.prepare("SELECT * FROM tasks WHERE deletion_state IS NOT 'deleted' ORDER BY rowid").all() as Task[],
+      runs: this.runs().filter(r => !this.blocked(r.task_id)), execution_pause: this.executionPause(),
+      human_requests: this.humanRequests().filter(r => !this.blocked(r.task_id)),
       cursor: (this.db.prepare('SELECT coalesce(max(id), 0) AS id FROM events').get() as { id: number }).id,
     };
   }
@@ -173,10 +184,44 @@ export class Store {
     if (!project) throw new Problem(404, 'Проект не найден.');
     return project;
   }
-  task(projectId: string, id: string) {
+  rawTask(projectId: string, id: string) {
     const task = this.db.prepare('SELECT * FROM tasks WHERE id = ? AND project_id = ?').get(id, projectId) as Task | undefined;
     if (!task) throw new Problem(404, 'Задача не найдена в этом проекте.');
     return task;
+  }
+  blocked(id: string) {
+    return !!(this.db.prepare('SELECT deletion_state FROM tasks WHERE id = ?').get(id) as Task | undefined)?.deletion_state;
+  }
+  task(projectId: string, id: string) {
+    const task = this.rawTask(projectId, id);
+    if (task.deletion_state) throw new Problem(409, 'Удаление задачи принято. Новые действия заблокированы.');
+    return task;
+  }
+  beginDeletion(projectId: string, id: string, version: number, reconciliation?: string) {
+    const task = this.rawTask(projectId, id);
+    if (task.deletion_state === 'deleted') return task;
+    if (task.state_version !== version) throw new Problem(409, 'Карточка изменилась. Обновите её перед удалением.');
+    if (reconciliation) {
+      if (task.deletion_state !== 'failed' || !task.stop_unverified) throw new Problem(409, 'Ручная сверка доступна только для неподтверждённой остановки процессов.');
+      this.db.prepare('UPDATE tasks SET stop_unverified = 0, execution_unverified = 0 WHERE id = ?').run(id);
+      this.event('task.stop-verified-by-human', id, { evidence: reconciliation, state_version: task.state_version, revision: task.revision });
+    }
+    this.db.prepare("UPDATE tasks SET deletion_state = 'stopping', deletion_error = NULL, state_version = state_version + 1 WHERE id = ?").run(id);
+    this.db.prepare("UPDATE human_requests SET status = 'revoked' WHERE task_id = ? AND status = 'pending'").run(id);
+    this.db.prepare("UPDATE chat_messages SET status = 'revoked', error = 'Задача удаляется; доставка и применение запрещены.' WHERE task_id = ? AND status IN ('queued','sending')").run(id);
+    this.event('task.deletion-requested', id, {});
+    return this.rawTask(projectId, id);
+  }
+  finishDeletion(id: string, error?: string) {
+    this.db.transaction(() => {
+      this.db.prepare('UPDATE tasks SET deletion_state = ?, deletion_error = ?, state_version = state_version + 1 WHERE id = ?')
+        .run(error ? 'failed' : 'deleted', error ?? null, id);
+      if (!error) {
+        this.db.prepare("UPDATE runs SET status = 'interrupted', error = 'Задача удалена.', finished_at = ? WHERE task_id = ? AND status IN ('queued','running')").run(new Date().toISOString(), id);
+        this.db.prepare("UPDATE tasks SET run_state = 'interrupted', title_state = CASE WHEN title_state IN ('pending','running') THEN 'interrupted' ELSE title_state END, publication_status = CASE WHEN publication_status = 'pending' THEN 'unknown' ELSE publication_status END WHERE id = ?").run(id);
+      }
+      this.event(error ? 'task.deletion-failed' : 'task.deleted', id, { error: error ?? null, warning: (this.db.prepare('SELECT publication_status FROM tasks WHERE id = ?').get(id) as Task).publication_status === 'unknown' ? 'Remote операция могла завершиться. Проверьте hosting вручную; автоматического повтора нет. Task marker: ' + id : null });
+    })();
   }
   createTask(projectId: string, description: string, version: number) {
     if (this.project(projectId).state_version !== version) throw new Problem(409, 'Настройки проекта изменились. Обновите страницу.');
@@ -201,6 +246,7 @@ export class Store {
     return this.task(projectId, id);
   }
   claimTitle(task: Task): Task | undefined {
+    if (this.blocked(task.id)) return;
     return this.db.transaction(() => {
       const current = this.task(task.project_id, task.id);
       if (current.revision !== task.revision || current.title_state !== 'pending'
@@ -211,6 +257,7 @@ export class Store {
     })();
   }
   finishTitle(task: Task, title: string | null) {
+    if (this.blocked(task.id)) return;
     this.db.transaction(() => {
       const current = this.task(task.project_id, task.id);
       if (current.revision !== task.revision || current.title_state !== 'running') return;
@@ -265,6 +312,7 @@ export class Store {
     return this.specRun(projectId, taskId, id);
   }
   recordOutput(run: AgentRun, text: string) {
+    if (this.blocked(run.task_id)) return;
     if (!text.trim()) return;
     this.db.transaction(() => {
       const current = this.specRun(run.project_id, run.task_id, run.id);
@@ -374,9 +422,11 @@ export class Store {
     })();
   }
   finishPublication(run: AgentRun, identity?: { number: number; url: string }) {
+    const saved = this.rawTask(run.project_id, run.task_id);
+    if (saved.publication_status === 'confirmed' && !identity) return;
     this.db.transaction(() => {
       this.db.prepare("UPDATE tasks SET publication_status = ?, pr_number = ?, pr_url = ?, stage = ?, run_state = ?, state_version = state_version + 1 WHERE id = ?")
-        .run(identity ? 'confirmed' : 'unknown', identity?.number ?? null, identity?.url ?? null,
+        .run(identity ? 'confirmed' : 'unknown', identity?.number ?? null, identity?.url ?? saved.pr_url,
           identity ? 'pr-created' : 'needs-human', identity ? 'completed' : 'interrupted', run.task_id);
       this.event(identity ? 'publication.confirmed' : 'publication.unknown', run.task_id,
         identity ?? { reason: 'Исход публикации не подтверждён. Проверьте GitHub и branch вручную; слепой повтор запрещён.' });
@@ -469,6 +519,7 @@ export class Store {
     });
   }
   invalidateReviews(run: AgentRun) {
+    if (this.blocked(run.task_id)) return;
     this.db.transaction(() => {
       this.db.prepare("UPDATE runs SET stale = 1 WHERE task_id = ? AND (role LIKE 'review-%' OR role = 'approve')").run(run.task_id);
       this.db.prepare("UPDATE tasks SET stage = 'needs-human', run_state = 'interrupted', state_version = state_version + 1 WHERE id = ? AND stage IN ('review','approve','needs-human') AND run_state IN ('idle','completed','waiting')").run(run.task_id);
@@ -477,6 +528,7 @@ export class Store {
     })();
   }
   applyRequirements(taskId: string) {
+    if (this.blocked(taskId)) return;
     const messages = this.db.prepare("SELECT id, text FROM chat_messages WHERE task_id = ? AND kind = 'requirements' AND status = 'queued' ORDER BY rowid").all(taskId) as { id: string; text: string }[];
     if (!messages.length) return;
     const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as Task;
@@ -491,6 +543,7 @@ export class Store {
     this.editTask(task.project_id, taskId, description, task.state_version);
   }
   updateRun(run: AgentRun, stage: Task['stage'], state: Task['run_state'], title?: string, result?: SpecResult | BuildResult | ReviewResult | ApproveResult) {
+    if (this.blocked(run.task_id)) return;
     this.db.transaction(() => {
       const task = this.task(run.project_id, run.task_id);
       const current = this.specRun(run.project_id, run.task_id, run.id);

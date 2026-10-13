@@ -1,11 +1,9 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { exec } from './processes.js';
 import { realpath } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import type { Project, ProjectInput } from '../shared.js';
 import { Problem } from './store.js';
 
-const exec = promisify(execFile);
 export type Run = (file: string, args: string[], cwd: string) => Promise<string>;
 export const run: Run = async (file, args, cwd) => {
   try {

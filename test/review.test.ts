@@ -400,7 +400,7 @@ for (const mode of ['success', 'existing', 'existing-changed-during-fetch', 'unk
   const success = mode === 'success' || mode === 'existing';
   assert.equal(saved.publication_status, success ? 'confirmed' : 'unknown');
   assert.equal(saved.stage, success ? 'pr-created' : 'needs-human');
-  assert.equal(saved.pr_url, success ? pr.html_url : null);
+  assert.equal(saved.pr_url, success || mode === 'save' ? pr.html_url : null);
   assert.equal(creates, ['success', 'unknown', 'save'].includes(mode) ? 1 : 0);
   assert.equal(pushes, ['success', 'unknown', 'save', 'changed-after-push'].includes(mode) ? 1 : 0);
   assert.throws(() => store.beginPublication(project.id, task.id, saved.state_version));
