@@ -477,3 +477,23 @@ test('quoted config example in Spec stays valid and Build consumes the redacted 
   assert.equal(store.specRun(project.id, run.task_id, run.id).status, 'completed');
   assert.equal(store.runs().at(-1)?.role, 'build'); assert.equal(store.runs().at(-1)?.status, 'completed');
 });
+
+test('chat requirements received during Spec stop automatic Build and preserve completed evidence', async t => {
+  const { store, project, queue, directory } = fixture(t);
+  const run = queue();
+  let resolve!: () => void;
+  let started!: () => void;
+  const begun = new Promise<void>(r => { started = r; });
+  const gate = new Promise<void>(r => { resolve = r; });
+  const runner = new SpecController(store, directory, () => {}, command, async () => { started(); await gate; return ready; }, async () => 'Updated title');
+  runner.enqueue(run); await begun;
+  store.mutate('requirements', 'requirements', () => runner.chat.add(project.id, run.task_id, store.task(project.id, run.task_id).state_version, 'Use a different greeting', 'requirements'));
+  resolve();
+  while (store.task(project.id, run.task_id).run_state === 'running') await delay(10);
+  await runner.close();
+  const task = store.task(project.id, run.task_id);
+  assert.equal(task.revision, 2); assert.equal(task.stage, 'backlog'); assert.equal(task.run_state, 'idle');
+  assert.equal(store.runs().length, 1);
+  assert.equal(store.runs()[0].status, 'completed'); assert.equal(store.runs()[0].report, 1);
+  assert.match(readReport(store.db.name.replace(/\/state.sqlite$/, ''), run.id), /Проверяемая спецификация/);
+});

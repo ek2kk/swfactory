@@ -56,3 +56,11 @@ export type HumanRequest = {
   id: string; task_id: string; run_id: string; revision: number; role: 'spec' | 'build' | ReviewRole | 'approve';
   status: 'pending' | 'answered' | 'revoked'; result: SpecResult | BuildResult | ReviewResult | ApproveResult; answers: string[] | null;
 };
+
+export type ChatMessage = {
+  id: string; task_id: string; revision: number; run_id: string | null; session_id: string | null;
+  kind: 'guidance' | 'requirements'; text: string;
+  status: 'queued' | 'sending' | 'delivered' | 'failed' | 'unknown' | 'applied' | 'revoked';
+  created_at: string; delivered_at: string | null; error: string | null;
+};
+export type TranscriptEntry = { id: string; kind: 'agent' | 'tool' | 'event'; title: string; text: string; at: string; status?: string };

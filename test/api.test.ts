@@ -355,3 +355,24 @@ test('diagnostic actions validate versions/schema/ownership, replay once, and lo
   assert.deepEqual((await app.inject({ method: 'POST', url: `${path}/retry`, headers, payload: retry })).json(), retried.json()); assert.equal(enqueue.mock.callCount(), 1);
   assert.equal((await app.inject({ method: 'POST', url: `${path}/retry`, headers, payload: { ...retry, request_id: randomUUID() } })).statusCode, 409);
 });
+
+test('chat API validates ownership, replay, versions and origin; requirements invalidate the revision', async t => {
+  const { app, store, headers, project } = await fixture(t);
+  const task = store.createTask(project.id, 'Task', 1);
+  const url = `/api/projects/${project.id}/tasks/${task.id}/messages`;
+  const payload = { request_id: randomUUID(), state_version: task.state_version, text: '<script>alert(1)</script>', kind: 'guidance' };
+  const response = await app.inject({ method: 'POST', url, headers, payload });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual((await app.inject({ method: 'POST', url, headers, payload })).json(), response.json());
+  const messages = (await app.inject({ url, headers })).json();
+  assert.equal(messages.length, 1); assert.equal(messages[0].status, 'queued');
+  assert.equal((await app.inject({ method: 'POST', url, headers: { ...headers, origin: 'https://evil.test' }, payload })).statusCode, 403);
+  assert.equal((await app.inject({ url: `/api/projects/${randomUUID()}/tasks/${task.id}/messages`, headers })).statusCode, 404);
+  for (const extra of [{ text: ' ' }, { kind: 'publish' }, { text: 'x'.repeat(4097) }, { unknown: true }]) {
+    assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...payload, request_id: randomUUID(), ...extra } })).statusCode, 400);
+  }
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...payload, request_id: randomUUID(), state_version: 100 } })).statusCode, 409);
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...payload, request_id: randomUUID(), kind: 'requirements', text: 'Extra requirement' } })).statusCode, 200);
+  assert.equal(store.task(project.id, task.id).revision, 2);
+  assert.deepEqual((await app.inject({ url, headers })).json().map((m: { status: string }) => m.status), ['revoked', 'applied']);
+});
