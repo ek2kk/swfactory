@@ -253,6 +253,13 @@ export async function createApp(options: {
     if (!run.report) throw new Problem(404, 'Сохранённый отчёт пока отсутствует.');
     return { text: readReport(directory, runId) };
   });
+  app.get<{ Params: { projectId: string; taskId: string; runId: string } }>('/api/projects/:projectId/tasks/:taskId/runs/:runId/output', {
+    schema: { params: object({ projectId: uuid, taskId: uuid, runId: uuid }) },
+  }, async request => {
+    const { projectId, taskId, runId } = request.params;
+    store.specRun(projectId, taskId, runId);
+    return store.output(runId) ?? { text: '', updated_at: null, version: 0 };
+  });
   app.get<{ Params: { projectId: string; taskId: string; runId: string }; Querystring: { name: 'events.jsonl' | 'stderr.log'; offset: string } }>('/api/projects/:projectId/tasks/:taskId/runs/:runId/log', {
     schema: { params: object({ projectId: uuid, taskId: uuid, runId: uuid }), querystring: object({ name: { enum: ['events.jsonl', 'stderr.log'] }, offset: { type: 'string', pattern: '^(0|[1-9][0-9]{0,8})$' } }) },
   }, async request => {

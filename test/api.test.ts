@@ -71,6 +71,11 @@ test('validation, CSRF, Host, authentication, duplicate project and absent files
 test('SSE reconnect replays missed events, snapshots and live changes', async t => {
   const { app, headers, store, project } = await fixture(t);
   const task = store.mutate('create', 'create', () => store.createTask(project.id, 'SSE test', 1)) as Task;
+  const run = store.queueSpec(project.id, task.id, 1, '/tmp');
+  run.status = 'running'; store.updateRun(run, 'spec', 'running');
+  store.recordOutput(run, 'First output');
+  // A separate editable task triggers the existing publish path during the live update.
+  const editable = store.createTask(project.id, 'Edit trigger', 1);
   await app.listen({ port: 0, host: '127.0.0.1' });
   const address = app.server.address();
   assert.ok(address && typeof address !== 'string');
@@ -82,7 +87,8 @@ test('SSE reconnect replays missed events, snapshots and live changes', async t 
         data += chunk;
         if (data.includes('event: snapshot') && !edited) {
           edited = true;
-          void app.inject({ method: 'PATCH', url: `/api/projects/${project.id}/tasks/${task.id}`, headers,
+          store.recordOutput(run, 'Second output');
+          void app.inject({ method: 'PATCH', url: `/api/projects/${project.id}/tasks/${editable.id}`, headers,
             payload: { request_id: randomUUID(), state_version: 1, description: 'live edit' },
           }).then(result => { assert.equal(result.statusCode, 200); }).catch(reject);
         }
@@ -98,7 +104,25 @@ test('SSE reconnect replays missed events, snapshots and live changes', async t 
   assert.ok(text.includes(task.id));
   assert.match(text, /task.edited/);
   assert.match(text, /live edit/);
-  assert.equal(store.snapshot().tasks.length, 1);
+  assert.match(text, /First output/);
+  assert.match(text, /Second output/);
+  const snapshot = (await app.inject({ url: '/api/snapshot', headers })).json();
+  assert.equal(snapshot.runs[0].output_preview, 'Second output');
+  assert.equal(snapshot.runs[0].output_version, 2);
+  const outputUrl = `/api/projects/${project.id}/tasks/${task.id}/runs/${run.id}/output`;
+  assert.equal((await app.inject({ url: outputUrl, headers })).json().text, 'Second output');
+  assert.equal((await app.inject({ url: outputUrl.replace(task.id, editable.id), headers })).statusCode, 404);
+  const reconnect = await new Promise<string>((resolve, reject) => {
+    const request = get(`http://127.0.0.1:${address.port}/api/events`, { headers: { ...headers, 'last-event-id': String(snapshot.cursor) } }, response => {
+      let data = '';
+      response.on('data', chunk => { data += chunk; if (data.includes('Second output') && data.endsWith('\n\n')) { resolve(data); request.destroy(); } });
+    });
+    request.on('error', reject);
+    request.setTimeout(2000, () => { request.destroy(); reject(new Error('SSE timeout')); });
+  });
+  assert.equal(reconnect.split('Second output').length - 1, 1);
+  assert.ok(!reconnect.includes('First output'));
+  assert.ok(!reconnect.includes('"type":"run.output"'));
 });
 
 
