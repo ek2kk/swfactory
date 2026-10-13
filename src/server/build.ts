@@ -13,7 +13,7 @@ function safePath(path: string) {
 function safeContent(path: string, content: string) {
   // shortcut: conservative filename/signature checks; add a project secret scanner for broader detection.
   if (/(^|\/)(\.env(?:\..*)?|id_(rsa|ed25519)|credentials(?:\..*)?|[^/]*\.(pem|key|p12|pfx))$/i.test(path)
-    || /-----BEGIN [A-Z ]*PRIVATE KEY-----|(?:gh[pousr]_|github_pat_|sk-(?:proj-)?)[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|(?:password|secret|token|api[_-]?key)\s*[:=]\s*["']?[^\s"']{8,}/i.test(content)) blocked('В изменениях возможен секрет.');
+    || /-----BEGIN [A-Z ]*PRIVATE KEY-----|(?:gh[pousr]_|github_pat_|sk-(?:proj-)?)[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}/i.test(content)) blocked('В изменениях возможен секрет.');
 }
 function fileContent(cwd: string, path: string) {
   safePath(path);

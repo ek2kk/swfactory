@@ -40,7 +40,7 @@ test('Build schema rejects incomplete, extra, inconsistent and duplicate fields'
     { ...ready, checks: [] }, { ...ready, summary: ' ' }, { ...ready, outcome: 'NEEDS_INPUT' }, { ...ready, outcome: 'PASS' }]) assert.throws(() => validateBuild(bad));
 });
 
-for (const scenario of ['edit', 'committed', 'committed-plus-edit', 'literal-path', 'delete'] as const) test(`Build READY ${scenario}: exact commit, clean tree, immutable context and durable SHA`, async t => {
+for (const scenario of ['edit', 'committed', 'committed-plus-edit', 'token-expressions', 'committed-token-expressions', 'literal-path', 'delete'] as const) test(`Build READY ${scenario}: exact commit, clean tree, immutable context and durable SHA`, async t => {
   const { store, project, task, initial, checkout, directory, git, queue, controller } = await fixture(t);
   const run = queue();
   assert.throws(queue, /Spec/);
@@ -48,6 +48,13 @@ for (const scenario of ['edit', 'committed', 'committed-plus-edit', 'literal-pat
   const runner = controller(async input => {
     assert.equal(input.model, 'selected-build'); assert.equal(input.reasoningEffort, 'high'); assert.match(input.prompt, /Keep it simple/); assert.match(input.prompt, /README says hello/); assert.match(input.prompt, /AGENTS.md/);
     writeFileSync(join(input.cwd, 'README.md'), 'hello');
+    if (scenario.endsWith('token-expressions')) writeFileSync(join(input.cwd, 'README.md'), [
+      "const token = randomBytes(32).toString('hex');",
+      'payload: { token: result.token }',
+      'const password = options.password;',
+      'const secret = process.env.SECRET;',
+      'const api_key = settings.api_key;',
+    ].join('\n'));
     if (scenario.startsWith('committed')) { git(input.cwd, 'add', '--', 'README.md'); git(input.cwd, 'commit', '-m', 'builder'); }
     if (scenario === 'committed-plus-edit') writeFileSync(join(input.cwd, 'README.md'), 'hello again');
     if (scenario === 'delete') rmSync(join(input.cwd, 'README.md'));
@@ -78,7 +85,7 @@ for (const scenario of ['unexpected', 'secret', 'secret-content', 'symlink', 'st
       if (scenario === 'staged-secret') git(input.cwd, 'add', '--', '.env');
       return { ...ready, changed_paths: ['README.md', '.env'] };
     }
-    if (scenario === 'secret-content') writeFileSync(join(input.cwd, 'README.md'), 'api_key = "private-value-123"');
+    if (scenario === 'secret-content') writeFileSync(join(input.cwd, 'README.md'), 'ghp_' + 'a'.repeat(36));
     if (scenario === 'symlink') { symlinkSync('/etc/passwd', join(input.cwd, 'link')); return { ...ready, changed_paths: ['README.md', 'link'] }; }
     if (scenario === 'hidden-committed-secret') {
       writeFileSync(join(input.cwd, '.env'), 'TOKEN=private-value'); git(input.cwd, 'add', '--', '.env'); git(input.cwd, 'commit', '-m', 'secret');
