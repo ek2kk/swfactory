@@ -23,7 +23,7 @@ function parseIssue(value: unknown, project: Project): GithubIssue & { state: 'o
   const invalid = () => new ImportFailure('GitHub вернул некорректные данные issue. Импорт этих данных пропущен.');
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid();
   const issue = value as Record<string, unknown>;
-  if (!Number.isSafeInteger(issue.number) || (issue.number as number) < 1 || !['open', 'closed'].includes(String(issue.state))
+  if (!Number.isSafeInteger(issue.number) || (issue.number as number) < 1 || (issue.state !== 'open' && issue.state !== 'closed')
     || typeof issue.title !== 'string' || !issue.title.trim() || /[\x00-\x1f\x7f]/.test(issue.title)
     || (issue.body !== null && typeof issue.body !== 'string') || !Array.isArray(issue.labels)
     || typeof issue.html_url !== 'string') throw invalid();
@@ -49,7 +49,8 @@ export class GithubIssues {
   errors: NonNullable<Snapshot['issue_errors']> = [];
   private controller = new AbortController();
   private loops = new Map<string, ImportLoop>();
-  constructor(private store: Store, private publish: () => void, private command: IssueCommand = githubIssueCommand) {}
+  constructor(private store: Store, private publish: () => void, private command: IssueCommand = githubIssueCommand,
+    private stop: (taskId: string) => Promise<void> = async () => {}) {}
   start() {
     if (this.controller.signal.aborted) return;
     for (const project of this.store.snapshot().projects) this.connect(project);
@@ -87,7 +88,7 @@ export class GithubIssues {
     catch { throw new ImportFailure('GitHub вернул некорректный JSON. Импорт этих данных пропущен.'); }
   }
   private async load(project: Project) {
-    const retained = this.store.activeGithubIssues(project.id);
+    const retained = this.store.retainedGithubIssues(project.id);
     let successful = true;
     try {
       // Do not depend on the selected UI project, a checkout, or gh issue list's total limit.
@@ -104,12 +105,17 @@ export class GithubIssues {
       }
     } catch (error) { successful = false; this.fail(project, error); }
     if (this.controller.signal.aborted) return;
-    // Missing labels/pages/404 never prove closure; fetch each retained active link explicitly.
+    // Missing labels/pages/404 never prove mismatch; fetch every retained link, including archives.
     for (const { issue_number } of retained) {
       try {
         const issue = parseIssue(await this.request(project, `repos/${project.repository}/issues/${issue_number}`), project);
         if (issue.number !== issue_number || issue.pullRequest) throw new ImportFailure('Ответ GitHub не соответствует исходной issue. Карточка сохранена.');
-        if (issue.state === 'closed' && this.store.importGithubIssue(project.id, { number: issue_number, closed: true })) this.publish();
+        const task = this.store.reconcileGithubIssue(project.id, issue_number, issue.state === 'open' && issue.ready,
+          issue.state === 'closed' ? 'Исходная GitHub issue закрыта.' : 'У исходной GitHub issue отсутствует ready-for-agent.');
+        if (task) {
+          if (task.archived && task.deletion_state === 'stopping') void this.stop(task.id).catch(error => this.fail(project, error));
+          this.publish();
+        }
       } catch (error) { successful = false; this.fail(project, error); }
       if (this.controller.signal.aborted) return;
     }

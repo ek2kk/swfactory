@@ -27,6 +27,7 @@ function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () =>
   }, [task.id, task.deletion_state, task.state_version]);
   const [reconciliation, setReconciliation] = useState('');
   const [confirming, setConfirming] = useState(false);
+  const [archiving, setArchiving] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const cancelButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -38,23 +39,28 @@ function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () =>
   const [version, setVersion] = useState(task.state_version);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  return <section aria-label={task.archived ? "Остановка исполнения" : "Архивирование задачи"}>
+  const checkingStop = !archiving && !!(task.archived || task.deletion_state);
+  return <section aria-label={checkingStop ? "Остановка исполнения" : "Архивирование задачи"}>
+    {task.archive_source === 'github-filter' && <p role="status">{task.archived ? `Автоматический архив: ${task.archive_reason}` : 'Соответствие фильтру GitHub восстановлено. Исполнение автоматически не возобновляется.'}</p>}
     {task.deletion_state === 'stopping' && <p role="status">Останавливаем известные процессы. Подтверждение остановки всех процессов пока не получено.</p>}
     {task.deletion_error && <p role="alert">{task.deletion_error}</p>}
     {!!verification && <details><summary>Данные для ручной сверки процессов и публикации</summary><pre>{JSON.stringify(verification, null, 2)}</pre></details>}
-    {!!task.archived && task.deletion_state === 'deleted' && <p role="status">Остановка подтверждена. Карточка остаётся в архиве.</p>}
-    {(!task.archived || task.deletion_state !== 'deleted') && <button className="secondary" disabled={busy || (!!task.archived && task.deletion_state === 'stopping')} onClick={() => { setVersion(task.state_version); setConfirming(true); setError(''); }}>{task.archived ? 'Остановить исполнение / сверить' : 'Архивировать'}</button>}
+    {task.deletion_state === 'deleted' && <p role="status">Остановка подтверждена. {task.archived ? 'Карточка остаётся в архиве.' : 'Проверьте остановку для разблокировки доступных действий; новый запуск требует отдельного действия.'}</p>}
+    {(!task.archived || task.deletion_state !== 'deleted') && <button className="secondary" disabled={busy || task.deletion_state === 'stopping'} onClick={() => { setArchiving(false); setVersion(task.state_version); setConfirming(true); setError(''); }}>{checkingStop ? 'Остановить исполнение / сверить' : 'Архивировать'}</button>}
+    {task.archive_source === 'github-filter' && (task.archived || task.deletion_state) && <button className="secondary" disabled={busy} onClick={() => {
+      setArchiving(true); setVersion(task.state_version); setConfirming(true); setError('');
+    }}>Архивировать вручную</button>}
     {confirming && <dialog ref={dialog} onCancel={event => { event.preventDefault(); if (!busy) setConfirming(false); }} aria-labelledby={`delete-title-${task.id}`} className="delete-confirmation">
-      <h4 id={`delete-title-${task.id}`}>{task.archived ? 'Проверить остановку' : 'Архивировать'} «{task.title ?? task.description}»?</h4>
-      <p>{task.archived ? 'Повторим остановку известных процессов. Карточка останется в архиве независимо от результата. Ручная сверка ниже нужна только для подтверждения отсутствия всех процессов и проверки remote результата.' : <>Карточка будет скрыта с доски, новые запуски и публикация заблокированы. Попытаемся остановить известные процессы. Архивирование не подтверждает остановку всех процессов: неизвестный потомок может продолжать работу. История и результаты остановки доступны в архиве; файлы и существующие PR сохраняются. Уже отправленная remote операция могла завершиться. Восстановление карточки не предусмотрено.</>}</p>
-      {!!task.archived && !!task.stop_unverified && task.deletion_state === 'failed' && <label>Необязательная ручная сверка (оставьте пустым для повторной попытки остановки): проверьте отсутствие процессов задачи, Codex sessions и их дочерних процессов, а также remote результат публикации. Опишите фактические наблюдения (не вводите credentials). Это ваше подтверждение остановки; backend проверить его самостоятельно не может.<textarea minLength={20} maxLength={4096} value={reconciliation} onChange={event => setReconciliation(event.target.value)} /></label>}
+      <h4 id={`delete-title-${task.id}`}>{checkingStop ? 'Проверить остановку' : 'Архивировать'} «{task.title ?? task.description}»?</h4>
+      <p>{checkingStop ? 'Повторим остановку известных процессов без изменения видимости карточки. Ручная сверка ниже нужна только для подтверждения отсутствия всех процессов и проверки remote результата. Новые запуски не выполняются.' : <>Карточка будет скрыта с доски, новые запуски и публикация заблокированы. Попытаемся остановить известные процессы. Архивирование не подтверждает остановку всех процессов: неизвестный потомок может продолжать работу. История и результаты остановки доступны в архиве; файлы и существующие PR сохраняются. Уже отправленная remote операция могла завершиться. Вручную архивированные карточки автоматически не восстанавливаются.</>}</p>
+      {checkingStop && !!task.stop_unverified && task.deletion_state === 'failed' && <label>Необязательная ручная сверка (оставьте пустым для повторной попытки остановки): проверьте отсутствие процессов задачи, Codex sessions и их дочерних процессов, а также remote результат публикации. Опишите фактические наблюдения (не вводите credentials). Это ваше подтверждение остановки; backend проверить его самостоятельно не может.<textarea minLength={20} maxLength={4096} value={reconciliation} onChange={event => setReconciliation(event.target.value)} /></label>}
       <button disabled={busy || version !== task.state_version || (!!reconciliation.trim() && reconciliation.trim().length < 20)} onClick={async () => {
         setBusy(true); setError('');
         try {
-          if (task.archived) {
+          if (checkingStop) {
             const result = await api<{ deleted: boolean; error: string | null; warning: string | null }>(`${taskPath(task)}/stop`, 'POST', { state_version: version, ...(reconciliation.trim() ? { reconciliation: reconciliation.trim() } : {}) });
             setError(result.error ?? ''); setConfirming(false); setReconciliation('');
-            notify(`${result.deleted ? 'Остановка подтверждена.' : 'Остановка не подтверждена; карточка остаётся в архиве.'}${result.warning ? ' ' + result.warning : ''}`);
+            notify(`${result.deleted ? 'Остановка подтверждена.' : 'Остановка не подтверждена; исполнение заблокировано.'}${result.warning ? ' ' + result.warning : ''}`);
           } else {
             await api(`${taskPath(task)}/archive`, 'POST', { state_version: version });
             setConfirming(false);
@@ -63,7 +69,7 @@ function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () =>
           await refresh();
         } catch (error) { setError((error as Error).message); await refresh().catch(() => {}); }
         finally { setBusy(false); }
-      }}>{busy ? 'Выполняем…' : task.archived ? 'Проверить остановку' : 'Подтвердить архивирование'}</button>{' '}
+      }}>{busy ? 'Выполняем…' : checkingStop ? 'Проверить остановку' : 'Подтвердить архивирование'}</button>{' '}
       <button ref={cancelButton} className="secondary" disabled={busy} onClick={() => setConfirming(false)}>Отмена</button>
       {!busy && version !== task.state_version && <p role="status">Карточка изменилась. Отмените подтверждение и откройте его снова.</p>}
       {error && <p role="alert">{error}</p>}
@@ -72,8 +78,8 @@ function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () =>
   </section>;
 }
 
-function ArchivedTask({ task, refresh, notify }: { task: Task; refresh: () => Promise<void>; notify: (text: string) => void }) {
-  const [open, setOpen] = useState(false);
+function ArchivedTask({ task, refresh, notify, expanded = false }: { task: Task; refresh: () => Promise<void>; notify: (text: string) => void; expanded?: boolean }) {
+  const [open, setOpen] = useState(expanded);
   const [history, setHistory] = useState<{ revisions: Revision[]; messages: ChatMessage[]; runs: AgentRun[] } | null>(null);
   const [error, setError] = useState('');
   useEffect(() => {
@@ -82,7 +88,7 @@ function ArchivedTask({ task, refresh, notify }: { task: Task; refresh: () => Pr
     api<NonNullable<typeof history>>(`${taskPath(task)}/history`).then(value => { if (!disposed) setHistory(value); }).catch(error => { if (!disposed) setError(error.message); });
     return () => { disposed = true; };
   }, [open, task.id, task.state_version]);
-  return <details onToggle={event => { if (event.target === event.currentTarget) setOpen(event.currentTarget.open); }}>
+  return <details open={open} onToggle={event => { if (event.target === event.currentTarget) setOpen(event.currentTarget.open); }}>
     <summary>{task.title ?? task.id} · {task.deletion_state === 'deleted' ? 'остановка подтверждена' : task.deletion_state === 'stopping' ? 'остановка выполняется' : 'остановка не подтверждена'}</summary>
     {open && <>
       <p>{task.description}</p>
@@ -394,7 +400,7 @@ function App() {
   const [ready, setReady] = useState(false);
   const [notice, setNotice] = useState('');
   useEffect(() => {
-    if (ready && detailId && !snapshot.tasks.some(task => task.id === detailId)) {
+    if (ready && detailId && ![...snapshot.tasks, ...(snapshot.archived_tasks ?? [])].some(task => task.id === detailId)) {
       history.replaceState(null, '', location.pathname);
       setDetailId(''); setOpened(ids => ids.filter(id => id !== detailId));
       setNotice(value => value || 'Карточка архивирована или недоступна.');
@@ -510,7 +516,7 @@ function App() {
             <h3>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3><p className="meta">{{ idle: 'Ожидает запуска', queued: 'В очереди', running: 'В работе', waiting: 'Нужен ответ', interrupted: 'Нужна сверка', completed: 'Завершена' }[task.run_state]} · редакция {task.revision}</p>
             <p className="agent-preview">{task.description}</p>
             {snapshot.runs.filter(run => run.task_id === task.id).at(-1)?.output_preview && <p className="agent-preview">{snapshot.runs.filter(run => run.task_id === task.id).at(-1)?.output_preview}</p>}
-            {task.deletion_state && <p role={task.deletion_state === 'failed' ? 'alert' : 'status'}>{task.deletion_state === 'failed' ? task.deletion_error : 'Останавливаем исполнение для удаления…'}</p>}
+            {task.deletion_state && <p role={task.deletion_state === 'failed' ? 'alert' : 'status'}>{task.deletion_state === 'failed' ? task.deletion_error : task.deletion_state === 'deleted' ? 'Остановка подтверждена; требуется явная разблокировка.' : 'Останавливаем исполнение…'}</p>}
             <button id={`open-${task.id}`}  onClick={() => openTask(task.id)}>Открыть задачу ↗</button>
           </article>) : <p className="empty">{stage === 'backlog' ? 'Добавьте первую задачу' : 'Пока нет задач'}</p>}
         </section>;
@@ -519,11 +525,11 @@ function App() {
     </div>
     <div hidden={!detailId} className="task-page">
       <button ref={returnButton} className="secondary" onClick={closeTask}>← На доску</button>
-      {ready && !snapshot.tasks.some(task => task.id === detailId) && <p role="status">Задача не найдена.</p>}
+      {ready && ![...snapshot.tasks, ...(snapshot.archived_tasks ?? [])].some(task => task.id === detailId) && <p role="status">Задача не найдена.</p>}
       {opened.map(id => {
-        const task = snapshot.tasks.find(task => task.id === id);
+        const task = [...snapshot.tasks, ...(snapshot.archived_tasks ?? [])].find(task => task.id === id);
         const project = task && snapshot.projects.find(project => project.id === task.project_id);
-        return task && project ? <div key={id} hidden={id !== detailId}><TaskCard task={task} project={project} runs={snapshot.runs.filter(run => run.task_id === id)} questions={snapshot.human_requests.filter(request => request.task_id === id)} refresh={refresh} active={id === detailId} cursor={snapshot.cursor} notify={setNotice} /></div> : null;
+        return task && project ? <div key={id} hidden={id !== detailId}>{task.archived || task.deletion_state ? <ArchivedTask task={task} refresh={refresh} notify={setNotice} expanded /> : <TaskCard task={task} project={project} runs={snapshot.runs.filter(run => run.task_id === id)} questions={snapshot.human_requests.filter(request => request.task_id === id)} refresh={refresh} active={id === detailId} cursor={snapshot.cursor} notify={setNotice} />}</div> : null;
       })}
     </div>
   </main>;

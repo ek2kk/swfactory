@@ -65,7 +65,7 @@ export async function createApp(options: {
   }
   const controller = new SpecController(store, directory, publish, options.command, options.execute, options.generateTitle, options.executeBuild, options.executeReview, options.executeApprove);
   const titles = controller.titles;
-  const issues = new GithubIssues(store, publish, options.issueCommand);
+  const issues = new GithubIssues(store, publish, options.issueCommand, taskId => controller.deleteTask(taskId));
   app.addHook('onRequest', async (request, reply) => {
     reply.headers({
       'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
@@ -168,12 +168,17 @@ export async function createApp(options: {
     const { projectId, taskId } = request.params;
     const { request_id, state_version, reconciliation } = request.body;
     const fingerprint = JSON.stringify([`task.${action}`, projectId, taskId, state_version, reconciliation ?? null]);
-    if (action === 'stop' && !store.rawTask(projectId, taskId).archived) throw new Problem(409, 'Сначала архивируйте задачу.');
+    store.rawTask(projectId, taskId);
     const prior = store.replay(request_id, fingerprint) as { stopping?: boolean } | undefined;
     if (prior && !prior.stopping) return prior;
+    if (action === 'stop') {
+      const task = store.rawTask(projectId, taskId);
+      if (!task.archived && !task.deletion_state) throw new Problem(409, 'Нет остановленного исполнения для сверки.');
+    }
     if (!prior) {
       store.mutate(request_id, fingerprint, () => {
         const task = store.beginDeletion(projectId, taskId, state_version, reconciliation);
+        if (action === 'delete') store.db.prepare("UPDATE tasks SET archive_source = 'manual', archive_reason = NULL WHERE id = ?").run(taskId);
         return { stopping: task.deletion_state !== 'deleted' };
       });
       publish();
@@ -182,7 +187,9 @@ export async function createApp(options: {
     if (task.deletion_state === 'stopping') await controller.deleteTask(taskId);
     task = store.rawTask(projectId, taskId);
     const result = deletionResult(projectId, taskId);
+    if (action === 'stop') store.releaseStoppedTask(projectId, taskId);
     store.db.prepare('UPDATE requests SET response = ? WHERE id = ?').run(JSON.stringify(result), request_id);
+    publish();
     return result;
   });
   app.patch<{ Params: { projectId: string; taskId: string }; Body: Action }>('/api/projects/:projectId/tasks/:taskId', { schema: { params: taskParams, body: actionBody } }, async request => {

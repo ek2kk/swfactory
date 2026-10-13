@@ -519,3 +519,43 @@ for (const unsafe of [false, true]) test(`saved answer after legacy restart resu
     assert.throws(() => store.answer(project.id, task.id, request.id, task.state_version, answers));
   }
 });
+
+import { GithubIssues } from '../src/server/issues.js';
+
+test('automatic archive and restore during Spec callback never start Build or publication', async t => {
+  const { store, project, directory, controller } = fixture(t);
+  store.importGithubIssue(project.id, { number: 1, title: 'Imported', description: 'Keep original', url: 'https://github.com/test/repo/issues/1' });
+  const task = store.snapshot().tasks[0];
+  const run = store.queueSpec(project.id, task.id, task.state_version, directory);
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  let builds = 0, publications = 0;
+  const runner = controller(async () => { entered(); await barrier; return ready; });
+  t.mock.method(runner as any, 'performBuild', async () => { builds++; });
+  t.mock.method(runner, 'enqueuePublication', () => { publications++; });
+  const sync = async (matches: boolean) => {
+    const issues = new GithubIssues(store, () => {}, async args => JSON.stringify(args.at(-1)!.includes('?') ? [] : {
+      number: 1, title: 'Remote', body: 'Remote edit', labels: matches ? ['ready-for-agent'] : [], state: 'open', html_url: 'https://github.com/test/repo/issues/1',
+    }), id => runner.deleteTask(id));
+    issues.start(); await issues.settled(); await issues.close();
+    assert.deepEqual(issues.errors, []);
+  };
+  try {
+    runner.enqueue(run); await started;
+    await sync(false);
+    assert.equal(store.snapshot().tasks.length, 0);
+    assert.equal(store.rawTask(project.id, task.id).deletion_state, 'stopping');
+    await sync(true);
+    assert.equal(store.snapshot().tasks[0].id, task.id);
+    assert.equal(store.rawTask(project.id, task.id).deletion_state, 'stopping');
+    release(); await runner.deleteTask(task.id); await runner.close();
+    assert.equal(store.snapshot().tasks[0].id, task.id);
+    assert.equal(store.snapshot().tasks[0].description, 'Keep original');
+    assert.equal(store.runs().length, 1); assert.equal(store.runs()[0].status, 'interrupted');
+    assert.equal(store.runs()[0].outcome, null);
+    assert.equal(builds, 0); assert.equal(publications, 0);
+    assert.equal(store.rawTask(project.id, task.id).deletion_state, 'failed');
+    assert.equal(store.rawTask(project.id, task.id).stop_unverified, 1);
+  } finally { release(); await runner.close(); }
+});
