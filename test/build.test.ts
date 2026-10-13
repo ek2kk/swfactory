@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Store } from '../src/server/store.js';
 import { SpecController } from '../src/server/spec.js';
-import { sourceHash } from '../src/server/build.js';
+import { sourceHash, commitBuild } from '../src/server/build.js';
 import { run as command } from '../src/server/git.js';
 import { validateBuild, type ExecuteBuild } from '../src/server/codex.js';
 import type { BuildResult, SpecResult } from '../src/shared.js';
@@ -234,4 +234,25 @@ test('initial Build rejects unfinished merge with unchanged HEAD and clean statu
   assert.equal(saved.status, 'failed'); assert.match(saved.error!, /merge\/rebase/);
   assert.equal(calls, 0);
   assert.ok(git(initial.worktree, 'rev-parse', '--verify', 'MERGE_HEAD'));
+});
+
+for (const target of ['README.md', '../outside', '/etc/passwd', 'missing', '.git/config']) test(`source symlink ${target}: internal files only`, async t => {
+  const { initial, git, root } = await fixture(t);
+  writeFileSync(join(root, 'outside'), 'external');
+  symlinkSync(target, join(initial.worktree, 'CLAUDE.md'));
+  if (target !== 'README.md') {
+    await assert.rejects(sourceHash(initial), /symlink|Symlink|путь/);
+    return;
+  }
+  git(initial.worktree, 'add', 'CLAUDE.md'); git(initial.worktree, 'commit', '-m', 'existing instructions link');
+  initial.base_sha = git(initial.worktree, 'rev-parse', 'HEAD');
+  const before = await sourceHash(initial);
+  writeFileSync(join(initial.worktree, 'README.md'), 'updated');
+  assert.notEqual(await sourceHash(initial), before);
+  const head = await commitBuild(initial, ready);
+  assert.equal(head, git(initial.worktree, 'rev-parse', 'HEAD'));
+  assert.equal(git(initial.worktree, 'status', '--porcelain'), '');
+  assert.equal(git(initial.worktree, 'ls-tree', 'HEAD', 'CLAUDE.md').slice(0, 6), '120000');
+  rmSync(join(initial.worktree, 'CLAUDE.md')); symlinkSync('./README.md', join(initial.worktree, 'CLAUDE.md'));
+  await assert.rejects(commitBuild(initial, { ...ready, changed_paths: ['README.md', 'CLAUDE.md'] }), /symlink/);
 });

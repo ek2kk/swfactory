@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, realpathSync } from 'node:fs';
-import { join } from 'node:path';
+import { lstatSync, readFileSync, realpathSync, readlinkSync, statSync } from 'node:fs';
+import { join, dirname, relative, isAbsolute } from 'node:path';
 import type { AgentRun, BuildResult } from '../shared.js';
 import { run as git, type Run } from './git.js';
 import { Problem } from './store.js';
@@ -20,7 +20,21 @@ function fileContent(cwd: string, path: string) {
   const file = join(cwd, path);
   try {
     const stat = lstatSync(file);
-    if (!stat.isFile() || realpathSync(file) !== file || stat.size > 2 * 1024 * 1024) blocked('Symlink, специальный или слишком большой файл.');
+    if (stat.isSymbolicLink()) {
+      const target = readlinkSync(file);
+      let resolved: string;
+      try { resolved = realpathSync(file); }
+      catch { return blocked(`Недоступная цель symlink: ${path}.`); }
+      const inside = relative(cwd, resolved);
+      if (isAbsolute(target) || inside.startsWith('../') || isAbsolute(inside)
+        || realpathSync(dirname(file)) !== dirname(file)) blocked(`Symlink выходит за границы worktree: ${path}.`);
+      safePath(inside);
+      const targetStat = statSync(resolved);
+      if (!targetStat.isFile() || targetStat.size > 2 * 1024 * 1024) blocked(`Недопустимая цель symlink: ${path}.`);
+      // Include both link text and target bytes, even if the target is ignored by Git.
+      return { mode: stat.mode, content: Buffer.concat([Buffer.from(target + '\0'), readFileSync(resolved)]) };
+    }
+    if (!stat.isFile() || realpathSync(file) !== file || stat.size > 2 * 1024 * 1024) blocked(`Специальный или слишком большой файл: ${path}.`);
     return { mode: stat.mode, content: readFileSync(file) };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
