@@ -474,15 +474,17 @@ test('Pending publication becomes unknown on restart without executing a retry',
   assert.ok(restored.events(0).some(e => e.type === 'publication.unknown')); restored.close();
 });
 
-test('manual UI check pauses Review and continues with attributed human evidence for the same HEAD', async t => {
+test('blocked browser check pauses Review and continues with attributed human evidence for the same HEAD', async t => {
   const { store, project, task, queue, controller, directory } = await fixture(t);
   const seen: string[] = [];
   let answered = false;
   const review: ExecuteReview = async input => {
     const role = /You are the ([\w-]+)/.exec(input.prompt)![1]; seen.push(role);
-    assert.match(input.prompt, /rendered UI\/UX checks are performed by the human/);
+    assert.match(input.prompt, /Perform required rendered UI\/UX checks yourself using available browser\/computer tools before asking the human/);
+    assert.match(input.prompt, /report the concrete blocker and checks attempted/);
+    assert.doesNotMatch(input.prompt, /checks are performed by the human/);
     if (role === 'review-ui' && !answered) return { ...pass, outcome: 'NEEDS_INPUT', evidence: [], questions: [
-      { text: 'Open the page at 375px: is Save visible without horizontal scrolling?', context: 'Responsive layout requires manual verification', impact: 'Cannot complete UI Review', options: [], required: true },
+      { text: 'Open the page at 375px: is Save visible without horizontal scrolling?', context: 'Browser tools are unavailable in this session; responsive layout could not be checked', impact: 'Cannot complete UI Review', options: [], required: true },
     ] };
     if (role === 'review-ui') {
       assert.match(input.prompt, /Checked at 375px: Save is visible/);
