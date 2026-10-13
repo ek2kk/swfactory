@@ -88,7 +88,7 @@ test('two repositories execute their own target and frozen settings; linked work
   store.close(); store = new Store(directory);
   assert.equal(store.snapshot().projects.length, 2);
   assert.equal(store.snapshot().tasks.length, 2);
-  assert.ok(store.snapshot().tasks.every(task => task.run_state === 'interrupted'));
+  assert.ok(store.snapshot().tasks.every(task => task.run_state === 'waiting'));
   assert.equal(store.humanRequests().length, 2);
   assert.equal(store.runs()[0].config.instructions, 'one-instructions');
 });

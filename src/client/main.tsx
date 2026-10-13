@@ -13,6 +13,10 @@ applyTheme(readTheme());
 const labels = ['Backlog', 'Spec', 'Build', 'Review', 'Approve', 'PR/MR created', 'Needs human'];
 const taskPath = (task: Task) => `/projects/${task.project_id}/tasks/${task.id}`;
 
+function SourceIssue({ task }: { task: Task }) {
+  return task.issue_url && <p className="meta"><a href={task.issue_url} target="_blank" rel="noreferrer">GitHub issue #{task.issue_number}</a></p>;
+}
+
 function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () => Promise<void>; notify: (text: string) => void }) {
   const [verification, setVerification] = useState<unknown>(null);
   useEffect(() => {
@@ -82,6 +86,7 @@ function ArchivedTask({ task, refresh, notify }: { task: Task; refresh: () => Pr
     <summary>{task.title ?? task.id} · {task.deletion_state === 'deleted' ? 'остановка подтверждена' : task.deletion_state === 'stopping' ? 'остановка выполняется' : 'остановка не подтверждена'}</summary>
     {open && <>
       <p>{task.description}</p>
+      <SourceIssue task={task} />
       {task.publication_status === 'unknown' || task.publication_status === 'pending' ? <p role="alert">Remote операция могла завершиться. Проверьте hosting; автоматического повтора публикации нет.</p> : null}
       {task.pr_url && <a href={task.pr_url} target="_blank" rel="noreferrer">Существующий PR</a>}
       <TaskDisposition task={task} refresh={refresh} notify={notify} />
@@ -116,6 +121,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
   return <article className="card">
     <span className="project-name">{project.host}/{project.repository} · {project.checkout}</span>
     <h3>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3>
+    <SourceIssue task={task} />
     <p className="meta">Редакция {task.revision} · {{ idle: task.stage === 'build' ? 'Spec готова · можно запустить Build' : task.stage === 'review' ? 'Ожидает запуска следующего Review' : task.stage === 'approve' ? 'Четыре PASS · ожидает Approve' : 'Не запущена', queued: 'В очереди · ожидает слот', running: task.stage === 'spec' ? 'Codex готовит Spec' : task.stage === 'build' ? 'Codex реализует задачу' : task.stage === 'review' ? 'Codex выполняет Review' : task.stage === 'approve' ? 'Codex принимает решение о публикации' : 'Проверяем checkout и создаём worktree', waiting: 'Нужен ответ человека', interrupted: 'Прервана — нужна ручная проверка', completed: task.stage === 'approve' ? 'Разрешена только публикация PR/MR · публикация ещё не выполнена' : 'Завершена' }[task.run_state]}</p>
     <TaskDisposition task={task} refresh={refresh} notify={notify} />
     <fieldset className="task-controls" disabled={!!task.deletion_state}>
@@ -177,13 +183,13 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
         catch (error) { setError((error as Error).message); } finally { setBusy(false); }
       }}>{busy ? 'Ставим в очередь…' : 'Доработать: новый цикл (до двух доработок)'}</button>
     </>}
-    {!editing && questions.map(request => request.result.outcome === 'ESCALATE' ? <HumanDecision key={request.id} task={task} request={request} refresh={refresh} /> : <HumanQuestions key={request.id} task={task} request={request} refresh={refresh} />)}
+    {!editing && questions.map(request => request.result.outcome === 'ESCALATE' ? <HumanDecision key={request.id} task={task} request={request} refresh={refresh} /> : <HumanQuestions key={`${request.id}-${request.status}`} task={task} request={request} refresh={refresh} resume={task.run_state === 'interrupted' && !task.execution_unverified && !task.publication_status && runs.at(-1)?.id === request.run_id && runs.at(-1)?.status === 'completed' && !!runs.at(-1)?.diagnostic?.execution_finished && !runs.at(-1)?.stale} />)}
     {task.run_state === 'interrupted' && !task.execution_unverified && runs.at(-1)?.status === 'failed' && runs.at(-1)?.diagnostic?.execution_finished && !task.publication_status && <button disabled={busy} onClick={async () => {
       setBusy(true); setError('');
       try { await api(`${taskPath(task)}/retry`, 'POST', { state_version: task.state_version }); await refresh(); }
       catch (error) { setError((error as Error).message); } finally { setBusy(false); }
     }}>{runs.at(-1)?.diagnostic?.result_saved ? 'Продолжить по сохранённому результату' : 'Повторить завершённый запуск'}</button>}
-    {task.run_state === 'interrupted' && runs.at(-1)?.diagnostic?.result_saved && <p>Результат агента сохранён. Продолжение повторит проверки backend и переход этапа без нового вызова модели.</p>}
+    {task.run_state === 'interrupted' && runs.at(-1)?.status === 'failed' && runs.at(-1)?.diagnostic?.result_saved && <p>Результат агента сохранён. Продолжение повторит проверки backend и переход этапа без нового вызова модели.</p>}
     {task.run_state === 'interrupted' && (runs.at(-1)?.status === 'interrupted' || !runs.at(-1)?.diagnostic?.execution_finished) && <p>Перед продолжением нужна ручная проверка процесса и worktree. Автоматический повтор недоступен.</p>}
     {runs.map(run => <RunReport key={run.id} task={task} run={run} />)}
     <details onToggle={event => setShowHistory(event.currentTarget.open)}><summary>История описания</summary>
@@ -232,12 +238,12 @@ function HumanDecision({ task, request, refresh }: { task: Task; request: HumanR
   </section>;
 }
 
-function HumanQuestions({ task, request, refresh }: { task: Task; request: HumanRequest; refresh: () => Promise<void> }) {
-  const [answers, setAnswers] = useState<string[]>(request.result.questions.map(() => ''));
+function HumanQuestions({ task, request, refresh, resume }: { task: Task; request: HumanRequest; refresh: () => Promise<void>; resume: boolean }) {
+  const [answers, setAnswers] = useState<string[]>(request.answers ?? request.result.questions.map(() => ''));
   const [version] = useState(task.state_version);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  if (request.status !== 'pending') return <details><summary>Вопросы · редакция {request.revision} · {request.status === 'answered' ? 'Ответ сохранён' : 'Отозваны'}</summary>
+  if (request.status !== 'pending' && !(resume && request.status === 'answered')) return <details><summary>Вопросы · редакция {request.revision} · {request.status === 'answered' ? 'Ответ сохранён' : 'Отозваны'}</summary>
     {request.result.questions.map((q, i) => <p key={i}>{q.text}<br />{request.answers?.[i] || 'Без ответа'}</p>)}</details>;
   return <form onSubmit={async event => {
     event.preventDefault(); setBusy(true); setError('');
@@ -254,10 +260,10 @@ function HumanQuestions({ task, request, refresh }: { task: Task; request: Human
       </select></label>}
       <label>Ваш ответ<textarea required={q.required} maxLength={4096} value={answers[i]} onChange={event => setAnswers(values => values.map((value, index) => index === i ? event.target.value : value))} /></label>
     </fieldset>)}
-    {task.run_state === 'interrupted' && <p role="status">Backend перезапущен. Ответ сохранится, но работа не продолжится: нужна ручная сверка исполнения.</p>}
+    {task.run_state === 'interrupted' && <p role="status">{resume ? 'Ответы будут переданы новому запуску после проверки worktree.' : 'Нужна ручная сверка исполнения; продолжение пока недоступно.'}</p>}
     {task.state_version !== version && <p role="status">Карточка изменилась. Скопируйте черновик ответов и обновите страницу.</p>}
-    <button disabled={busy || task.state_version !== version || request.result.questions.some((q, i) => q.required && !answers[i].trim())}>
-      {busy ? 'Сохраняем…' : task.run_state === 'interrupted' ? 'Сохранить ответ без запуска' : `Ответить и продолжить ${request.role}`}
+    <button disabled={busy || (task.run_state === 'interrupted' && !resume) || task.state_version !== version || request.result.questions.some((q, i) => q.required && !answers[i].trim())}>
+      {busy ? 'Сохраняем…' : request.status === 'answered' ? 'Продолжить с сохранёнными ответами' : `Ответить и продолжить ${request.role}`}
     </button>{error && <p role="alert" className="error">{error}</p>}
   </form>;
 }
@@ -439,6 +445,10 @@ function App() {
     {error && <p role="alert" className="error">{error}</p>}
     {snapshot.title_error && <p role="alert" className="error">{snapshot.title_error}</p>}
     {snapshot.execution_error && <p role="alert" className="error">{snapshot.execution_error}</p>}
+    {snapshot.issue_errors?.map((error, index) => {
+      const project = snapshot.projects.find(project => project.id === error.project_id);
+      return <p key={`${error.project_id}-${index}`} role="alert" className="error">GitHub Issues · {project ? `${project.host}/${project.repository}` : error.project_id}: {error.message}</p>;
+    })}
     {!!snapshot.execution_pause?.paused && <section aria-label="Лимит Codex"><p role="status">Новые запуски приостановлены: {snapshot.execution_pause.reset_at ? `до ${snapshot.execution_pause.reset_at}` : 'reset time неизвестен; после восстановления лимитов продолжите вручную'}. Уже работающие задачи завершаются.</p>
       {!snapshot.execution_pause.reset_at && <button disabled={!!busy} onClick={async () => { setBusy('resume'); try { await api('/execution/resume', 'POST', { state_version: snapshot.execution_pause!.state_version }); await refresh(); } catch (error) { setError((error as Error).message); } finally { setBusy(''); } }}>Лимит восстановлен — продолжить очередь</button>}
     </section>}
@@ -496,6 +506,7 @@ function App() {
         return <section key={stage} className={`column ${stage === 'needs-human' ? 'human' : ''}`} aria-label={labels[index]}><h2>{labels[index]} <span>{tasks.length}</span></h2>
           {tasks.length ? tasks.map(task => <article className="card" key={task.id}>
             <span className="project-name">{snapshot.projects.find(p => p.id === task.project_id)?.repository}</span>
+            <SourceIssue task={task} />
             <h3>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3><p className="meta">{{ idle: 'Ожидает запуска', queued: 'В очереди', running: 'В работе', waiting: 'Нужен ответ', interrupted: 'Нужна сверка', completed: 'Завершена' }[task.run_state]} · редакция {task.revision}</p>
             <p className="agent-preview">{task.description}</p>
             {snapshot.runs.filter(run => run.task_id === task.id).at(-1)?.output_preview && <p className="agent-preview">{snapshot.runs.filter(run => run.task_id === task.id).at(-1)?.output_preview}</p>}

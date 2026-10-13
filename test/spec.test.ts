@@ -271,11 +271,11 @@ for (const scenario of ['revision', 'restart', 'save-failure', 'dirty-worktree']
     try {
       assert.equal(restarted.humanRequests()[0].status, 'pending');
       const current = restarted.task(project.id, task.id);
-      assert.equal(current.run_state, 'interrupted');
-      assert.deepEqual(restarted.answer(project.id, task.id, request.id, current.state_version, answers), { run: null });
+      assert.equal(current.run_state, 'waiting');
+      assert.equal(restarted.answer(project.id, task.id, request.id, current.state_version, answers).run?.status, 'queued');
       assert.deepEqual(restarted.humanRequests()[0].answers, answers);
-      assert.equal(restarted.runs().length, 1);
-      assert.equal(restarted.task(project.id, task.id).run_state, 'interrupted');
+      assert.equal(restarted.runs().length, 2);
+      assert.equal(restarted.task(project.id, task.id).run_state, 'queued');
     } finally { restarted.close(); }
   } else if (scenario === 'save-failure') {
     store.db.exec("CREATE TRIGGER fail_answer BEFORE INSERT ON events WHEN NEW.type = 'spec.queued' BEGIN SELECT RAISE(ABORT, 'disk failed'); END");
@@ -498,4 +498,24 @@ test('chat requirements received during Spec stop automatic Build and preserve c
   assert.equal(store.runs().length, 1);
   assert.equal(store.runs()[0].status, 'completed'); assert.equal(store.runs()[0].report, 1);
   assert.match(readReport(store.db.name.replace(/\/state.sqlite$/, ''), run.id), /Проверяемая спецификация/);
+});
+
+for (const unsafe of [false, true]) test(`saved answer after legacy restart resumes only verified execution: ${unsafe}`, async t => {
+  const { store, project, queue, controller } = fixture(t);
+  const run = queue(); const runner = controller(async () => needsInput); runner.enqueue(run); await runner.close();
+  const request = store.humanRequests()[0];
+  const answers = ['English', 'Text', ''];
+  store.db.prepare("UPDATE tasks SET run_state='interrupted', execution_unverified=? WHERE id=?").run(Number(unsafe), run.task_id);
+  store.db.prepare("UPDATE human_requests SET status='answered', answers=? WHERE id=?").run(JSON.stringify(answers), request.id);
+  const task = store.task(project.id, run.task_id);
+  if (unsafe) {
+    assert.throws(() => store.answer(project.id, task.id, request.id, task.state_version, answers));
+    assert.equal(store.runs().length, 1);
+  } else {
+    const next = store.answer(project.id, task.id, request.id, task.state_version, answers).run!;
+    assert.equal(next.status, 'queued'); assert.deepEqual(next.diagnostic, {});
+    const resumed = controller(async () => ready); resumed.enqueue(next); await resumed.close();
+    assert.equal(store.task(project.id, task.id).stage, 'build');
+    assert.throws(() => store.answer(project.id, task.id, request.id, task.state_version, answers));
+  }
 });

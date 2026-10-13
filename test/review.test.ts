@@ -173,16 +173,22 @@ test('Saved PASS becomes stale when source changes before Approve verification',
   assert.equal(store.reviewPasses(last), false);
   assert.equal(store.snapshot().tasks.find(t => t.id === task.id)!.stage, 'needs-human');
 });
-test('Review question survives restart; saved answer does not restart execution', async t => {
+test('Review question survives restart and the answer continues the same reviewer', async t => {
   const { store, project, task, directory, queue, controller } = await fixture(t);
   const runner = controller(async () => ({ ...pass, outcome: 'NEEDS_INPUT', questions: [{ text: 'Which browser?', context: 'Required UI check', impact: 'Cannot verify', options: [], required: true }] }));
   runner.enqueue(queue()); await settled(store, task.id); await runner.close();
   const request = store.humanRequests().at(-1)!; store.close();
   const restored = new Store(directory);
   try {
-    const current = restored.task(project.id, task.id); assert.equal(current.run_state, 'interrupted');
-    assert.equal(restored.answer(project.id, task.id, request.id, current.state_version, ['Configured browser']).run, null);
-    assert.equal(restored.runs().filter(r => r.role.startsWith('review-')).length, 1);
+    const current = restored.task(project.id, task.id); assert.equal(current.run_state, 'waiting');
+    const next = restored.answer(project.id, task.id, request.id, current.state_version, ['Configured browser']).run;
+    assert.equal(next.role, request.role);
+    const resumed = new SpecController(restored, directory, () => {}, command, undefined, undefined, undefined, async input => {
+      assert.match(input.prompt, /Configured browser/); return { ...pass, outcome: 'BLOCKED' };
+    });
+    resumed.enqueue(next); await resumed.close();
+    assert.equal(restored.specRun(project.id, task.id, next.id).outcome, 'BLOCKED');
+    assert.equal(restored.runs().filter(r => r.role.startsWith('review-')).length, 2);
   } finally { restored.close(); }
 });
 test('Failure saving next reviewer rolls back completion and never executes a second role', async t => {
