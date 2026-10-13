@@ -284,7 +284,7 @@ for (const version of [11, 12]) for (const history of ['title', 'edited-title', 
   assert.equal(store.rawTask(project.id, task.id).deletion_state, 'deleted');
   await controller.close(); controller = undefined; store.close();
   store = new Store(directory);
-  assert.equal(store.db.pragma('user_version', { simple: true }), 13);
+  assert.equal(store.db.pragma('user_version', { simple: true }), 14);
   assert.equal(store.rawTask(project.id, task.id).stop_unverified, 0, 'migration must not repeat after reconciliation');
 });
 
@@ -307,7 +307,7 @@ test('v12 migration preserves an audited reconciliation and runs only once', t =
   assert.equal(store.rawTask(project.id, task.id).stop_unverified, 0);
 });
 
-test('two independent SSE clients receive removal snapshot and deletion event', async t => {
+for (const action of ['delete', 'archive']) test(`two independent SSE clients receive ${action} and removal snapshot`, async t => {
   const { app, store, project, headers } = await apiFixture(t);
   const task = store.createTask(project.id, 'Two tabs', 1);
   await app.listen({ host: '127.0.0.1', port: 0 });
@@ -323,11 +323,11 @@ test('two independent SSE clients receive removal snapshot and deletion event', 
           while ((end = buffer.indexOf('\n\n')) >= 0) {
             const entry = buffer.slice(0, end); buffer = buffer.slice(end + 2);
             const data = entry.match(/data: ([^\n]+)/)?.[1]; if (!data) continue;
-            if (entry.includes('event: change') && JSON.parse(data).type === 'task.deleted') eventSeen = true;
+            if (entry.includes('event: change') && JSON.parse(data).type === (action === 'archive' ? 'task.archived' : 'task.deleted')) eventSeen = true;
             if (entry.includes('event: snapshot')) {
               const snapshot: Snapshot = JSON.parse(data);
               if (snapshot.tasks.some(t => t.id === task.id)) ready();
-              else if (eventSeen) { req.destroy(); resolve(); }
+              else if (eventSeen) { if (action === 'archive') assert.equal(snapshot.archived_tasks?.some(t => t.id === task.id), true); req.destroy(); resolve(); }
             }
           }
         });
@@ -337,8 +337,8 @@ test('two independent SSE clients receive removal snapshot and deletion event', 
     return { connected, removed };
   };
   const a = subscribe(), b = subscribe(); await Promise.all([a.connected, b.connected]);
-  const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/tasks/${task.id}/delete`, headers, payload: { request_id: randomUUID(), state_version: 1 } });
-  assert.equal(response.json().deleted, true); await Promise.all([a.removed, b.removed]);
+  const response = await app.inject({ method: 'POST', url: `/api/projects/${project.id}/tasks/${task.id}/${action}`, headers, payload: { request_id: randomUUID(), state_version: 1 } });
+  assert.equal(action === 'archive' ? response.json().archived : response.json().deleted, action === 'archive' ? 1 : true); await Promise.all([a.removed, b.removed]);
 });
 
 import { publishGithub } from '../src/server/publication.js';
@@ -409,4 +409,80 @@ test('an inaccessible process group is never treated as confirmed stopped', asyn
   scope.track({ pid: 123456 } as import('node:child_process').ChildProcess);
   t.mock.method(process, 'kill', () => { throw Object.assign(new Error('denied'), { code: 'EPERM' }); });
   assert.equal(scope.knownGroupsStopped(), false);
+});
+
+test('archive hides an old NeedsHuman task without asserting stop, keeps history and protects mutations', async t => {
+  const { app, store, project, headers } = await apiFixture(t);
+  const task = store.createTask(project.id, 'Old NeedsHuman', 1);
+  const run = store.queueSpec(project.id, task.id, 1, '/tmp');
+  store.db.prepare("UPDATE tasks SET stage = 'needs-human', run_state = 'interrupted', deletion_state = 'failed', stop_unverified = 1 WHERE id = ?").run(task.id);
+  const path = `/api/projects/${project.id}/tasks/${task.id}`;
+  const payload = { request_id: randomUUID(), state_version: store.rawTask(project.id, task.id).state_version };
+  const send = (url: string, data = payload) => app.inject({ method: 'POST', url, headers, payload: data });
+  assert.equal((await send(path + '/archive', { ...payload, state_version: 999 })).statusCode, 409);
+  assert.equal((await send(path.replace(project.id, randomUUID()) + '/archive')).statusCode, 404);
+  assert.equal((await app.inject({ method: 'POST', url: path + '/archive', headers: { host: headers.host, origin }, payload })).statusCode, 401);
+  const response = await send(path + '/archive');
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().archived, 1);
+  assert.equal(store.snapshot().tasks.length, 0);
+  await setImmediate();
+  assert.equal(store.snapshot().archived_tasks?.[0].deletion_state, 'failed');
+  assert.equal(store.rawTask(project.id, task.id).stop_unverified, 1);
+  assert.deepEqual((await send(path + '/archive')).json(), response.json());
+  assert.equal(store.events(0).filter(event => event.type === 'task.archived').length, 1);
+  const history = await app.inject({ url: path + '/history', headers });
+  assert.equal(history.statusCode, 200); assert.equal(history.json().runs[0].id, run.id);
+  assert.equal(history.json().revisions[0].description, 'Old NeedsHuman');
+  assert.equal((await app.inject({ url: path.replace(project.id, randomUUID()) + '/history', headers })).statusCode, 404);
+  assert.equal((await app.inject({ url: path + `/runs/${run.id}/output`, headers })).statusCode, 200);
+  assert.equal((await app.inject({ url: path.replace(project.id, randomUUID()) + `/runs/${run.id}/output`, headers })).statusCode, 404);
+  assert.throws(() => store.queueSpec(project.id, task.id, 1, '/tmp'), /заблокированы/);
+  assert.throws(() => store.beginPublication(project.id, task.id, 1), /заблокированы/);
+  const stop = await send(path + '/stop', { request_id: randomUUID(), state_version: store.rawTask(project.id, task.id).state_version });
+  assert.equal(stop.json().deleted, false); assert.equal(store.snapshot().tasks.length, 0);
+  const verified = await app.inject({ method: 'POST', url: path + '/stop', headers, payload: {
+    request_id: randomUUID(), state_version: store.rawTask(project.id, task.id).state_version,
+    reconciliation: 'Checked historical processes and remote result: all stopped.',
+  } });
+  assert.equal(verified.json().deleted, true);
+  assert.equal(store.snapshot().archived_tasks?.[0].deletion_state, 'deleted');
+  assert.equal(store.snapshot().tasks.length, 0);
+});
+
+test('archiving is durable before a pending callback stops and does not free its scheduler slot', async t => {
+  const { store, project, controller } = fixture(t);
+  const task = store.createTask(project.id, 'Active callback', 1);
+  let release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  t.mock.method(controller as any, 'perform', () => barrier);
+  controller.enqueue(store.queueSpec(project.id, task.id, 1, '/tmp')); await setImmediate();
+  store.db.transaction(() => store.archiveTask(project.id, task.id, store.rawTask(project.id, task.id).state_version))();
+  const stopping = controller.deleteTask(task.id);
+  assert.equal(store.snapshot().tasks.length, 0);
+  assert.equal(store.snapshot().archived_tasks?.[0].deletion_state, 'stopping');
+  assert.equal((controller as any).scheduler.active.has(task.id), true);
+  release(); await stopping;
+  assert.equal(store.snapshot().tasks.length, 0);
+  assert.equal(store.snapshot().archived_tasks?.[0].deletion_state, 'deleted');
+});
+
+test('v14 migration exposes previously deleted history; failed cards archive explicitly and survive restart', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'factory-archive-'));
+  let store = new Store(directory);
+  t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const project = store.addProject(projectInput);
+  const deleted = store.createTask(project.id, 'Previously deleted', 1);
+  const failed = store.createTask(project.id, 'Old failed deletion', 1);
+  store.db.prepare("UPDATE tasks SET deletion_state = 'deleted' WHERE id = ?").run(deleted.id);
+  store.db.prepare("UPDATE tasks SET deletion_state = 'failed', stop_unverified = 1 WHERE id = ?").run(failed.id);
+  store.db.exec('ALTER TABLE tasks DROP COLUMN archived; PRAGMA user_version = 13'); store.close();
+  store = new Store(directory);
+  assert.equal(store.snapshot().archived_tasks?.[0].id, deleted.id);
+  assert.equal(store.snapshot().tasks[0].id, failed.id);
+  store.archiveTask(project.id, failed.id, store.rawTask(project.id, failed.id).state_version);
+  store.close(); store = new Store(directory);
+  assert.equal(store.snapshot().tasks.length, 0);
+  const saved = store.snapshot().archived_tasks!.find(task => task.id === failed.id)!;
+  assert.equal(saved.deletion_state, 'failed'); assert.equal(saved.stop_unverified, 1);
 });

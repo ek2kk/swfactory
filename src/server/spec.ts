@@ -154,6 +154,7 @@ export class SpecController {
   async close() {
     this.closing = true;
     this.scheduler.close();
+    await Promise.all([...this.deletions.values()]);
     await Promise.all([this.titles.close(), ...this.active]);
   }
 

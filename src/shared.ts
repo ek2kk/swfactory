@@ -8,13 +8,14 @@ export type Task = {
   id: string; project_id: string; description: string; title: string | null;
   stage: typeof stages[number]; run_state: 'idle' | 'queued' | 'running' | 'waiting' | 'interrupted' | 'completed';
   publication_status: 'pending' | 'confirmed' | 'unknown' | null; pr_url: string | null; pr_number: number | null;
+  archived?: number;
   deletion_state?: 'stopping' | 'failed' | 'deleted' | null; deletion_error?: string | null; stop_unverified?: number;
   state_version: number; revision: number;
   title_state: 'pending' | 'running' | 'completed' | 'failed' | 'interrupted';
 };
 export type Revision = { task_id: string; revision: number; description: string; created_at: string };
 export type SavedEvent = { id: number; type: string; task_id: string | null; payload: string; created_at: string };
-export type Snapshot = { execution_pause?: ExecutionPause; projects: Project[]; tasks: Task[]; runs: AgentRun[]; human_requests: HumanRequest[]; execution_error?: string | null; title_error?: string | null; cursor: number };
+export type Snapshot = { archived_tasks?: Task[]; execution_pause?: ExecutionPause; projects: Project[]; tasks: Task[]; runs: AgentRun[]; human_requests: HumanRequest[]; execution_error?: string | null; title_error?: string | null; cursor: number };
 
 export const roles = ['spec', 'build', 'review-code', 'review-security', 'review-ui', 'review-ux', 'approve'] as const;
 export type Models = Record<typeof roles[number], string>;
