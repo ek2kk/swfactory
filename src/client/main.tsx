@@ -183,13 +183,13 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
         catch (error) { setError((error as Error).message); } finally { setBusy(false); }
       }}>{busy ? 'Ставим в очередь…' : 'Доработать: новый цикл (до двух доработок)'}</button>
     </>}
-    {!editing && questions.map(request => request.result.outcome === 'ESCALATE' ? <HumanDecision key={request.id} task={task} request={request} refresh={refresh} /> : <HumanQuestions key={request.id} task={task} request={request} refresh={refresh} />)}
+    {!editing && questions.map(request => request.result.outcome === 'ESCALATE' ? <HumanDecision key={request.id} task={task} request={request} refresh={refresh} /> : <HumanQuestions key={`${request.id}-${request.status}`} task={task} request={request} refresh={refresh} resume={task.run_state === 'interrupted' && !task.execution_unverified && !task.publication_status && runs.at(-1)?.id === request.run_id && runs.at(-1)?.status === 'completed' && !!runs.at(-1)?.diagnostic?.execution_finished && !runs.at(-1)?.stale} />)}
     {task.run_state === 'interrupted' && !task.execution_unverified && runs.at(-1)?.status === 'failed' && runs.at(-1)?.diagnostic?.execution_finished && !task.publication_status && <button disabled={busy} onClick={async () => {
       setBusy(true); setError('');
       try { await api(`${taskPath(task)}/retry`, 'POST', { state_version: task.state_version }); await refresh(); }
       catch (error) { setError((error as Error).message); } finally { setBusy(false); }
     }}>{runs.at(-1)?.diagnostic?.result_saved ? 'Продолжить по сохранённому результату' : 'Повторить завершённый запуск'}</button>}
-    {task.run_state === 'interrupted' && runs.at(-1)?.diagnostic?.result_saved && <p>Результат агента сохранён. Продолжение повторит проверки backend и переход этапа без нового вызова модели.</p>}
+    {task.run_state === 'interrupted' && runs.at(-1)?.status === 'failed' && runs.at(-1)?.diagnostic?.result_saved && <p>Результат агента сохранён. Продолжение повторит проверки backend и переход этапа без нового вызова модели.</p>}
     {task.run_state === 'interrupted' && (runs.at(-1)?.status === 'interrupted' || !runs.at(-1)?.diagnostic?.execution_finished) && <p>Перед продолжением нужна ручная проверка процесса и worktree. Автоматический повтор недоступен.</p>}
     {runs.map(run => <RunReport key={run.id} task={task} run={run} />)}
     <details onToggle={event => setShowHistory(event.currentTarget.open)}><summary>История описания</summary>
@@ -238,12 +238,12 @@ function HumanDecision({ task, request, refresh }: { task: Task; request: HumanR
   </section>;
 }
 
-function HumanQuestions({ task, request, refresh }: { task: Task; request: HumanRequest; refresh: () => Promise<void> }) {
-  const [answers, setAnswers] = useState<string[]>(request.result.questions.map(() => ''));
+function HumanQuestions({ task, request, refresh, resume }: { task: Task; request: HumanRequest; refresh: () => Promise<void>; resume: boolean }) {
+  const [answers, setAnswers] = useState<string[]>(request.answers ?? request.result.questions.map(() => ''));
   const [version] = useState(task.state_version);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  if (request.status !== 'pending') return <details><summary>Вопросы · редакция {request.revision} · {request.status === 'answered' ? 'Ответ сохранён' : 'Отозваны'}</summary>
+  if (request.status !== 'pending' && !(resume && request.status === 'answered')) return <details><summary>Вопросы · редакция {request.revision} · {request.status === 'answered' ? 'Ответ сохранён' : 'Отозваны'}</summary>
     {request.result.questions.map((q, i) => <p key={i}>{q.text}<br />{request.answers?.[i] || 'Без ответа'}</p>)}</details>;
   return <form onSubmit={async event => {
     event.preventDefault(); setBusy(true); setError('');
@@ -260,10 +260,10 @@ function HumanQuestions({ task, request, refresh }: { task: Task; request: Human
       </select></label>}
       <label>Ваш ответ<textarea required={q.required} maxLength={4096} value={answers[i]} onChange={event => setAnswers(values => values.map((value, index) => index === i ? event.target.value : value))} /></label>
     </fieldset>)}
-    {task.run_state === 'interrupted' && <p role="status">Backend перезапущен. Ответ сохранится, но работа не продолжится: нужна ручная сверка исполнения.</p>}
+    {task.run_state === 'interrupted' && <p role="status">{resume ? 'Ответы будут переданы новому запуску после проверки worktree.' : 'Нужна ручная сверка исполнения; продолжение пока недоступно.'}</p>}
     {task.state_version !== version && <p role="status">Карточка изменилась. Скопируйте черновик ответов и обновите страницу.</p>}
-    <button disabled={busy || task.state_version !== version || request.result.questions.some((q, i) => q.required && !answers[i].trim())}>
-      {busy ? 'Сохраняем…' : task.run_state === 'interrupted' ? 'Сохранить ответ без запуска' : `Ответить и продолжить ${request.role}`}
+    <button disabled={busy || (task.run_state === 'interrupted' && !resume) || task.state_version !== version || request.result.questions.some((q, i) => q.required && !answers[i].trim())}>
+      {busy ? 'Сохраняем…' : request.status === 'answered' ? 'Продолжить с сохранёнными ответами' : `Ответить и продолжить ${request.role}`}
     </button>{error && <p role="alert" className="error">{error}</p>}
   </form>;
 }

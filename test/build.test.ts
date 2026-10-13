@@ -164,8 +164,11 @@ for (const scenario of ['answer', 'changed', 'leading-changed', 'restart', 'merg
   assert.equal(request.role, 'build');
   if (scenario === 'restart') {
     store.close(); const restarted = new Store(directory);
-    assert.deepEqual(restarted.answer(project.id, task.id, request.id, restarted.task(project.id, task.id).state_version, ['hello']), { run: null });
-    assert.equal(restarted.task(project.id, task.id).run_state, 'interrupted'); restarted.close(); return;
+    assert.equal(restarted.task(project.id, task.id).run_state, 'waiting');
+    const next = restarted.answer(project.id, task.id, request.id, restarted.task(project.id, task.id).state_version, ['hello']).run;
+    assert.equal(next.role, 'build'); assert.equal(next.worktree, run.worktree);
+    assert.equal(readFileSync(join(next.worktree, 'README.md'), 'utf8'), 'partial');
+    assert.equal(restarted.task(project.id, task.id).run_state, 'queued'); restarted.close(); return;
   }
   const next = store.answer(project.id, task.id, request.id, store.task(project.id, task.id).state_version, ['hello']).run!;
   assert.equal(next.role, 'build'); assert.equal(next.worktree, run.worktree);

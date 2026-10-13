@@ -133,7 +133,7 @@ export class Store {
           this.db.prepare("UPDATE tasks SET title_state = 'interrupted' WHERE id = ?").run(task.id);
           this.event('title.interrupted', task.id, { revision: task.revision });
         }
-        for (const task of this.db.prepare("SELECT * FROM tasks WHERE run_state IN ('running','queued','waiting')").all() as Task[]) {
+        for (const task of this.db.prepare("SELECT * FROM tasks WHERE run_state IN ('running','queued') OR (run_state = 'waiting' AND execution_unverified = 1)").all() as Task[]) {
           this.db.prepare("UPDATE tasks SET run_state = 'interrupted', state_version = state_version + 1 WHERE id = ?").run(task.id);
           this.event('task.interrupted', task.id, { reason: 'Backend перезапущен. Нужна ручная проверка; работа не возобновлена.' });
         }
@@ -656,7 +656,10 @@ export class Store {
       const request = this.humanRequests().find(request => request.id === requestId && request.task_id === taskId);
       if (!request) throw new Problem(404, 'Вопрос не найден в этой задаче.');
       const previous = this.specRun(projectId, taskId, request.run_id);
-      if (task.state_version !== version || request.status !== 'pending' || request.revision !== task.revision
+      const resuming = task.run_state === 'interrupted' && request.status === 'answered';
+      if (task.state_version !== version || (request.status !== 'pending' && !resuming) || request.revision !== task.revision
+        || task.publication_status || previous.stale
+        || (task.run_state === 'interrupted' && (task.execution_unverified || !previous.diagnostic?.execution_finished))
         || task.stage !== 'needs-human' || !['waiting', 'interrupted'].includes(task.run_state)
         || previous.status !== 'completed' || previous.outcome !== 'NEEDS_INPUT'
         || this.runs().filter(run => run.task_id === taskId).at(-1)?.id !== previous.id) {
@@ -669,8 +672,6 @@ export class Store {
       this.db.prepare("UPDATE human_requests SET answers = ?, status = 'answered' WHERE id = ?").run(JSON.stringify(answers), requestId);
       this.event('human.answered', taskId, { human_request_id: requestId, run_id: previous.id });
       this.db.prepare('UPDATE tasks SET state_version = state_version + 1 WHERE id = ?').run(taskId);
-      // After restart we preserve the answer, but recovery requires manual reconciliation.
-      if (task.run_state === 'interrupted') return { run: null };
       const run: AgentRun = { ...previous, output_preview: null, output_at: null, output_version: null, diagnostic: {}, started_at: null, finished_at: null, id: randomUUID(), parent_run_id: previous.id, status: 'queued', outcome: null, error: null, report: 0 };
       this.db.prepare(`INSERT INTO runs (id, task_id, project_id, description_revision, config, project_version,
       status, branch, worktree, base_sha, outcome, error, report, parent_run_id, role, head_sha, source_hash, spec_run_id, round_id, stale, repair_round_id, repair_attempt) VALUES (@id, @task_id, @project_id, @description_revision, @config, @project_version,

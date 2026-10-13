@@ -50,8 +50,11 @@ export class GithubIssues {
   private job: Promise<void> = Promise.resolve();
   constructor(private store: Store, private publish: () => void, private command: IssueCommand = githubIssueCommand) {}
   start() {
-    const projects = this.store.snapshot().projects.filter(project => project.hosting === 'github');
-    this.job = Promise.all(projects.map(project => this.load(project))).then(() => {});
+    for (const project of this.store.snapshot().projects) this.connect(project);
+  }
+  connect(project: Project) {
+    if (project.hosting !== 'github' || this.controller.signal.aborted) return;
+    this.job = Promise.all([this.job, this.load(project)]).then(() => {});
   }
   async settled() { await this.job; }
   async close() { this.controller.abort(); await this.job; }

@@ -327,3 +327,22 @@ test('gh adapter uses bounded noninteractive read-only commands and safe errors,
   await assert.rejects(githubIssueCommand(['api'], new AbortController().signal), /время ожидания/);
   assert.ok(Date.now() - started < 18000);
 });
+
+test('connecting a project starts asynchronous import once and publishes the result', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'factory-connect-issues-'));
+  const gate = deferred(); let calls = 0;
+  const result = await createApp({ directory, origin, inspect: async () => projectInput, issueCommand: async () => {
+    calls++; await gate.promise; return JSON.stringify([issue(42)]);
+  } });
+  t.after(async () => { gate.resolve(); await result.app.close(); rmSync(directory, { recursive: true, force: true }); });
+  const session = await result.app.inject({ method: 'POST', url: '/api/session', headers: { host: '127.0.0.1:4317', origin }, payload: { token: result.token } });
+  const headers = { host: '127.0.0.1:4317', origin, cookie: String(session.headers['set-cookie']).split(';')[0] };
+  const payload = { checkout: '/test', remote: 'origin', hosting: 'github', target_branch: 'main', state_version: 0, request_id: 'ab3c6ff7-7bb0-4e16-967c-526811d54bb5' };
+  const responses = await Promise.all([1, 2].map(() => result.app.inject({ method: 'POST', url: '/api/projects', headers, payload })));
+  assert.ok(responses.every(response => response.statusCode === 200)); assert.equal(calls, 1); assert.equal(result.store.snapshot().tasks.length, 0);
+  const replay = await result.app.inject({ method: 'POST', url: '/api/projects', headers, payload });
+  assert.equal(replay.statusCode, 200); assert.equal(calls, 1);
+  gate.resolve(); await result.issues.settled();
+  assert.equal(result.store.snapshot().tasks[0].issue_number, 42);
+  assert.ok(result.store.events(0).some(event => event.type === 'task.created'));
+});
