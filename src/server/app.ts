@@ -1,3 +1,4 @@
+import { ModelCatalogs, discoverModels } from './models.js';
 import { readTranscript } from './transcript.js';
 import Fastify from 'fastify';
 import staticFiles from '@fastify/static';
@@ -28,11 +29,13 @@ function equal(a: string, b: string) {
 
 type Action = { request_id: string; state_version: number; description: string };
 export async function createApp(options: {
+  discoverModels?: typeof discoverModels;
   directory: string; origin: string; staticRoot?: string; inspect?: typeof inspectProject; command?: Run; execute?: ExecuteSpec; executeBuild?: ExecuteBuild; executeReview?: ExecuteReview; executeApprove?: ExecuteApprove; generateTitle?: typeof generateTitle;
   chooseFolder?: () => Promise<string | null>;
 }) {
   const store = new Store(options.directory);
   const directory = realpathSync(options.directory);
+  const catalogs = new ModelCatalogs(directory, options.discoverModels);
   const app = Fastify({ logger: false, bodyLimit: 128 * 1024, ajv: { customOptions: { removeAdditional: false, coerceTypes: false } } });
   const token = randomBytes(32).toString('hex');
   const session = randomBytes(32).toString('hex');
@@ -109,6 +112,10 @@ export async function createApp(options: {
     return result;
   });
   const projectParams = object({ projectId: uuid });
+  app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/models', { schema: { params: projectParams } }, async request => {
+    const project = store.project(request.params.projectId);
+    return catalogs.get(project.id, project.checkout);
+  });
   const taskParams = object({ projectId: uuid, taskId: uuid });
   const actionBody = object({ request_id: uuid, state_version: version, description });
   app.post<{ Params: { projectId: string }; Body: Action }>('/api/projects/:projectId/tasks', { schema: { params: projectParams, body: actionBody } }, async request => {

@@ -64,3 +64,6 @@ export type ChatMessage = {
   created_at: string; delivered_at: string | null; error: string | null;
 };
 export type TranscriptEntry = { id: string; kind: 'agent' | 'tool' | 'event'; title: string; text: string; at: string; status?: string };
+
+export type ModelOption = { id: string; name: string };
+export type ModelCatalog = { models: ModelOption[]; source: 'codex' | 'cache' | 'defaults'; updated_at: string | null; error?: string };

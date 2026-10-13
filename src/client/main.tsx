@@ -1,3 +1,4 @@
+import { ModelPicker } from './models.js';
 import { api } from './api.js';
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -214,6 +215,16 @@ function ModelSettings({ project, refresh }: { project: Project; refresh: () => 
   const [version, setVersion] = useState(project.state_version);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [catalog, setCatalog] = useState<import('../shared.js').ModelCatalog | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState('');
+  async function refreshCatalog() {
+    setLoading(true); setCatalogError('');
+    try { setCatalog(await api(`/projects/${project.id}/models`)); }
+    catch { setCatalogError('Не удалось получить каталог. Текущий выбор сохранён; доступен ручной ввод.'); }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { void refreshCatalog(); }, [project.id]);
   async function reload() {
     setConfig(await api<Settings>(`/projects/${project.id}/settings`));
     setVersion(project.state_version);
@@ -225,9 +236,12 @@ function ModelSettings({ project, refresh }: { project: Project; refresh: () => 
       try { await api(`/projects/${project.id}/settings`, 'PUT', { ...config, state_version: version }); setVersion(version + 1); await refresh(); }
       catch (error) { setError((error as Error).message); } finally { setBusy(false); }
     }}>
-      <div className="fields">{roles.map(role => <label key={role}>{role}<input required maxLength={128} value={config.models[role]} onChange={event => setConfig({ ...config, models: { ...config.models, [role]: event.target.value } })} /></label>)}</div>
+      <p role="status">{loading ? 'Получаем модели Codex…' : catalog ? `Источник: ${{ codex: 'Codex', cache: 'последний успешный каталог', defaults: 'встроенные настройки' }[catalog.source]}${catalog.updated_at ? ' · ' + new Date(catalog.updated_at).toLocaleString('ru') : ''}` : 'Каталог пока недоступен.'}</p>
+      {(catalogError || catalog?.error) && <p role="alert">{catalogError || catalog?.error}</p>}
+      <button type="button" className="secondary" disabled={loading} onClick={() => void refreshCatalog()}>Обновить список моделей</button>
+      <div className="fields">{roles.map(role => <ModelPicker key={role} role={role} value={config.models[role]} catalog={catalog?.models ?? []} onChange={value => setConfig({ ...config, models: { ...config.models, [role]: value } })} />)}</div>
       <label>Инструкции проекта<textarea maxLength={30000} value={config.instructions} onChange={event => setConfig({ ...config, instructions: event.target.value })} /></label>
-      <p className="hint">Укажите доступные вашему Codex модели. Конфигурация фиксируется при старте задачи; недоступная модель останавливает запуск без подмены.</p>
+      <p className="hint">Каталог Codex не гарантирует доступ к модели. Модель вне списка можно указать вручную. Конфигурация фиксируется при старте задачи; недоступная модель останавливает запуск без подмены.</p>
       {project.state_version !== version && <p role="status">Настройки изменились. Загрузите актуальную версию перед сохранением.</p>}
       <button disabled={busy || project.state_version !== version}>Сохранить настройки</button>{' '}
       <button type="button" className="secondary" disabled={busy} onClick={() => reload().catch(error => setError(error.message))}>Загрузить актуальные</button>

@@ -1,0 +1,105 @@
+import { spawn } from 'node:child_process';
+import { readFileSync, writeFileSync, renameSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { defaultModels, type ModelOption, type ModelCatalog } from '../shared.js';
+
+export function normalizeModels(value: unknown): ModelOption[] {
+  if (!Array.isArray(value) || !value.length || value.length > 1000) throw new Error('invalid catalog');
+  const models = new Map<string, ModelOption>();
+  for (const entry of value) {
+    if (!entry || typeof entry.id !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(entry.id)
+      || typeof entry.name !== 'string' || !entry.name.trim() || entry.name.length > 256 || /[\x00-\x1f\x7f]/.test(entry.name)) throw new Error('invalid model');
+    models.set(entry.id, { id: entry.id, name: entry.name });
+  }
+  return [...models.values()];
+}
+
+// Only initialize and model/list: no thread, inference, credentials parsing or tool execution.
+export function discoverModels(cwd: string, executable = 'codex', timeout = 10_000): Promise<ModelOption[]> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, ['app-server', '--listen', 'stdio://'], { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    let buffer = '', bytes = 0, id = 1, pages = 0, done = false;
+    let result: ModelOption[] | undefined;
+    const models: ModelOption[] = [], cursors = new Set<string>();
+    let error: Error | undefined, kill: ReturnType<typeof setTimeout> | undefined;
+    const finish = (failure?: Error) => {
+      if (done) return;
+      done = true; error = failure;
+      child.stdin.end(); child.kill('SIGTERM');
+      kill = setTimeout(() => child.kill('SIGKILL'), 1000);
+    };
+    const timer = setTimeout(() => finish(new Error('Discovery timeout')), timeout);
+    const send = (message: object) => child.stdin.write(JSON.stringify(message) + '\n');
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      if (done) return;
+      try {
+        bytes += Buffer.byteLength(chunk); if (bytes > 2 * 1024 * 1024) throw new Error('Catalog limit');
+        buffer += chunk;
+        let newline: number;
+        while (!done && (newline = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
+          if (!line.trim()) continue;
+          const event = JSON.parse(line);
+          if (event.method && event.id !== undefined) throw new Error('Unexpected server request');
+          if (event.id !== id) continue;
+          if (event.error || !event.result) throw new Error('Discovery failed');
+          if (id === 1) {
+            send({ method: 'initialized', params: {} });
+          } else {
+            const page = event.result;
+            if (!Array.isArray(page.data) || ++pages > 100) throw new Error('Invalid page');
+            models.push(...page.data.filter((m: any) => !m?.hidden).map((m: any) => ({ id: m?.model, name: m?.displayName })));
+            if (models.length > 1000) throw new Error('Catalog limit');
+            if (page.nextCursor == null) { result = normalizeModels(models); finish(); break; }
+            if (typeof page.nextCursor !== 'string' || !page.nextCursor || cursors.has(page.nextCursor)) throw new Error('Invalid cursor');
+            cursors.add(page.nextCursor);
+          }
+          send({ id: ++id, method: 'model/list', params: { limit: 100, includeHidden: false, ...(id > 2 ? { cursor: event.result.nextCursor } : {}) } });
+        }
+      } catch { finish(new Error('Invalid Codex model catalog')); }
+    });
+    child.stderr.on('data', () => {});
+    child.on('error', () => finish(new Error('Codex unavailable')));
+    child.stdin.on('error', () => { if (!done) finish(new Error('Codex connection failed')); });
+    child.on('close', () => {
+      clearTimeout(timer); clearTimeout(kill);
+      if (error || !result) reject(error ?? new Error('Codex closed before catalog'));
+      else resolve(result);
+    });
+    send({ id, method: 'initialize', params: { clientInfo: { name: 'swfactory', version: '0.1.0' } } });
+  });
+}
+
+export class ModelCatalogs {
+  private pending = new Map<string, Promise<ModelCatalog>>();
+  constructor(private directory: string, private discover = discoverModels) {}
+  get(projectId: string, cwd: string) {
+    const prior = this.pending.get(projectId);
+    if (prior) return prior;
+    const work = this.load(projectId, cwd).finally(() => this.pending.delete(projectId));
+    this.pending.set(projectId, work); return work;
+  }
+  private async load(projectId: string, cwd: string): Promise<ModelCatalog> {
+    const path = join(this.directory, `models-${projectId}.json`);
+    let cached: ModelCatalog | undefined;
+    try {
+      if (statSync(path).size > 1024 * 1024) throw new Error();
+      const saved = JSON.parse(readFileSync(path, 'utf8'));
+      if (typeof saved.updated_at !== 'string' || !Number.isFinite(Date.parse(saved.updated_at))) throw new Error();
+      cached = { models: normalizeModels(saved.models), updated_at: saved.updated_at, source: 'cache' };
+    } catch { /* Missing/corrupt cache falls back to project defaults. */ }
+    try {
+      const models = normalizeModels(await this.discover(cwd));
+      const catalog: ModelCatalog = { models, source: 'codex', updated_at: new Date().toISOString() };
+      try {
+        writeFileSync(path + '.tmp', JSON.stringify(catalog), { mode: 0o600 });
+        renameSync(path + '.tmp', path);
+      } catch { catalog.error = 'Каталог получен, но не сохранён для следующего запуска backend.'; }
+      return catalog;
+    } catch {
+      return { ...(cached ?? { models: [...new Set(Object.values(defaultModels))].map(id => ({ id, name: id })), source: 'defaults', updated_at: null }),
+        error: 'Codex не вернул непустой корректный каталог. Используется резервный список; можно повторить обновление или указать другую модель.' };
+    }
+  }
+}
