@@ -12,7 +12,54 @@ applyTheme(readTheme());
 const labels = ['Backlog', 'Spec', 'Build', 'Review', 'Approve', 'PR/MR created', 'Needs human'];
 const taskPath = (task: Task) => `/projects/${task.project_id}/tasks/${task.id}`;
 
-function TaskCard({ task, project, runs, questions, refresh, active, cursor }: { task: Task; project: Project; runs: AgentRun[]; questions: HumanRequest[]; refresh: () => Promise<void>; active: boolean; cursor: number }) {
+function DeleteTask({ task, refresh, notify }: { task: Task; refresh: () => Promise<void>; notify: (text: string) => void }) {
+  const [verification, setVerification] = useState<unknown>(null);
+  useEffect(() => {
+    if (!task.deletion_state) return;
+    let disposed = false;
+    api<{ verification: unknown }>(`${taskPath(task)}/deletion`).then(result => { if (!disposed) setVerification(result.verification); }).catch(() => {});
+    return () => { disposed = true; };
+  }, [task.id, task.deletion_state]);
+  const [reconciliation, setReconciliation] = useState('');
+  const [confirming, setConfirming] = useState(false);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const cancelButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const element = dialog.current;
+    if (!confirming || !element) return;
+    element.showModal(); cancelButton.current?.focus();
+    return () => element.close();
+  }, [confirming]);
+  const [version, setVersion] = useState(task.state_version);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  return <section aria-label="Удаление задачи">
+    {task.deletion_state === 'stopping' && <p role="status">Останавливаем исполнение и публикацию… Карточка будет скрыта после подтверждения остановки.</p>}
+    {task.deletion_error && <p role="alert">{task.deletion_error}</p>}
+    {!!verification && <details><summary>Данные для ручной сверки процессов и публикации</summary><pre>{JSON.stringify(verification, null, 2)}</pre></details>}
+    <button className="secondary" disabled={busy || task.deletion_state === 'stopping'} onClick={() => { setVersion(task.state_version); setConfirming(true); setError(''); }}>{task.deletion_state === 'failed' ? 'Повторить удаление' : 'Удалить'}</button>
+    {confirming && <dialog ref={dialog} onCancel={event => { event.preventDefault(); if (!busy) setConfirming(false); }} aria-labelledby={`delete-title-${task.id}`} className="delete-confirmation">
+      <h4 id={`delete-title-${task.id}`}>Удалить «{task.title ?? task.description}»?</h4>
+      <p>Исполнение и публикация будут остановлены, карточка скрыта. История, worktrees, branches, отчёты и логи сохранятся. Существующий PR останется. Уже отправленная remote операция могла завершиться — при неизвестном результате потребуется ручная сверка. Восстановление карточки не предусмотрено.</p>
+      {!!task.stop_unverified && task.deletion_state === 'failed' && <label>Ручная сверка: проверьте отсутствие процессов старого backend, Codex sessions и их дочерних процессов, а также remote результат публикации. Опишите фактические наблюдения (не вводите credentials). Это ваше подтверждение остановки; backend проверить его самостоятельно не может.<textarea minLength={20} maxLength={4096} value={reconciliation} onChange={event => setReconciliation(event.target.value)} /></label>}
+      <button disabled={busy || version !== task.state_version || (!!task.stop_unverified && task.deletion_state === 'failed' && reconciliation.trim().length < 20)} onClick={async () => {
+        setBusy(true); setError('');
+        try {
+          const result = await api<{ deleted: boolean; error: string | null; warning: string | null; verification: unknown }>(`${taskPath(task)}/delete`, 'POST', { state_version: version, ...(reconciliation.trim() ? { reconciliation: reconciliation.trim() } : {}) });
+          if (!result.deleted) { setError(result.error ?? 'Остановка не подтверждена.'); setConfirming(false); }
+          else notify(`Задача удалена.${result.warning ? ' ' + result.warning + ' Данные для сверки: ' + JSON.stringify(result.verification) : ''}`);
+          await refresh();
+        } catch (error) { setError((error as Error).message); await refresh().catch(() => {}); }
+        finally { setBusy(false); }
+      }}>{busy ? 'Останавливаем исполнение…' : 'Подтвердить удаление'}</button>{' '}
+      <button ref={cancelButton} className="secondary" disabled={busy} onClick={() => setConfirming(false)}>Отмена</button>
+      {!busy && version !== task.state_version && <p role="status">Карточка изменилась. Отмените подтверждение и откройте его снова.</p>}
+    </dialog>}
+    {error && <p role="alert">{error}</p>}
+  </section>;
+}
+
+function TaskCard({ task, project, runs, questions, refresh, active, cursor, notify }: { task: Task; project: Project; runs: AgentRun[]; questions: HumanRequest[]; refresh: () => Promise<void>; active: boolean; cursor: number; notify: (text: string) => void }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(task.description);
   const [editVersion, setEditVersion] = useState(task.state_version);
@@ -34,6 +81,8 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor }: {
     <span className="project-name">{project.host}/{project.repository} · {project.checkout}</span>
     <h3>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3>
     <p className="meta">Редакция {task.revision} · {{ idle: task.stage === 'build' ? 'Spec готова · можно запустить Build' : task.stage === 'review' ? 'Ожидает запуска следующего Review' : task.stage === 'approve' ? 'Четыре PASS · ожидает Approve' : 'Не запущена', queued: 'В очереди · ожидает слот', running: task.stage === 'spec' ? 'Codex готовит Spec' : task.stage === 'build' ? 'Codex реализует задачу' : task.stage === 'review' ? 'Codex выполняет Review' : task.stage === 'approve' ? 'Codex принимает решение о публикации' : 'Проверяем checkout и создаём worktree', waiting: 'Нужен ответ человека', interrupted: 'Прервана — нужна ручная проверка', completed: task.stage === 'approve' ? 'Разрешена только публикация PR/MR · публикация ещё не выполнена' : 'Завершена' }[task.run_state]}</p>
+    <DeleteTask task={task} refresh={refresh} notify={notify} />
+    <fieldset className="task-controls" disabled={!!task.deletion_state}>
     <div className="stage-tabs" role="tablist" aria-label="Этапы задачи" onKeyDown={event => {
       if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
       const tabs = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role=tab]')];
@@ -110,6 +159,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor }: {
     {tab !== 'overview' && messages.filter(message => message.status !== 'delivered').map(message => <Message key={message.id} message={message} />)}
     {chatError && <p role="alert">{chatError}</p>}
     <Composer task={task} path={taskPath(task)} api={api} refresh={refresh} />
+    </fieldset>
   </article>;
 }
 function HumanDecision({ task, request, refresh }: { task: Task; request: HumanRequest; refresh: () => Promise<void> }) {
@@ -269,6 +319,14 @@ function App() {
   }
   const [snapshot, setSnapshot] = useState<Snapshot>({ projects: [], tasks: [], runs: [], human_requests: [], cursor: 0 });
   const [ready, setReady] = useState(false);
+  const [notice, setNotice] = useState('');
+  useEffect(() => {
+    if (ready && detailId && !snapshot.tasks.some(task => task.id === detailId)) {
+      history.replaceState(null, '', location.pathname);
+      setDetailId(''); setOpened(ids => ids.filter(id => id !== detailId));
+      setNotice(value => value || 'Карточка удалена или недоступна.');
+    }
+  }, [ready, snapshot, detailId]);
   const [connection, setConnection] = useState('Подключаемся к backend…');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
@@ -289,6 +347,7 @@ function App() {
       setSnapshot(initial); setReady(true);
       events = new EventSource('/api/events');
       events.addEventListener('snapshot', event => { setSnapshot(JSON.parse((event as MessageEvent).data)); setConnection('Сохранено локально · Соединение активно'); });
+      events.addEventListener('change', event => { const change = JSON.parse((event as MessageEvent).data); if (change.type === 'task.deleted') { const payload = JSON.parse(change.payload); setNotice(`Задача удалена.${payload.warning ? ' ' + payload.warning : ''}`); } });
       events.onerror = () => setConnection('Связь потеряна. Переподключаемся; сохранённые данные остаются на backend. Если backend перезапущен, откройте новый URL из терминала.');
     })().catch(error => { if (!disposed) { setError(error.message); setConnection('Подключение не выполнено'); } });
     return () => { disposed = true; events?.close(); };
@@ -304,6 +363,7 @@ function App() {
       }}><option value="system">Системная</option><option value="light">Светлая</option><option value="dark">Тёмная</option></select></label>
     </header>
     <p className="intro" hidden={!!detailId}>Из описания — в проверяемую спецификацию. Codex работает в отдельном worktree; закрытие вкладки не останавливает задачу.</p>
+    {notice && <p role="status">{notice}</p>}
     {error && <p role="alert" className="error">{error}</p>}
     {snapshot.title_error && <p role="alert" className="error">{snapshot.title_error}</p>}
     {snapshot.execution_error && <p role="alert" className="error">{snapshot.execution_error}</p>}
@@ -356,7 +416,8 @@ function App() {
             <h3>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3><p className="meta">{{ idle: 'Ожидает запуска', queued: 'В очереди', running: 'В работе', waiting: 'Нужен ответ', interrupted: 'Нужна сверка', completed: 'Завершена' }[task.run_state]} · редакция {task.revision}</p>
             <p className="agent-preview">{task.description}</p>
             {snapshot.runs.filter(run => run.task_id === task.id).at(-1)?.output_preview && <p className="agent-preview">{snapshot.runs.filter(run => run.task_id === task.id).at(-1)?.output_preview}</p>}
-            <button id={`open-${task.id}`} onClick={() => openTask(task.id)}>Открыть задачу ↗</button>
+            {task.deletion_state && <p role={task.deletion_state === 'failed' ? 'alert' : 'status'}>{task.deletion_state === 'failed' ? task.deletion_error : 'Останавливаем исполнение для удаления…'}</p>}
+            <button id={`open-${task.id}`}  onClick={() => openTask(task.id)}>Открыть задачу ↗</button>
           </article>) : <p className="empty">{stage === 'backlog' ? 'Добавьте первую задачу' : 'Пока нет задач'}</p>}
         </section>;
       })}
@@ -368,7 +429,7 @@ function App() {
       {opened.map(id => {
         const task = snapshot.tasks.find(task => task.id === id);
         const project = task && snapshot.projects.find(project => project.id === task.project_id);
-        return task && project ? <div key={id} hidden={id !== detailId}><TaskCard task={task} project={project} runs={snapshot.runs.filter(run => run.task_id === id)} questions={snapshot.human_requests.filter(request => request.task_id === id)} refresh={refresh} active={id === detailId} cursor={snapshot.cursor} /></div> : null;
+        return task && project ? <div key={id} hidden={id !== detailId}><TaskCard task={task} project={project} runs={snapshot.runs.filter(run => run.task_id === id)} questions={snapshot.human_requests.filter(request => request.task_id === id)} refresh={refresh} active={id === detailId} cursor={snapshot.cursor} notify={setNotice} /></div> : null;
       })}
     </div>
   </main>;

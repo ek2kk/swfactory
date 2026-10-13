@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { ProcessScope, execFile } from './processes.js';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -61,7 +61,8 @@ export async function generateTitle(description: string, signal: AbortSignal): P
 }
 
 export class Titles {
-  private active = new Map<string, { controller: AbortController; done: Promise<void> }>();
+  private scopes = new Map<string, ProcessScope[]>();
+  private active = new Map<string, { controller: AbortController; scope: ProcessScope; done: Promise<void> }>();
   private stopped = false;
   error: string | null = null;
   constructor(private store: Store, private publish: () => void,
@@ -73,17 +74,22 @@ export class Titles {
     try {
       for (const task of this.store.snapshot().tasks) {
         if (task.title_state !== 'pending' || task.run_state !== 'idle' || task.stage !== 'backlog' || this.active.has(task.id)) continue;
-        const controller = new AbortController();
-        const done = this.scheduler.enqueue(task.id, async () => {
+        if (task.deletion_state) continue;
+        const scope = new ProcessScope(pid => this.store.event('execution.process-started', task.id, { pid, pgid: pid, role: 'title' }));
+        this.scopes.set(task.id, [...(this.scopes.get(task.id) ?? []).filter(scope => !scope.provenStopped()), scope]);
+        const controller = scope.controller;
+        const done = this.scheduler.enqueue(task.id, () => scope.run(async () => {
           try {
             if (this.stopped || controller.signal.aborted || !this.store.claimTitle(task)) return;
+            this.store.db.prepare('UPDATE tasks SET execution_unverified = 1 WHERE id = ?').run(task.id);
             this.publish();
             const title = await this.generate(task.description, controller.signal).then(title => parseTitle({ title })).catch(error => { this.executionFailure(error); return null; });
             if (!this.stopped) { this.store.finishTitle(task, title); this.publish(); }
-          } catch (error) { this.fail(error); }
-        })
+          } catch (error) { if (!this.store.blocked(task.id)) this.fail(error); }
+          finally { if (scope.provenStopped()) this.store.db.prepare('UPDATE tasks SET execution_unverified = 0 WHERE id = ?').run(task.id); }
+        }))
           .finally(() => { this.active.delete(task.id); this.kick(); });
-        this.active.set(task.id, { controller, done });
+        this.active.set(task.id, { controller, scope, done });
       }
       this.publish();
     } catch (error) { this.fail(error); }
@@ -106,15 +112,22 @@ export class Titles {
         this.store.event('title.interrupted', task.id, { revision: current.revision, reason: 'spec' });
       }
     })();
+    this.scheduler.cancel(task.id);
     const active = this.active.get(task.id);
-    active?.controller.abort();
+    if (active) void active.scope.stop().catch(error => { if (!this.store.blocked(task.id)) this.fail(error); });
     this.publish();
     return active?.done ?? Promise.resolve();
   }
 
+  async cancel(taskId: string) {
+    this.scheduler.cancel(taskId);
+    await Promise.all((this.scopes.get(taskId) ?? []).map(scope => scope.stop()));
+    if (this.scopes.has(taskId)) this.store.db.prepare('UPDATE tasks SET execution_unverified = 0 WHERE id = ?').run(taskId);
+  }
   async close() {
     this.stopped = true;
-    for (const { controller } of this.active.values()) controller.abort();
+    for (const taskId of this.active.keys()) this.scheduler.cancel(taskId);
+    await Promise.all([...this.scopes.values()].flat().map(scope => scope.stop()));
     await Promise.all([...this.active.values()].map(run => run.done));
   }
 }

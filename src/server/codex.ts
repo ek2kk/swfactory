@@ -1,5 +1,5 @@
 import { executeInteractive, type Steer } from './interactive.js';
-import { execFile, spawn } from 'node:child_process';
+import { execFile, spawn } from './processes.js';
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ApproveResult, SpecResult, BuildResult, ReviewResult, ReviewRole } from '../shared.js';
@@ -41,7 +41,7 @@ export function validateSpec(value: unknown): SpecResult {
   catch { throw new Problem(422, 'Codex вернул невалидный заголовок Spec. Переход заблокирован.'); }
   return { ...result, title: result.title.trim() };
 }
-export type CodexInput = { control?: (steer: Steer | null) => void; cwd: string; directory: string; model: string; prompt: string; output?: (text: string) => void; metadata?: (value: RunDiagnostic) => void };
+export type CodexInput = { signal?: AbortSignal; control?: (steer: Steer | null) => void; cwd: string; directory: string; model: string; prompt: string; output?: (text: string) => void; metadata?: (value: RunDiagnostic) => void };
 export type ExecuteSpec = (input: CodexInput) => Promise<SpecResult>;
 
 export function executeSpec(input: CodexInput, executable = 'codex') {

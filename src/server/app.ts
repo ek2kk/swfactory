@@ -110,6 +110,40 @@ export async function createApp(options: {
     publish();
     return result;
   });
+  function deletionResult(projectId: string, taskId: string) {
+    const task = store.rawTask(projectId, taskId);
+    return {
+      deleted: task.deletion_state === 'deleted', error: task.deletion_error,
+      warning: task.publication_status === 'unknown' ? 'Remote операция могла завершиться. Проверьте hosting вручную; автоматического повтора публикации нет.' : null,
+      verification: { task_id: taskId, repository: store.project(projectId).repository, pr_url: task.pr_url,
+        processes: store.db.prepare("SELECT payload, created_at FROM events WHERE task_id = ? AND type = 'execution.process-started'").all(taskId),
+        remote_operations: store.db.prepare("SELECT payload, created_at FROM events WHERE task_id = ? AND type = 'publication.remote-operation'").all(taskId),
+        runs: store.runs().filter(r => r.task_id === taskId).map(r => ({ run_id: r.id, branch: r.branch, worktree: r.worktree, head_sha: r.head_sha })) },
+    };
+  }
+  app.get<{ Params: { projectId: string; taskId: string } }>('/api/projects/:projectId/tasks/:taskId/deletion', { schema: { params: taskParams } }, async request => deletionResult(request.params.projectId, request.params.taskId));
+  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number; reconciliation?: string } }>('/api/projects/:projectId/tasks/:taskId/delete', {
+    schema: { params: taskParams, body: { ...object({ request_id: uuid, state_version: version, reconciliation: { type: 'string', minLength: 20, maxLength: 4096 } }), required: ['request_id', 'state_version'] } },
+  }, async request => {
+    const { projectId, taskId } = request.params;
+    const { request_id, state_version, reconciliation } = request.body;
+    const fingerprint = JSON.stringify(['task.delete', projectId, taskId, state_version, reconciliation ?? null]);
+    const prior = store.replay(request_id, fingerprint) as { stopping?: boolean } | undefined;
+    if (prior && !prior.stopping) return prior;
+    if (!prior) {
+      store.mutate(request_id, fingerprint, () => {
+        const task = store.beginDeletion(projectId, taskId, state_version, reconciliation);
+        return { stopping: task.deletion_state !== 'deleted' };
+      });
+      publish();
+    }
+    let task = store.rawTask(projectId, taskId);
+    if (task.deletion_state === 'stopping') await controller.deleteTask(taskId);
+    task = store.rawTask(projectId, taskId);
+    const result = deletionResult(projectId, taskId);
+    store.db.prepare('UPDATE requests SET response = ? WHERE id = ?').run(JSON.stringify(result), request_id);
+    return result;
+  });
   app.patch<{ Params: { projectId: string; taskId: string }; Body: Action }>('/api/projects/:projectId/tasks/:taskId', { schema: { params: taskParams, body: actionBody } }, async request => {
     const { request_id, description, state_version } = request.body;
     const { projectId, taskId } = request.params;

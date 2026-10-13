@@ -1,3 +1,4 @@
+import { checkExecution } from './processes.js';
 import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentRun, Project, Task } from '../shared.js';
@@ -6,7 +7,7 @@ import { type Run } from './git.js';
 import { Problem } from './store.js';
 
 export async function publishGithub(project: Project, task: Task, run: AgentRun, reviews: AgentRun[], directory: string,
-  command: Run, verify: () => Promise<void>) {
+  command: Run, verify: () => Promise<void>, observe: (operation: string, result?: string) => void = () => {}) {
   const marker = `<!-- swfactory-task:${task.id} -->`;
   const repo = `${project.host}/${project.repository}`;
   const api = `repos/${project.repository}/pulls`;
@@ -48,12 +49,16 @@ export async function publishGithub(project: Project, task: Task, run: AgentRun,
   if (await command('git', ['remote', 'get-url', '--push', '--all', '--', project.remote], run.worktree) !== project.remote_url) {
     throw new Problem(422, 'Push remote отличается от подтверждённого remote. Нужна ручная сверка.');
   }
+  checkExecution(); observe('push');
   await command('git', ['push', '--', project.remote, `${run.head_sha}:refs/heads/${run.branch}`], run.worktree);
+  observe('push', 'confirmed');
   await verify();
+  checkExecution(); observe('pr-create');
   const url = await command('gh', ['pr', 'create', '--repo', repo, '--head', run.branch, '--base', project.target_branch,
     '--title', task.title ?? `Task ${task.id}`, '--body-file', join(artifacts, 'pull-request.md')], run.worktree);
   const prefix = `https://${project.host}/${project.repository}/pull/`;
   if (!url.startsWith(prefix) || !/^[1-9]\d*$/.test(url.slice(prefix.length))) throw new Problem(422, 'GitHub не подтвердил URL PR.');
+  observe('pr-url', url);
   const result = confirm(JSON.parse(await command('gh', ['api', '--hostname', project.host, `${api}/${url.slice(prefix.length)}`], run.worktree)));
   await verify();
   return result;

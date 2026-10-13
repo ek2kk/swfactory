@@ -8,6 +8,7 @@ export type Task = {
   id: string; project_id: string; description: string; title: string | null;
   stage: typeof stages[number]; run_state: 'idle' | 'queued' | 'running' | 'waiting' | 'interrupted' | 'completed';
   publication_status: 'pending' | 'confirmed' | 'unknown' | null; pr_url: string | null; pr_number: number | null;
+  deletion_state?: 'stopping' | 'failed' | 'deleted' | null; deletion_error?: string | null; stop_unverified?: number;
   state_version: number; revision: number;
   title_state: 'pending' | 'running' | 'completed' | 'failed' | 'interrupted';
 };

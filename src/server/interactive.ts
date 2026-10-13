@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'node:child_process';
+import { execFile, spawn } from './processes.js';
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { saveArtifact } from './artifacts.js';
@@ -39,7 +39,7 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
           killTimer = setTimeout(() => child.kill('SIGKILL'), 3000);
         }
       }
-      function send(value: unknown) { child.stdin.write(JSON.stringify(value) + '\n'); }
+      function send(value: unknown) { input.signal?.throwIfAborted(); child.stdin.write(JSON.stringify(value) + '\n'); }
       function rpc(method: string, params: object): Promise<any> {
         if (finished || failure || child.stdin.destroyed) return Promise.reject(new DeliveryError('failed', 'Активный turn завершён. Сообщение не передано.'));
         const id = ++sequence;
@@ -122,7 +122,11 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
       });
       child.on('error', () => stop(new CodexFailure('protocol_error')));
       child.stdin.on('error', () => { if (!finished) stop(new CodexFailure('protocol_error')); });
+      const abort = () => stop(new DeliveryError('unknown', 'Задача удаляется. Сессия остановлена.'));
+      input.signal?.addEventListener('abort', abort, { once: true });
+      if (input.signal?.aborted) abort();
       child.on('close', () => {
+        input.signal?.removeEventListener('abort', abort);
         clearTimeout(killTimer); input.control?.(null);
         for (const request of pending.values()) { clearTimeout(request.timer); request.reject(new DeliveryError('unknown', 'Соединение с CLI закрыто без подтверждения доставки.')); }
         pending.clear();

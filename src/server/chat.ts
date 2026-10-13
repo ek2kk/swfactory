@@ -8,6 +8,7 @@ export class Chat {
   error: string | null = null;
   private controls = new Map<string, { run: AgentRun; steer: Steer }>();
   constructor(private store: Store, private publish: () => void) {}
+  cancel(taskId: string) { this.controls.delete(taskId); }
   messages(taskId: string): ChatMessage[] {
     return this.store.db.prepare('SELECT * FROM chat_messages WHERE task_id = ? ORDER BY rowid').all(taskId) as ChatMessage[];
   }
@@ -28,10 +29,12 @@ export class Chat {
     return { id };
   }
   control(run: AgentRun, steer: Steer | null) {
+    if (this.store.blocked(run.task_id)) return;
     if (steer) { this.controls.set(run.task_id, { run, steer }); this.flush(run.task_id); }
     else if (this.controls.get(run.task_id)?.run.id === run.id) this.controls.delete(run.task_id);
   }
   flush(taskId: string) {
+    if (this.store.blocked(taskId)) return;
     const active = this.controls.get(taskId);
     if (!active) return;
     for (const message of this.messages(taskId).filter(m => m.status === 'queued' && m.kind === 'guidance' && m.revision === active.run.description_revision)) {
@@ -47,6 +50,7 @@ export class Chat {
     }
   }
   private finish(message: ChatMessage, status: ChatMessage['status'], error: string | null) {
+    if (this.store.blocked(message.task_id)) return;
     this.store.db.transaction(() => {
       this.store.db.prepare("UPDATE chat_messages SET status = ?, error = ?, delivered_at = ? WHERE id = ? AND status = 'sending'")
         .run(status, error, status === 'delivered' ? new Date().toISOString() : null, message.id);

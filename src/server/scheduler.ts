@@ -6,6 +6,9 @@ export class Scheduler {
   private closed = false;
   private timer?: ReturnType<typeof setTimeout>;
   constructor(private available = () => true) {}
+  cancel(taskId: string) {
+    this.pending = this.pending.filter(job => { if (job.taskId !== taskId) return true; job.resolve(); return false; });
+  }
   wake() { clearTimeout(this.timer); this.timer = undefined; this.drain(); }
   close() { this.closed = true; clearTimeout(this.timer); for (const job of this.pending.splice(0)) job.resolve(); }
 
