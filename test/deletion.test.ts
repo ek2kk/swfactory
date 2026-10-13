@@ -237,6 +237,76 @@ test('restart preserves deletion intent and refuses inferred process termination
   assert.ok(store.events(0).some(e => e.type === 'task.stop-verified-by-human' && e.payload.includes(evidence)));
 });
 
+for (const version of [11, 12]) for (const history of ['title', 'edited-title', 'completed-run', 'failed-run']) test(`v${version} migration preserves unverified ${history} with an orphan`, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'factory-delete-upgrade-'));
+  let store = new Store(directory);
+  let controller: SpecController | undefined;
+  let orphan = 0;
+  t.after(async () => {
+    if (orphan) { try { process.kill(-orphan, 'SIGKILL'); } catch {} }
+    await controller?.close(); store.close(); rmSync(directory, { recursive: true, force: true });
+  });
+  const project = store.addProject(projectInput);
+  const task = store.createTask(project.id, 'Historical execution', 1);
+  const untouched = store.createTask(project.id, 'Never executed', 1);
+  if (history.endsWith('title')) {
+    store.claimTitle(task); store.finishTitle(task, 'Completed title');
+    if (history === 'edited-title') store.editTask(project.id, task.id, 'New description', task.state_version);
+  } else {
+    const run = store.queueSpec(project.id, task.id, 1, '/tmp');
+    store.db.prepare("UPDATE runs SET status = ?, diagnostic = '{\"execution_finished\":true}' WHERE id = ?").run(history === 'completed-run' ? 'completed' : 'failed', run.id);
+    store.db.prepare("UPDATE tasks SET run_state = 'idle', title_state = 'pending' WHERE id = ?").run(task.id);
+  }
+  const leader = spawn(process.execPath, ['-e', `const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',detached:true});console.log(c.pid);c.unref();`], { stdio: ['ignore', 'pipe', 'pipe'] });
+  leader.stdout!.on('data', chunk => { orphan = Number(String(chunk).trim()); });
+  await once(leader, 'close');
+  assert.ok(orphan > 0); process.kill(orphan, 0);
+  if (version === 11) {
+    for (const column of ['deletion_state', 'deletion_error', 'execution_unverified', 'stop_unverified']) store.db.exec(`ALTER TABLE tasks DROP COLUMN ${column}`);
+  }
+  store.db.pragma(`user_version = ${version}`); store.close();
+  store = new Store(directory);
+  controller = new SpecController(store, directory, () => {}, undefined, undefined, async () => 'Title');
+  assert.equal(store.rawTask(project.id, untouched.id).stop_unverified, 0);
+  store.beginDeletion(project.id, task.id, store.rawTask(project.id, task.id).state_version);
+  await controller.deleteTask(task.id);
+  assert.equal(store.rawTask(project.id, task.id).deletion_state, 'failed');
+  assert.equal(store.rawTask(project.id, task.id).stop_unverified, 1);
+  process.kill(orphan, 0);
+  process.kill(-orphan, 'SIGKILL');
+  for (let i = 0; i < 200; i++) {
+    try { process.kill(orphan, 0); } catch { break; }
+    await delay(10);
+  }
+  assert.throws(() => process.kill(orphan, 0), { code: 'ESRCH' }); orphan = 0;
+  store.beginDeletion(project.id, task.id, store.rawTask(project.id, task.id).state_version, 'Checked historical orphan: stopped; no remote publication.');
+  await controller.deleteTask(task.id);
+  assert.equal(store.rawTask(project.id, task.id).deletion_state, 'deleted');
+  await controller.close(); controller = undefined; store.close();
+  store = new Store(directory);
+  assert.equal(store.db.pragma('user_version', { simple: true }), 13);
+  assert.equal(store.rawTask(project.id, task.id).stop_unverified, 0, 'migration must not repeat after reconciliation');
+});
+
+test('v12 migration preserves an audited reconciliation and runs only once', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'factory-delete-audit-upgrade-'));
+  let store = new Store(directory);
+  t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const project = store.addProject(projectInput);
+  const task = store.createTask(project.id, 'Already verified', 1);
+  store.claimTitle(task); store.finishTitle(task, 'Title');
+  store.db.prepare("UPDATE tasks SET stop_unverified = 1, deletion_state = 'failed' WHERE id = ?").run(task.id);
+  store.beginDeletion(project.id, task.id, task.state_version, 'Human verified no surviving processes or remote operations.');
+  store.finishDeletion(task.id, 'Callback pending');
+  store.db.pragma('user_version = 12'); store.close();
+  store = new Store(directory);
+  assert.equal(store.rawTask(project.id, task.id).stop_unverified, 0);
+  const untouched = store.createTask(project.id, 'No execution', 1);
+  store.close(); store = new Store(directory);
+  assert.equal(store.rawTask(project.id, untouched.id).stop_unverified, 0, 'interrupted pending title is not historical execution on subsequent startup');
+  assert.equal(store.rawTask(project.id, task.id).stop_unverified, 0);
+});
+
 test('two independent SSE clients receive removal snapshot and deletion event', async t => {
   const { app, store, project, headers } = await apiFixture(t);
   const task = store.createTask(project.id, 'Two tabs', 1);

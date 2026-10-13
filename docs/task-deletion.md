@@ -5,7 +5,7 @@
 с `request_id` и `state_version`. Проверка проекта и версии предшествует любым
 сигналам процессам; идентичный request replay возвращает сохранённый результат.
 
-SQLite v12 сохраняет `deletion_state`: `stopping`, `failed`, `deleted`.
+SQLite v13 сохраняет `deletion_state`: `stopping`, `failed`, `deleted`.
 Сначала атомарно фиксируется намерение удаления, отзываются pending human requests
 и queued/sending chat messages. Все действия и late callbacks блокируются.
 `stopping` и `failed` остаются на доске; только `deleted` скрывается из snapshots.
@@ -85,3 +85,8 @@ Regression review #44: реальные orphaned detached-потомки пос�
 удаление завершается. В Chrome на изолированном backend проверена ошибка
 HTTP 500: dialog остаётся открыт, текст ошибки находится внутри его
 accessibility tree, фон недоступен. VoiceOver отдельно не проверялся.
+
+При обновлении баз v0–v12 одноразовая миграция v13 устанавливает
+`stop_unverified` для исторических Title/runs независимо от результата.
+История events учитывается и после редактирования описания. Ранее записанная
+ручная сверка сохраняется; на следующих стартах миграция не повторяется.

@@ -31,7 +31,7 @@ export class Store {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       const version = this.db.pragma('user_version', { simple: true });
-      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12) throw new Error('Версия базы новее приложения. Обновите приложение.');
+      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13) throw new Error('Версия базы новее приложения. Обновите приложение.');
       this.db.transaction(() => {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS projects (
@@ -110,10 +110,15 @@ export class Store {
           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), delivered_at TEXT, error TEXT);
           CREATE INDEX IF NOT EXISTS chat_task ON chat_messages(task_id);
           UPDATE chat_messages SET status = 'unknown', error = 'Backend перезапущен без подтверждения доставки. Автоматического повтора нет.' WHERE status = 'sending';`);
-        this.db.pragma('user_version = 12');
+        this.db.pragma('user_version = 13');
         // No OS proof survives restart. Never infer termination from SQLite run status.
-        if (Number(version) < 12) {
-          this.db.prepare("UPDATE tasks SET stop_unverified = 1 WHERE title_state = 'interrupted' OR EXISTS (SELECT 1 FROM runs WHERE runs.task_id = tasks.id AND (status = 'interrupted' OR (status = 'failed' AND coalesce(json_extract(diagnostic, '$.execution_finished'), 0) = 0)))").run();
+        if (Number(version) < 13) {
+          this.db.exec(`UPDATE tasks SET stop_unverified = 1
+            WHERE (title_state <> 'pending'
+              OR EXISTS (SELECT 1 FROM runs WHERE runs.task_id = tasks.id)
+              OR EXISTS (SELECT 1 FROM events WHERE events.task_id = tasks.id
+                AND type IN ('title.started', 'title.completed', 'title.failed', 'title.interrupted', 'execution.process-started')))
+            AND NOT EXISTS (SELECT 1 FROM events WHERE events.task_id = tasks.id AND type = 'task.stop-verified-by-human')`);
         }
         this.db.prepare("UPDATE tasks SET stop_unverified = 1 WHERE execution_unverified = 1 OR title_state = 'running' OR run_state = 'running'").run();
         this.db.prepare("UPDATE tasks SET deletion_state = 'failed', deletion_error = 'Backend перезапущен во время удаления. Проверьте процессы вручную; остановка не подтверждена.', stop_unverified = 1 WHERE deletion_state = 'stopping'").run();
