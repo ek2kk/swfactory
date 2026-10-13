@@ -23,12 +23,40 @@ function fixture(t: { after: (fn: () => void) => void }) {
 
 test('readable structured results retain fields and redact secrets before presentation', () => {
   const result = formatOutput(JSON.stringify({ outcome: 'NEEDS_INPUT', summary: 'token="very secret value"',
-    findings: ['Issue'], checks: ['Test'], applicable: false,
+    findings: ['Issue'], evidence: [], applicable: false, applicability: 'Needs clarification',
     questions: [{ text: 'Which?', context: 'Here', impact: 'Important', required: true, options: ['A', 'B'] }] }));
-  for (const text of ['Результат: NEEDS_INPUT', 'Итог:', '[REDACTED]', 'Замечания: • Issue', 'Проверки: • Test', 'Применимость: Нет', 'Вопрос: Which?', 'Обязательный: Да', '• A']) assert.ok(result.includes(text), text);
+  for (const text of ['Результат: NEEDS_INPUT', 'Итог:', '[REDACTED]', 'Замечания: • Issue', 'Применимость: Нет', 'Вопрос: Which?', 'Обязательный: Да', '• A']) assert.ok(result.includes(text), text);
   assert.ok(!result.includes('very secret value'));
   assert.ok(!result.includes('"summary"'));
   assert.equal(formatOutput('Looking at the code'), 'Looking at the code');
+});
+
+test('recognized Spec, Build and Approve results still use readable fields', () => {
+  for (const result of [
+    { outcome: 'READY', title: 'Task', summary: 'Done', requirements: ['One'], acceptance_criteria: ['Test'], assumptions: [], out_of_scope: [], questions: [] },
+    { outcome: 'READY', summary: 'Done', changed_paths: ['file.ts'], actions: ['Edit'], checks: ['Test'], questions: [] },
+    { outcome: 'APPROVE', summary: 'Done', risks: [], affected_paths: ['file.ts'], questions: [] },
+  ]) {
+    assert.match(formatOutput(JSON.stringify(result)), /Итог: Done/);
+    assert.ok(!formatOutput(JSON.stringify(result)).includes('"summary"'));
+  }
+});
+
+test('unrecognized JSON retains every field in the full saved message after redaction', t => {
+  const { store, run } = fixture(t);
+  const review = { outcome: 'PASS', summary: 'Checked', findings: [], evidence: ['Test'], applicable: true, applicability: '', questions: [] };
+  for (const value of [
+    { summary: 'Нашёл конфигурацию', port: 8080 },
+    { ...review, port: 8080 },
+    { ...review, evidence: [{ port: 8080 }] },
+    { summary: 'Configuration', config: { port: 8080, token: 'private-value' } },
+    [8080, { summary: 'Configuration' }], 8080, null,
+  ]) {
+    const expected = value && !Array.isArray(value) && typeof value === 'object' && 'config' in value
+      ? { ...value, config: { port: 8080, token: '[REDACTED]' } } : value;
+    store.recordOutput(run, formatOutput(JSON.stringify(value)));
+    assert.deepEqual(JSON.parse(store.output(run.id)!.text), expected);
+  }
 });
 
 test('latest output replaces messages, survives restart, stays bounded in snapshots and never leaks into retries', t => {

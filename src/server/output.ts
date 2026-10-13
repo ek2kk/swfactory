@@ -1,4 +1,5 @@
 import { redactStructured } from './diagnostics.js';
+import { validateSpec, validateBuild, validateReview, validateApprove } from './codex.js';
 
 const labels: Record<string, string> = {
   title: 'Заголовок', outcome: 'Результат', summary: 'Итог', requirements: 'Требования',
@@ -13,6 +14,10 @@ export function formatOutput(text: string): string {
   const safe = redactStructured(text) as string;
   let value: unknown;
   try { value = JSON.parse(safe); } catch { return safe; }
+  const recognized = [validateSpec, validateBuild, validateReview, validateApprove].some(validate => {
+    try { validate(value); return true; } catch { return false; }
+  });
+  if (!recognized) return safe;
   function readable(item: unknown): string {
     if (typeof item === 'string') return item;
     if (typeof item === 'boolean') return item ? 'Да' : 'Нет';
@@ -23,5 +28,5 @@ export function formatOutput(text: string): string {
       .filter(Boolean).join('\n\n');
     return '';
   }
-  return readable(value) || 'Структурированный ответ без известных полей. Подробности в техническом логе.';
+  return readable(value);
 }
