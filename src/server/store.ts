@@ -8,6 +8,8 @@ export class Problem extends Error {
   constructor(public statusCode: number, message: string) { super(message); }
 }
 
+export type GithubIssue = { number: number; url: string; title: string; description: string };
+
 export class Store {
   readonly db!: Database.Database;
   private owner: Database.Database;
@@ -31,7 +33,7 @@ export class Store {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       const version = this.db.pragma('user_version', { simple: true });
-      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13 && version !== 14) throw new Error('Версия базы новее приложения. Обновите приложение.');
+      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13 && version !== 14 && version !== 15) throw new Error('Версия базы новее приложения. Обновите приложение.');
       this.db.transaction(() => {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS projects (
@@ -110,7 +112,11 @@ export class Store {
           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), delivered_at TEXT, error TEXT);
           CREATE INDEX IF NOT EXISTS chat_task ON chat_messages(task_id);
           UPDATE chat_messages SET status = 'unknown', error = 'Backend перезапущен без подтверждения доставки. Автоматического повтора нет.' WHERE status = 'sending';`);
-        this.db.pragma('user_version = 14');
+        this.db.exec(`CREATE TABLE IF NOT EXISTS github_issues (
+          project_id TEXT NOT NULL REFERENCES projects(id), issue_number INTEGER NOT NULL,
+          issue_url TEXT NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id),
+          imported_version INTEGER NOT NULL, PRIMARY KEY(project_id, issue_number));`);
+        this.db.pragma('user_version = 15');
         if (Number(version) < 14) this.db.exec("UPDATE tasks SET archived = 1 WHERE deletion_state = 'deleted'");
         // No OS proof survives restart. Never infer termination from SQLite run status.
         if (Number(version) < 13) {
@@ -143,8 +149,8 @@ export class Store {
   snapshot(): Snapshot {
     return {
       projects: this.db.prepare('SELECT * FROM projects ORDER BY rowid').all() as Project[],
-      tasks: this.db.prepare("SELECT * FROM tasks WHERE archived = 0 AND deletion_state IS NOT 'deleted' ORDER BY rowid").all() as Task[],
-      archived_tasks: this.db.prepare("SELECT * FROM tasks WHERE archived = 1 OR deletion_state = 'deleted' ORDER BY rowid").all() as Task[],
+      tasks: this.db.prepare("SELECT t.*, g.issue_number, g.issue_url FROM tasks t LEFT JOIN github_issues g ON g.task_id = t.id WHERE archived = 0 AND deletion_state IS NOT 'deleted' ORDER BY t.rowid").all() as Task[],
+      archived_tasks: this.db.prepare("SELECT t.*, g.issue_number, g.issue_url FROM tasks t LEFT JOIN github_issues g ON g.task_id = t.id WHERE archived = 1 OR deletion_state = 'deleted' ORDER BY t.rowid").all() as Task[],
       runs: this.runs().filter(r => !this.blocked(r.task_id)), execution_pause: this.executionPause(),
       human_requests: this.humanRequests().filter(r => !this.blocked(r.task_id)),
       cursor: (this.db.prepare('SELECT coalesce(max(id), 0) AS id FROM events').get() as { id: number }).id,
@@ -187,7 +193,7 @@ export class Store {
     return project;
   }
   rawTask(projectId: string, id: string) {
-    const task = this.db.prepare('SELECT * FROM tasks WHERE id = ? AND project_id = ?').get(id, projectId) as Task | undefined;
+    const task = this.db.prepare('SELECT t.*, g.issue_number, g.issue_url FROM tasks t LEFT JOIN github_issues g ON g.task_id = t.id WHERE t.id = ? AND t.project_id = ?').get(id, projectId) as Task | undefined;
     if (!task) throw new Problem(404, 'Задача не найдена в этом проекте.');
     return task;
   }
@@ -241,6 +247,44 @@ export class Store {
     this.db.prepare('INSERT INTO task_revisions(task_id, revision, description) VALUES (?, 1, ?)').run(id, description);
     this.event('task.created', id, { project_id: projectId, revision: 1 });
     return this.task(projectId, id);
+  }
+  activeGithubIssues(projectId: string) {
+    return this.db.prepare(`SELECT g.issue_number FROM github_issues g JOIN tasks t ON t.id = g.task_id
+      WHERE g.project_id = ? AND t.archived = 0 AND t.deletion_state IS NULL`).all(projectId) as { issue_number: number }[];
+  }
+  importGithubIssue(projectId: string, issue: GithubIssue | { number: number; closed: true }) {
+    return this.db.transaction(() => {
+      const link = this.db.prepare('SELECT task_id, imported_version FROM github_issues WHERE project_id = ? AND issue_number = ?')
+        .get(projectId, issue.number) as { task_id: string; imported_version: number } | undefined;
+      const closed = 'closed' in issue;
+      if (!link) {
+        if (closed) return false;
+        const task = this.createTask(projectId, issue.description, this.project(projectId).state_version);
+        this.db.prepare("UPDATE tasks SET title = ?, title_state = 'completed' WHERE id = ?").run(issue.title, task.id);
+        this.db.prepare('INSERT INTO github_issues VALUES (?, ?, ?, ?, ?)').run(projectId, issue.number, issue.url, task.id, task.state_version);
+        return true;
+      }
+      const task = this.rawTask(projectId, link.task_id);
+      // The import baseline advances only for GitHub changes; even a reverted local edit breaks it.
+      if (task.archived || task.deletion_state || task.stage !== 'backlog' || task.run_state !== 'idle'
+        || task.title_state !== 'completed' || task.state_version !== link.imported_version
+        || task.execution_unverified || task.stop_unverified
+        || this.db.prepare('SELECT 1 FROM runs WHERE task_id = ? LIMIT 1').get(task.id)) return false;
+      if (closed) {
+        // No execution exists to stop; use the same retained archive state as a completed manual archive.
+        this.db.prepare("UPDATE tasks SET archived = 1, deletion_state = 'deleted', state_version = state_version + 1 WHERE id = ?").run(task.id);
+        this.event('task.archived', task.id, { reason: 'Исходная GitHub issue закрыта.', issue_number: issue.number });
+        return true;
+      }
+      if (task.title === issue.title && task.description === issue.description) return false;
+      const revision = task.revision + Number(task.description !== issue.description);
+      this.db.prepare('UPDATE tasks SET title = ?, description = ?, revision = ?, state_version = state_version + 1 WHERE id = ?')
+        .run(issue.title, issue.description, revision, task.id);
+      if (revision !== task.revision) this.db.prepare('INSERT INTO task_revisions(task_id, revision, description) VALUES (?, ?, ?)').run(task.id, revision, issue.description);
+      this.db.prepare('UPDATE github_issues SET imported_version = ? WHERE task_id = ?').run(task.state_version + 1, task.id);
+      this.event('task.issue-updated', task.id, { revision, issue_number: issue.number });
+      return true;
+    }).immediate();
   }
   editTask(projectId: string, id: string, description: string, version: number) {
     const task = this.task(projectId, id);

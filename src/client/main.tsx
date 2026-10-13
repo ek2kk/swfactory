@@ -13,6 +13,10 @@ applyTheme(readTheme());
 const labels = ['Backlog', 'Spec', 'Build', 'Review', 'Approve', 'PR/MR created', 'Needs human'];
 const taskPath = (task: Task) => `/projects/${task.project_id}/tasks/${task.id}`;
 
+function SourceIssue({ task }: { task: Task }) {
+  return task.issue_url && <p className="meta"><a href={task.issue_url} target="_blank" rel="noreferrer">GitHub issue #{task.issue_number}</a></p>;
+}
+
 function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () => Promise<void>; notify: (text: string) => void }) {
   const [verification, setVerification] = useState<unknown>(null);
   useEffect(() => {
@@ -82,6 +86,7 @@ function ArchivedTask({ task, refresh, notify }: { task: Task; refresh: () => Pr
     <summary>{task.title ?? task.id} · {task.deletion_state === 'deleted' ? 'остановка подтверждена' : task.deletion_state === 'stopping' ? 'остановка выполняется' : 'остановка не подтверждена'}</summary>
     {open && <>
       <p>{task.description}</p>
+      <SourceIssue task={task} />
       {task.publication_status === 'unknown' || task.publication_status === 'pending' ? <p role="alert">Remote операция могла завершиться. Проверьте hosting; автоматического повтора публикации нет.</p> : null}
       {task.pr_url && <a href={task.pr_url} target="_blank" rel="noreferrer">Существующий PR</a>}
       <TaskDisposition task={task} refresh={refresh} notify={notify} />
@@ -116,6 +121,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
   return <article className="card">
     <span className="project-name">{project.host}/{project.repository} · {project.checkout}</span>
     <h3>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3>
+    <SourceIssue task={task} />
     <p className="meta">Редакция {task.revision} · {{ idle: task.stage === 'build' ? 'Spec готова · можно запустить Build' : task.stage === 'review' ? 'Ожидает запуска следующего Review' : task.stage === 'approve' ? 'Четыре PASS · ожидает Approve' : 'Не запущена', queued: 'В очереди · ожидает слот', running: task.stage === 'spec' ? 'Codex готовит Spec' : task.stage === 'build' ? 'Codex реализует задачу' : task.stage === 'review' ? 'Codex выполняет Review' : task.stage === 'approve' ? 'Codex принимает решение о публикации' : 'Проверяем checkout и создаём worktree', waiting: 'Нужен ответ человека', interrupted: 'Прервана — нужна ручная проверка', completed: task.stage === 'approve' ? 'Разрешена только публикация PR/MR · публикация ещё не выполнена' : 'Завершена' }[task.run_state]}</p>
     <TaskDisposition task={task} refresh={refresh} notify={notify} />
     <fieldset className="task-controls" disabled={!!task.deletion_state}>
@@ -439,6 +445,10 @@ function App() {
     {error && <p role="alert" className="error">{error}</p>}
     {snapshot.title_error && <p role="alert" className="error">{snapshot.title_error}</p>}
     {snapshot.execution_error && <p role="alert" className="error">{snapshot.execution_error}</p>}
+    {snapshot.issue_errors?.map((error, index) => {
+      const project = snapshot.projects.find(project => project.id === error.project_id);
+      return <p key={`${error.project_id}-${index}`} role="alert" className="error">GitHub Issues · {project ? `${project.host}/${project.repository}` : error.project_id}: {error.message}</p>;
+    })}
     {!!snapshot.execution_pause?.paused && <section aria-label="Лимит Codex"><p role="status">Новые запуски приостановлены: {snapshot.execution_pause.reset_at ? `до ${snapshot.execution_pause.reset_at}` : 'reset time неизвестен; после восстановления лимитов продолжите вручную'}. Уже работающие задачи завершаются.</p>
       {!snapshot.execution_pause.reset_at && <button disabled={!!busy} onClick={async () => { setBusy('resume'); try { await api('/execution/resume', 'POST', { state_version: snapshot.execution_pause!.state_version }); await refresh(); } catch (error) { setError((error as Error).message); } finally { setBusy(''); } }}>Лимит восстановлен — продолжить очередь</button>}
     </section>}
@@ -496,6 +506,7 @@ function App() {
         return <section key={stage} className={`column ${stage === 'needs-human' ? 'human' : ''}`} aria-label={labels[index]}><h2>{labels[index]} <span>{tasks.length}</span></h2>
           {tasks.length ? tasks.map(task => <article className="card" key={task.id}>
             <span className="project-name">{snapshot.projects.find(p => p.id === task.project_id)?.repository}</span>
+            <SourceIssue task={task} />
             <h3>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3><p className="meta">{{ idle: 'Ожидает запуска', queued: 'В очереди', running: 'В работе', waiting: 'Нужен ответ', interrupted: 'Нужна сверка', completed: 'Завершена' }[task.run_state]} · редакция {task.revision}</p>
             <p className="agent-preview">{task.description}</p>
             {snapshot.runs.filter(run => run.task_id === task.id).at(-1)?.output_preview && <p className="agent-preview">{snapshot.runs.filter(run => run.task_id === task.id).at(-1)?.output_preview}</p>}

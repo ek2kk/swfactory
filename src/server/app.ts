@@ -8,6 +8,7 @@ import { Store, Problem } from './store.js';
 import { generateTitle } from './title.js';
 import { inspectProject } from './git.js';
 import { chooseProjectFolder } from './folder-dialog.js';
+import { GithubIssues, type IssueCommand } from './issues.js';
 import { roles, type ProjectInput, type Settings, type AgentRun } from '../shared.js';
 import { realpathSync } from 'node:fs';
 import { SpecController } from './spec.js';
@@ -32,6 +33,7 @@ export async function createApp(options: {
   discoverModels?: typeof discoverModels;
   directory: string; origin: string; staticRoot?: string; inspect?: typeof inspectProject; command?: Run; execute?: ExecuteSpec; executeBuild?: ExecuteBuild; executeReview?: ExecuteReview; executeApprove?: ExecuteApprove; generateTitle?: typeof generateTitle;
   chooseFolder?: () => Promise<string | null>;
+  issueCommand?: IssueCommand;
 }) {
   const store = new Store(options.directory);
   const directory = realpathSync(options.directory);
@@ -43,7 +45,7 @@ export async function createApp(options: {
   const origin = new URL(options.origin);
   const cookieName = `swfactory_${origin.port}`;
   function sendUpdate(client: ServerResponse, cursor: number) {
-    const snapshot = { ...store.snapshot(), execution_error: controller.error ?? controller.chat.error, title_error: titles.error };
+    const snapshot = { ...store.snapshot(), issue_errors: issues.errors, execution_error: controller.error ?? controller.chat.error, title_error: titles.error };
     while (cursor < snapshot.cursor) {
       const events = store.events(cursor);
       if (!events.length) break;
@@ -63,6 +65,7 @@ export async function createApp(options: {
   }
   const controller = new SpecController(store, directory, publish, options.command, options.execute, options.generateTitle, options.executeBuild, options.executeReview, options.executeApprove);
   const titles = controller.titles;
+  const issues = new GithubIssues(store, publish, options.issueCommand);
   app.addHook('onRequest', async (request, reply) => {
     reply.headers({
       'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
@@ -89,7 +92,7 @@ export async function createApp(options: {
   });
   app.get('/api/snapshot', async () => {
     await controller.refreshReviewState();
-    return { ...store.snapshot(), execution_error: controller.error ?? controller.chat.error, title_error: titles.error };
+    return { ...store.snapshot(), issue_errors: issues.errors, execution_error: controller.error ?? controller.chat.error, title_error: titles.error };
   });
   let choosingFolder = false;
   app.post('/api/projects/choose-folder', async (_request, reply) => {
@@ -411,7 +414,7 @@ export async function createApp(options: {
     await controller.refreshReviewState();
     const lastId = request.headers['last-event-id'];
     if (lastId !== undefined && (typeof lastId !== 'string' || !/^\d{1,15}$/.test(lastId))) throw new Problem(400, 'Некорректный курсор событий.');
-    const snapshot = { ...store.snapshot(), execution_error: controller.error ?? controller.chat.error, title_error: titles.error };
+    const snapshot = { ...store.snapshot(), issue_errors: issues.errors, execution_error: controller.error ?? controller.chat.error, title_error: titles.error };
     const cursor = Number(lastId ?? snapshot.cursor);
     if (cursor > snapshot.cursor) throw new Problem(400, 'Курсор событий новее базы.');
     reply.hijack();
@@ -428,10 +431,11 @@ export async function createApp(options: {
     client.on('close', () => { clearInterval(heartbeat); clients.delete(client); });
   });
   app.addHook('preClose', async () => { for (const client of clients.keys()) client.end(); });
-  app.addHook('onClose', async () => { await controller.close(); store.close(); });
+  app.addHook('onClose', async () => { await issues.close(); await controller.close(); store.close(); });
   try {
     if (options.staticRoot) await app.register(staticFiles, { root: options.staticRoot, index: 'index.html', dotfiles: 'deny' });
     await app.ready();
   } catch (error) { await app.close(); throw error; }
-  return { app, store, token };
+  issues.start();
+  return { app, store, token, issues };
 }
