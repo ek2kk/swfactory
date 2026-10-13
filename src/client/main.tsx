@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { stages, type Project, type Task, type Snapshot, type Revision, roles, type Settings, type AgentRun, type HumanRequest } from '../shared.js';
 import './style.css';
+import { applyTheme, readTheme, type Theme } from './theme.js';
+
+applyTheme(readTheme());
 
 const pendingRequests = new Map<string, string>();
 async function api<T>(path: string, method = 'GET', body?: Record<string, unknown>): Promise<T> {
@@ -212,6 +215,7 @@ function ModelSettings({ project, refresh }: { project: Project; refresh: () => 
 }
 
 function App() {
+  const [theme, setTheme] = useState(readTheme);
   const [snapshot, setSnapshot] = useState<Snapshot>({ projects: [], tasks: [], runs: [], human_requests: [], cursor: 0 });
   const [ready, setReady] = useState(false);
   const [connection, setConnection] = useState('Подключаемся к backend…');
@@ -241,7 +245,13 @@ function App() {
   const visibleTasks = snapshot.tasks.filter(task => !filter || task.project_id === filter);
   const selected = snapshot.projects.find(p => p.id === projectId) ?? snapshot.projects[0];
   return <main>
-    <header><div><p className="eyebrow">LOCAL WORKSPACE</p><h1>SW Factory</h1></div><p className="connection" role="status">{connection}</p></header>
+    <header><div><p className="eyebrow">LOCAL WORKSPACE</p><h1>SW Factory</h1></div><p className="connection" role="status">{connection}</p>
+      <label className="theme">Тема<select value={theme} onChange={event => {
+        const next = event.target.value as Theme;
+        setTheme(next); applyTheme(next);
+        try { localStorage.setItem('theme', next); } catch { /* The theme still works when storage is unavailable. */ }
+      }}><option value="system">Системная</option><option value="light">Светлая</option><option value="dark">Тёмная</option></select></label>
+    </header>
     <p className="intro">Из описания — в проверяемую спецификацию. Codex работает в отдельном worktree; закрытие вкладки не останавливает задачу.</p>
     {error && <p role="alert" className="error">{error}</p>}
     {snapshot.title_error && <p role="alert" className="error">{snapshot.title_error}</p>}
