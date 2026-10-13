@@ -1,5 +1,4 @@
 import { executeInteractive, type Steer } from './interactive.js';
-import { executionArgs, headlessInstructions } from './agent-policy.js';
 import { execFile, spawn } from 'node:child_process';
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -59,8 +58,6 @@ async function executeResult<T>(input: CodexInput, schema: object, validate: (va
     child.stdin?.end();
   });
   input.metadata?.({ cli_version: version });
-  const policyArgs = await executionArgs(input.cwd, executable);
-  saveArtifact(input.directory, 'execution-policy.txt', headlessInstructions);
   saveArtifact(input.directory, 'schema.json', JSON.stringify(schema));
   const stdout = openSync(join(input.directory, 'events.jsonl'), 'wx', 0o600);
   let stderr: number;
@@ -69,7 +66,7 @@ async function executeResult<T>(input: CodexInput, schema: object, validate: (va
   try {
     saveArtifact(input.directory, 'log-format.json', JSON.stringify({ format: 'redacted-v1' }));
     return await new Promise<T>((resolve, reject) => {
-      const child = spawn(executable, ['exec', ...policyArgs, '--json', '--dangerously-bypass-approvals-and-sandbox',
+      const child = spawn(executable, ['exec', '--json', '--dangerously-bypass-approvals-and-sandbox',
         '--model', input.model, '--output-schema', join(input.directory, 'schema.json'), '--color', 'never', '-'],
       { cwd: input.cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
       let stderrBuffer = '', stderrTail = '';
@@ -123,7 +120,7 @@ async function executeResult<T>(input: CodexInput, schema: object, validate: (va
         try { resolve(validate(JSON.parse(message))); }
         catch { const error = new CodexFailure('protocol_error'); error.finished = true; reject(error); }
       });
-      child.stdin.end(`${input.prompt}\n\n${headlessInstructions}`);
+      child.stdin.end(input.prompt);
     });
   } finally { closeSync(stdout); closeSync(stderr); }
 }

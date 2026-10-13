@@ -15,10 +15,8 @@ for (const scenario of ['success', 'reject', 'lost', 'invalid-result', 'auth', '
   writeFileSync(cli, `#!${process.execPath}
 const assert = require('node:assert/strict');
 if (process.argv[2] === '--version') { console.log('codex-cli 0.160.1'); process.exit(0); }
-if (process.argv[2] === 'mcp') { console.log('[{"name":"custom"}]'); process.exit(0); }
 assert.equal(process.argv[2], 'app-server');
-assert.ok(process.argv.includes('mcp_servers.custom.enabled=false'));
-assert.ok(process.argv.includes('computer_use'));
+assert.deepEqual(process.argv.slice(2), ['app-server', '--listen', 'stdio://']);
 const send = data => console.log(JSON.stringify(data));
 const reply = (id, result) => send({ id, result });
 const event = (method, params) => send({ method, params: { threadId: 'thread-1', ...params } });
@@ -28,7 +26,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
  if (r.method === 'initialize') { initialized = true; reply(r.id, {}); }
  if (r.method === 'thread/start') {
    assert.ok(initialized); assert.equal(r.params.model, 'test-model'); assert.equal(r.params.approvalPolicy, 'never'); assert.equal(r.params.sandbox, 'danger-full-access');
-   assert.match(r.params.developerInstructions, /Do not bypass this policy/);
+   assert.equal(r.params.developerInstructions, undefined);
    if (${JSON.stringify(scenario)} === 'auth') { send({id:r.id,error:{code:'invalid_api_key'}}); return; }
    reply(r.id, {thread:{id:'thread-1'}});
  }

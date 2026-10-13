@@ -1,7 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
-import { executionArgs, headlessInstructions } from './agent-policy.js';
 import { saveArtifact } from './artifacts.js';
 import { CodexFailure, classifyFailure, redact, redactStructured } from './diagnostics.js';
 import type { CodexInput } from './codex.js';
@@ -18,8 +17,6 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
     child.stdin?.end();
   });
   input.metadata?.({ cli_version: version });
-  const args = await executionArgs(input.cwd, executable);
-  saveArtifact(input.directory, 'execution-policy.txt', headlessInstructions);
   saveArtifact(input.directory, 'schema.json', JSON.stringify(schema));
   const out = openSync(join(input.directory, 'events.jsonl'), 'wx', 0o600);
   let err: number;
@@ -28,7 +25,7 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
   try {
     saveArtifact(input.directory, 'log-format.json', JSON.stringify({ format: 'redacted-v1' }));
     return await new Promise<T>((resolve, reject) => {
-      const child = spawn(executable, ['app-server', ...args, '--listen', 'stdio://'], { cwd: input.cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+      const child = spawn(executable, ['app-server', '--listen', 'stdio://'], { cwd: input.cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
       let sequence = 0, buffer = '', stderr = '', bytes = 0, threadId = '', turnId = '', message = '';
       let finished = false, failure: Error | undefined, result: T;
       let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -137,7 +134,7 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
       void (async () => {
         await rpc('initialize', { clientInfo: { name: 'swfactory', title: 'SW Factory', version: '0.1.0' } });
         send({ method: 'initialized', params: {} });
-        const response = await rpc('thread/start', { cwd: input.cwd, model: input.model, approvalPolicy: 'never', sandbox: 'danger-full-access', developerInstructions: headlessInstructions });
+        const response = await rpc('thread/start', { cwd: input.cwd, model: input.model, approvalPolicy: 'never', sandbox: 'danger-full-access' });
         threadId = response.thread.id;
         input.metadata?.({ session_id: threadId });
         await rpc('turn/start', { threadId, input: [{ type: 'text', text: input.prompt }], outputSchema: schema });

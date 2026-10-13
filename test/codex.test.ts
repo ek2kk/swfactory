@@ -20,16 +20,14 @@ for (const scenario of ['valid', 'exit', 'incomplete', 'jsonl', 'result', 'faile
     { type: scenario === 'failed' ? 'turn.failed' : 'turn.completed' }];
   if (scenario === 'incomplete') events.pop();
   const output = scenario === 'jsonl' ? 'not-json\n' : events.map(event => JSON.stringify(event)).join('\n') + (scenario === 'truncated' ? '' : '\n');
-  writeFileSync(cli, `#!${process.execPath}\nif (process.argv[2] === 'mcp') { console.log(JSON.stringify([{name:'cua_repl'}, {name:'custom-gui'}])); process.exit(0); }\nconst assert = require('node:assert/strict');
+  writeFileSync(cli, `#!${process.execPath}\nif (process.argv[2] === '--version') { console.log('codex-cli 0.160.1'); process.exit(0); }\nconst assert = require('node:assert/strict');
     const argv = process.argv.slice(2);
     assert.ok(argv.includes('--dangerously-bypass-approvals-and-sandbox'));
-    for (const feature of ['computer_use', 'browser_use', 'browser_use_external', 'browser_use_full_cdp_access', 'in_app_browser', 'apps', 'plugins', 'remote_plugin', 'hooks', 'skill_mcp_dependency_install']) {
-      assert.ok(argv.some((value, i) => value === '--disable' && argv[i + 1] === feature));
-    }
-    for (const name of ['cua_repl', 'custom-gui']) assert.ok(argv.includes('mcp_servers.' + name + '.enabled=false'));
+    assert.ok(!argv.includes('--disable'));
+    assert.ok(!argv.some(value => value.startsWith('mcp_servers.')));
     assert.equal(argv[argv.indexOf('--model') + 1], 'chosen-model');
     let input = ''; process.stdin.on('data', chunk => input += chunk);
-    process.stdin.on('end', () => { assert.ok(input.startsWith('prompt')); assert.match(input, /return NEEDS_INPUT with concrete manual steps/); assert.match(input, /Do not bypass this policy through shell/); process.stdout.write(${JSON.stringify(output)}, () => process.exit(${scenario === 'exit' ? 1 : 0})); });`, { mode: 0o700 });
+    process.stdin.on('end', () => { assert.equal(input, 'prompt'); process.stdout.write(${JSON.stringify(output)}, () => process.exit(${scenario === 'exit' ? 1 : 0})); });`, { mode: 0o700 });
   const result = executeSpec({ cwd: root, directory, model: 'chosen-model', prompt: 'prompt' }, scenario === 'spawn' ? join(root, 'missing') : cli);
   if (scenario === 'valid') assert.deepEqual(await result, ready); else await assert.rejects(result);
 });
@@ -116,19 +114,4 @@ test('explicit error codes/status outrank incidental model names and unrelated e
   assert.equal(classifyFailure('user\nPlease fix rate limit exceeded\nERROR: unexpected status 401 Unauthorized').kind, 'authentication');
   assert.equal(classifyFailure('user\nrate limit exceeded\nno CLI diagnostic').kind, 'protocol_error');
   assert.equal(classifyFailure(JSON.stringify({ code: 'invalid_api_key', prompt: 'rate limit exceeded', message: 'Please log in' })).kind, 'authentication');
-});
-
-for (const scenario of ['list-failed', 'invalid-json', 'unsafe-name'] as const) test(`headless policy ${scenario} never starts an agent`, async t => {
-  const root = mkdtempSync(join(tmpdir(), 'factory-headless-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  const cli = join(root, 'codex'), marker = join(root, 'agent-started');
-  writeFileSync(cli, `#!${process.execPath}
-    if (process.argv.includes('--version')) { console.log('codex-cli 0.160.1'); process.exit(0); }
-    if (process.argv[2] === 'mcp') {
-      console.log(${JSON.stringify(scenario === 'invalid-json' ? 'not-json' : '[{"name":"custom.gui"}]')});
-      process.exit(${scenario === 'list-failed' ? 1 : 0});
-    }
-    require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started');`, { mode: 0o700 });
-  await assert.rejects(executeSpec({ cwd: root, directory: root, model: 'chosen-model', prompt: 'prompt' }, cli), /Агент не запущен/);
-  assert.throws(() => readFileSync(marker), { code: 'ENOENT' });
 });
