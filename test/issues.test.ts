@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { get } from 'node:http';
-import { setTimeout as delay } from 'node:timers/promises';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import { Store } from '../src/server/store.js';
 import { GithubIssues, githubIssueCommand, type IssueCommand } from '../src/server/issues.js';
 import { createApp } from '../src/server/app.js';
@@ -36,6 +36,100 @@ function deferred() {
   const promise = new Promise<void>(done => { resolve = done; });
   return { promise, resolve };
 }
+
+test('periodic import observes the cooldown, new and newly labelled issues, and unchanged revisions', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { store, project } = fixture(t);
+  let remote = [issue(1), issue(2, { labels: [] })], lists = 0, publications = 0;
+  const importer = new GithubIssues(store, () => { publications++; }, async args => {
+    if (args.at(-1)!.includes('?')) { lists++; return JSON.stringify(remote); }
+    return JSON.stringify(remote.find(item => args.at(-1)!.endsWith(`/${item.number}`)));
+  });
+  try {
+    importer.start(); importer.start(); importer.connect(project);
+    await importer.settled();
+    assert.equal(lists, 1); assert.equal(store.snapshot().tasks.length, 1);
+    const before = store.snapshot(), task = before.tasks[0];
+    t.mock.timers.tick(59_999); assert.equal(lists, 1);
+    t.mock.timers.tick(1); await importer.settled();
+    assert.equal(lists, 2); assert.deepEqual(store.snapshot(), before);
+    assert.equal(store.revisions(project.id, task.id).length, 1); assert.equal(publications, 1);
+    remote = [issue(1), issue(2), issue(3)];
+    t.mock.timers.tick(60_000); await importer.settled();
+    assert.equal(lists, 3);
+    assert.deepEqual(store.snapshot().tasks.map(task => task.issue_number).sort(), [1, 2, 3]);
+    assert.ok(store.snapshot().tasks.every(task => task.stage === 'backlog' && task.run_state === 'idle' && task.title_state === 'completed'));
+    assert.deepEqual(store.runs(), []);
+    const imported = store.snapshot();
+    t.mock.timers.tick(60_000); await importer.settled();
+    assert.deepEqual(store.snapshot(), imported); assert.equal(publications, 2);
+  } finally { await importer.close(); }
+});
+
+test('slow imports never overlap or accumulate retries and other projects keep polling', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { store, project } = fixture(t);
+  const second = store.addProject({ ...projectInput, common_dir: '/second/.git', repository: 'owner/second' });
+  store.addProject({ ...projectInput, common_dir: '/lab/.git', hosting: 'gitlab', repository: 'owner/lab' });
+  const gate = deferred(), fastRepeat = deferred();
+  let slowCalls = 0, fastCalls = 0, slowActive = 0;
+  const importer = new GithubIssues(store, () => {}, async args => {
+    const endpoint = args.at(-1)!;
+    if (endpoint.startsWith(`repos/${second.repository}/`)) {
+      fastCalls++;
+      if (fastCalls === 2) fastRepeat.resolve();
+      return '[]';
+    }
+    assert.ok(endpoint.startsWith(`repos/${project.repository}/`));
+    slowCalls++; slowActive++; assert.equal(slowActive, 1);
+    await gate.promise; slowActive--; return '[]';
+  });
+  try {
+    importer.start(); importer.start(); importer.connect(project);
+    await nextTurn();
+    t.mock.timers.tick(180_000); await fastRepeat.promise;
+    assert.equal(slowCalls, 1); assert.equal(fastCalls, 2);
+    gate.resolve(); await importer.settled();
+    t.mock.timers.tick(59_999); assert.equal(slowCalls, 1);
+    importer.connect(project); importer.start(); assert.equal(slowCalls, 1);
+    t.mock.timers.tick(1); await importer.settled();
+    assert.equal(slowCalls, 2); assert.equal(fastCalls, 3);
+    t.mock.timers.tick(60_000); await importer.settled();
+    assert.equal(slowCalls, 3); assert.equal(fastCalls, 4);
+  } finally { gate.resolve(); await importer.close(); }
+});
+
+test('errors retry after cooldown and clear only after a fully successful project pass', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { store, project } = fixture(t);
+  const second = store.addProject({ ...projectInput, common_dir: '/second/.git', repository: 'owner/second' });
+  seed(store, project);
+  let listingFails = true, closureFails = false, lists = 0;
+  const published: NonNullable<Snapshot['issue_errors']>[] = [];
+  const importer = new GithubIssues(store, () => { published.push([...importer.errors]); }, async args => {
+    if (args.at(-1)!.startsWith(`repos/${second.repository}/`)) throw new Error('token=secret');
+    if (args.at(-1)!.includes('?')) {
+      lists++;
+      if (listingFails) throw new Error('token=secret');
+      return '[]';
+    }
+    if (closureFails) throw new Error('token=secret');
+    return JSON.stringify(issue(1));
+  });
+  try {
+    importer.start(); await importer.settled();
+    assert.equal(importer.errors.length, 2); assert.ok(!JSON.stringify(importer.errors).includes('secret'));
+    listingFails = false; closureFails = true;
+    t.mock.timers.tick(59_999); assert.equal(lists, 1);
+    t.mock.timers.tick(1); await importer.settled();
+    assert.equal(lists, 2); assert.equal(importer.errors.length, 2);
+    closureFails = false;
+    t.mock.timers.tick(60_000); await importer.settled();
+    assert.equal(lists, 3); assert.deepEqual(importer.errors.map(item => item.project_id), [second.id]);
+    assert.ok(published.some(errors => errors.length === 1 && errors[0].project_id === second.id));
+    assert.equal(store.snapshot().tasks.length, 1);
+  } finally { await importer.close(); }
+});
 
 test('startup imports all saved GitHub projects with pagination and filtering, without titles/runs or GitLab', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'factory-startup-issues-'));
@@ -119,7 +213,8 @@ test('canonical GitHub URL casing is retained without trusting a different repos
 });
 
 for (const protection of ['local-edit', 'reverted-edit', 'stage', 'queued', 'any-run', 'archive', 'delete'] as const) {
-  test(`${protection} blocks remote changes and closure`, async t => {
+  test(`${protection} blocks remote changes and closure across periodic imports`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
     const { store, project, directory } = fixture(t);
     const task = seed(store, project);
     if (protection === 'local-edit' || protection === 'reverted-edit') {
@@ -139,11 +234,17 @@ for (const protection of ['local-edit', 'reverted-edit', 'stage', 'queued', 'any
     else { store.beginDeletion(project.id, task.id, 1); store.finishDeletion(task.id); }
     const before = store.rawTask(project.id, task.id);
     const revisions = store.revisions(project.id, task.id);
-    await load(store, async args => JSON.stringify(args.at(-1)!.includes('?') ? [issue(1, { body: 'Remote change' })] : issue(1, { state: 'closed' })));
-    assert.deepEqual(store.rawTask(project.id, task.id), before);
-    assert.deepEqual(store.revisions(project.id, task.id), revisions);
-    assert.equal((store.db.prepare('SELECT count(*) AS n FROM github_issues').get() as { n: number }).n, 1);
-    assert.equal(store.snapshot().tasks.length + store.snapshot().archived_tasks!.length, 1);
+    const importer = new GithubIssues(store, () => {}, async args => JSON.stringify(args.at(-1)!.includes('?') ? [issue(1, { body: 'Remote change' })] : issue(1, { state: 'closed' })));
+    try {
+      importer.start(); await importer.settled();
+      for (let pass = 0; pass < 2; pass++) {
+        t.mock.timers.tick(60_000); await importer.settled();
+        assert.deepEqual(store.rawTask(project.id, task.id), before);
+        assert.deepEqual(store.revisions(project.id, task.id), revisions);
+        assert.equal((store.db.prepare('SELECT count(*) AS n FROM github_issues').get() as { n: number }).n, 1);
+        assert.equal(store.snapshot().tasks.length + store.snapshot().archived_tasks!.length, 1);
+      }
+    } finally { await importer.close(); }
   });
 }
 
@@ -232,17 +333,26 @@ test('v14 migration keeps local tasks, revisions and run history and adds persis
 });
 
 test('startup remains available with a hung project; shutdown aborts imports before closing SQLite', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const directory = mkdtempSync(join(tmpdir(), 'factory-issues-stop-'));
   const saved = new Store(directory);
   const hung = saved.addProject(projectInput);
   const good = saved.addProject({ ...projectInput, common_dir: '/good/.git', repository: 'owner/good' });
   saved.close();
-  let stopped = false;
+  let stopped = false, goodLists = 0, calls = 0;
+  const aborted = deferred(), finish = deferred();
   const result = await createApp({ directory, origin, issueCommand: async (args, signal) => {
-    if (args.at(-1)!.startsWith('repos/owner/good/')) return JSON.stringify([issue(1, {}, good)]);
-    return new Promise((_, reject) => signal.addEventListener('abort', () => { stopped = true; reject(new Error('stopped')); }, { once: true }));
+    calls++;
+    if (args.at(-1)!.startsWith('repos/owner/good/')) {
+      if (args.at(-1)!.includes('?')) { goodLists++; return JSON.stringify([issue(1, {}, good)]); }
+      return JSON.stringify(issue(1, {}, good));
+    }
+    await new Promise<void>(resolve => signal.addEventListener('abort', () => { stopped = true; aborted.resolve(); resolve(); }, { once: true }));
+    await finish.promise;
+    assert.equal(result.store.db.open, true);
+    return JSON.stringify([issue(99)]);
   } });
-  t.after(async () => { await result.app.close(); rmSync(directory, { recursive: true, force: true }); });
+  t.after(async () => { finish.resolve(); await result.app.close(); rmSync(directory, { recursive: true, force: true }); });
   const session = await result.app.inject({ method: 'POST', url: '/api/session', headers: { host: '127.0.0.1:4317', origin }, payload: { token: result.token } });
   const headers = { host: '127.0.0.1:4317', origin, cookie: String(session.headers['set-cookie']).split(';')[0] };
   const response = await result.app.inject({ url: '/api/snapshot', headers });
@@ -250,24 +360,55 @@ test('startup remains available with a hung project; shutdown aborts imports bef
   const local = await result.app.inject({ method: 'POST', url: `/api/projects/${hung.id}/tasks`, headers,
     payload: { request_id: 'e2448ee4-a06f-4694-9709-4a812cf7d662', state_version: 1, description: 'Local while importing' } });
   assert.equal(local.statusCode, 200);
-  await result.app.close(); assert.equal(stopped, true); assert.equal(result.store.db.open, false);
-  await delay(10);
+  t.mock.timers.tick(60_000); await nextTurn(); assert.equal(goodLists, 2);
+  const closing = result.app.close(); await aborted.promise;
+  assert.equal(stopped, true); assert.equal(result.store.db.open, true);
+  const before = result.store.snapshot(), callsBefore = calls;
+  result.issues.start(); result.issues.connect(hung);
+  assert.equal(calls, callsBefore);
+  finish.resolve(); await closing;
+  assert.equal(result.store.db.open, false);
+  t.mock.timers.tick(180_000); result.issues.start(); assert.equal(calls, callsBefore);
+  const restored = new Store(directory);
+  try {
+    assert.equal(restored.snapshot().tasks.length, before.tasks.length);
+    assert.deepEqual(restored.snapshot().tasks.filter(task => task.issue_number), before.tasks.filter(task => task.issue_number));
+  }
+  finally { restored.close(); }
+});
+
+test('closing during cooldown cancels timers and never launches another import', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const directory = mkdtempSync(join(tmpdir(), 'factory-issues-cooldown-stop-'));
+  const saved = new Store(directory), project = saved.addProject(projectInput);
+  saved.close();
+  let calls = 0;
+  const result = await createApp({ directory, origin, issueCommand: async () => { calls++; return '[]'; } });
+  t.after(async () => { await result.app.close(); rmSync(directory, { recursive: true, force: true }); });
+  await result.issues.settled(); assert.equal(calls, 1);
+  await result.app.close(); assert.equal(result.store.db.open, false);
+  t.mock.timers.tick(180_000); result.issues.start(); result.issues.connect(project);
+  await result.issues.settled(); assert.equal(calls, 1);
 });
 
 test('import creation, updates, archives and safe errors reach an open SSE board', { timeout: 10000 }, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const directory = mkdtempSync(join(tmpdir(), 'factory-issues-sse-'));
   const saved = new Store(directory), project = saved.addProject(projectInput);
   const changed = seed(saved, project, 1), closed = seed(saved, project, 2);
   saved.close();
   const release = deferred();
+  let periodic = false;
   const result = await createApp({ directory, origin, issueCommand: async args => {
-    await release.promise;
     const endpoint = args.at(-1)!;
+    if (!periodic) return JSON.stringify(endpoint.includes('?') ? [] : issue(endpoint.endsWith('/1') ? 1 : 2));
+    await release.promise;
     if (endpoint.includes('?')) return JSON.stringify([issue(1, { body: 'SSE update' }), issue(3)]);
     if (endpoint.endsWith('/1')) throw new Error('HTTP 429 token=do-not-expose');
     return JSON.stringify(issue(2, { state: 'closed', labels: [] }));
   } });
   t.after(async () => { release.resolve(); await result.app.close(); rmSync(directory, { recursive: true, force: true }); });
+  await result.issues.settled();
   const session = await result.app.inject({ method: 'POST', url: '/api/session', headers: { host: '127.0.0.1:4317', origin }, payload: { token: result.token } });
   const headers = { host: '127.0.0.1:4317', origin, cookie: String(session.headers['set-cookie']).split(';')[0] };
   await result.app.listen({ host: '127.0.0.1', port: 0 });
@@ -285,6 +426,7 @@ test('import creation, updates, archives and safe errors reach an open SSE board
           if (entry.includes('event: change')) events.add(JSON.parse(data).type);
           if (entry.includes('event: snapshot')) {
             const snapshot = JSON.parse(data) as Snapshot;
+            if (!periodic) { periodic = true; t.mock.timers.tick(60_000); }
             release.resolve();
             if (snapshot.archived_tasks?.some(task => task.id === closed.id) && snapshot.issue_errors?.length) {
               request.destroy(); resolve(snapshot);
@@ -329,10 +471,11 @@ test('gh adapter uses bounded noninteractive read-only commands and safe errors,
 });
 
 test('connecting a project starts asynchronous import once and publishes the result', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const directory = mkdtempSync(join(tmpdir(), 'factory-connect-issues-'));
   const gate = deferred(); let calls = 0;
-  const result = await createApp({ directory, origin, inspect: async () => projectInput, issueCommand: async () => {
-    calls++; await gate.promise; return JSON.stringify([issue(42)]);
+  const result = await createApp({ directory, origin, inspect: async () => projectInput, issueCommand: async args => {
+    calls++; await gate.promise; return JSON.stringify(args.at(-1)!.includes('?') ? [issue(42)] : issue(42));
   } });
   t.after(async () => { gate.resolve(); await result.app.close(); rmSync(directory, { recursive: true, force: true }); });
   const session = await result.app.inject({ method: 'POST', url: '/api/session', headers: { host: '127.0.0.1:4317', origin }, payload: { token: result.token } });
@@ -342,7 +485,13 @@ test('connecting a project starts asynchronous import once and publishes the res
   assert.ok(responses.every(response => response.statusCode === 200)); assert.equal(calls, 1); assert.equal(result.store.snapshot().tasks.length, 0);
   const replay = await result.app.inject({ method: 'POST', url: '/api/projects', headers, payload });
   assert.equal(replay.statusCode, 200); assert.equal(calls, 1);
+  result.issues.connect(result.store.snapshot().projects[0]); result.issues.start();
+  assert.equal(calls, 1);
   gate.resolve(); await result.issues.settled();
   assert.equal(result.store.snapshot().tasks[0].issue_number, 42);
   assert.ok(result.store.events(0).some(event => event.type === 'task.created'));
+  const before = result.store.snapshot();
+  t.mock.timers.tick(59_999); assert.equal(calls, 1);
+  t.mock.timers.tick(1); await result.issues.settled();
+  assert.equal(calls, 3); assert.deepEqual(result.store.snapshot(), before);
 });

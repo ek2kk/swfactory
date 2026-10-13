@@ -432,7 +432,7 @@ export async function createApp(options: {
     const heartbeat = setInterval(() => { if (!client.write(': heartbeat\n\n')) client.destroy(); }, 15_000);
     client.on('close', () => { clearInterval(heartbeat); clients.delete(client); });
   });
-  app.addHook('preClose', async () => { for (const client of clients.keys()) client.end(); });
+  app.addHook('preClose', async () => { for (const client of clients.keys()) client.end(); await issues.close(); });
   app.addHook('onClose', async () => { await issues.close(); await controller.close(); store.close(); });
   try {
     if (options.staticRoot) await app.register(staticFiles, { root: options.staticRoot, index: 'index.html', dotfiles: 'deny' });

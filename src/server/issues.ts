@@ -3,6 +3,7 @@ import type { Project, Snapshot } from '../shared.js';
 import { Store, type GithubIssue } from './store.js';
 
 export type IssueCommand = (args: string[], signal: AbortSignal) => Promise<string>;
+type ImportLoop = { job: Promise<void>; timer?: ReturnType<typeof setTimeout> };
 class ImportFailure extends Error {}
 
 export const githubIssueCommand: IssueCommand = (args, signal) => new Promise((resolve, reject) => {
@@ -47,17 +48,30 @@ function parseIssue(value: unknown, project: Project): GithubIssue & { state: 'o
 export class GithubIssues {
   errors: NonNullable<Snapshot['issue_errors']> = [];
   private controller = new AbortController();
-  private job: Promise<void> = Promise.resolve();
+  private loops = new Map<string, ImportLoop>();
   constructor(private store: Store, private publish: () => void, private command: IssueCommand = githubIssueCommand) {}
   start() {
+    if (this.controller.signal.aborted) return;
     for (const project of this.store.snapshot().projects) this.connect(project);
   }
   connect(project: Project) {
-    if (project.hosting !== 'github' || this.controller.signal.aborted) return;
-    this.job = Promise.all([this.job, this.load(project)]).then(() => {});
+    if (project.hosting !== 'github' || this.controller.signal.aborted || this.loops.has(project.id)) return;
+    const loop: ImportLoop = { job: Promise.resolve() };
+    this.loops.set(project.id, loop);
+    this.poll(project, loop);
   }
-  async settled() { await this.job; }
-  async close() { this.controller.abort(); await this.job; }
+  async settled() { await Promise.all([...this.loops.values()].map(loop => loop.job)); }
+  async close() {
+    this.controller.abort();
+    for (const loop of this.loops.values()) clearTimeout(loop.timer);
+    await this.settled();
+  }
+  private poll(project: Project, loop: ImportLoop) {
+    if (this.controller.signal.aborted) return;
+    loop.job = this.load(project).catch(error => this.fail(project, error)).finally(() => {
+      if (!this.controller.signal.aborted) loop.timer = setTimeout(() => this.poll(project, loop), 60_000);
+    });
+  }
   private fail(project: Project, error: unknown) {
     if (this.controller.signal.aborted) return;
     const message = error instanceof ImportFailure ? error.message : 'Не удалось загрузить или сохранить GitHub Issues. Проверьте сеть, авторизацию gh и data directory.';
@@ -74,6 +88,7 @@ export class GithubIssues {
   }
   private async load(project: Project) {
     const retained = this.store.activeGithubIssues(project.id);
+    let successful = true;
     try {
       // Do not depend on the selected UI project, a checkout, or gh issue list's total limit.
       for (let page = 1; ; page++) {
@@ -87,7 +102,7 @@ export class GithubIssues {
         if (changed) this.publish();
         if (response.length < 100) break;
       }
-    } catch (error) { this.fail(project, error); }
+    } catch (error) { successful = false; this.fail(project, error); }
     if (this.controller.signal.aborted) return;
     // Missing labels/pages/404 never prove closure; fetch each retained active link explicitly.
     for (const { issue_number } of retained) {
@@ -95,8 +110,12 @@ export class GithubIssues {
         const issue = parseIssue(await this.request(project, `repos/${project.repository}/issues/${issue_number}`), project);
         if (issue.number !== issue_number || issue.pullRequest) throw new ImportFailure('Ответ GitHub не соответствует исходной issue. Карточка сохранена.');
         if (issue.state === 'closed' && this.store.importGithubIssue(project.id, { number: issue_number, closed: true })) this.publish();
-      } catch (error) { this.fail(project, error); }
+      } catch (error) { successful = false; this.fail(project, error); }
       if (this.controller.signal.aborted) return;
+    }
+    if (successful && this.errors.some(item => item.project_id === project.id)) {
+      this.errors = this.errors.filter(item => item.project_id !== project.id);
+      this.publish();
     }
   }
 }
