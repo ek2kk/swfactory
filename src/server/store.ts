@@ -266,7 +266,10 @@ export class Store {
     this.db.transaction(() => {
       const task = this.rawTask(projectId, id);
       if (task.archived || task.deletion_state !== 'deleted' || task.stop_unverified || task.execution_unverified) return;
-      this.db.prepare('UPDATE tasks SET deletion_state = NULL, state_version = state_version + 1 WHERE id = ?').run(id);
+      // A new Spec is explicit; interrupted runs and unknown publication remain in history.
+      const restartable = task.run_state === 'interrupted' && !task.publication_status;
+      this.db.prepare('UPDATE tasks SET deletion_state = NULL, stage = ?, run_state = ?, state_version = state_version + 1 WHERE id = ?')
+        .run(restartable ? 'backlog' : task.stage, restartable ? 'idle' : task.run_state, id);
       this.event('task.execution-unblocked', id, {});
     }).immediate();
   }

@@ -59,6 +59,7 @@ function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () =>
       <h4 id={`delete-title-${task.id}`}>{checkingStop ? 'Проверить остановку' : 'Архивировать'} «{task.title ?? task.description}»?</h4>
       <p>{checkingStop ? 'Повторим остановку известных процессов без изменения видимости карточки. Ручная сверка ниже нужна только для подтверждения отсутствия всех процессов и проверки remote результата. Новые запуски не выполняются.' : <>Карточка будет скрыта с доски, новые запуски и публикация заблокированы. Попытаемся остановить известные процессы. Архивирование не подтверждает остановку всех процессов: неизвестный потомок может продолжать работу. История и результаты остановки доступны в архиве; файлы и существующие PR сохраняются. Уже отправленная remote операция могла завершиться. Вручную архивированные карточки автоматически не восстанавливаются.</>}</p>
       {checkingStop && !!task.stop_unverified && task.deletion_state === 'failed' && <label>Необязательная ручная сверка (оставьте пустым для повторной попытки остановки): проверьте отсутствие процессов задачи, Codex sessions и их дочерних процессов, а также remote результат публикации. Опишите фактические наблюдения (не вводите credentials). Это ваше подтверждение остановки; backend проверить его самостоятельно не может.<textarea minLength={20} maxLength={4096} value={reconciliation} onChange={event => setReconciliation(event.target.value)} /></label>}
+      {checkingStop && version !== task.state_version && <p role="status">Карточка изменилась. Текст сверки сохранён. <button className="secondary" disabled={busy} onClick={() => { setVersion(task.state_version); cancelButton.current?.focus(); }}>Сверять актуальную версию</button></p>}
       <button disabled={busy || version !== task.state_version || (!!reconciliation.trim() && reconciliation.trim().length < 20)} onClick={async () => {
         setBusy(true); setError('');
         try {
@@ -76,14 +77,14 @@ function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () =>
         finally { setBusy(false); }
       }}>{busy ? 'Выполняем…' : checkingStop ? 'Проверить остановку' : 'Подтвердить архивирование'}</button>{' '}
       <button ref={cancelButton} className="secondary" disabled={busy} onClick={closeConfirmation}>Отмена</button>
-      {!busy && version !== task.state_version && <p role="status">Карточка изменилась. Отмените подтверждение и откройте его снова.</p>}
+      {!checkingStop && !busy && version !== task.state_version && <p role="status">Карточка изменилась. Отмените подтверждение и откройте его снова.</p>}
       {error && <p role="alert">{error}</p>}
     </dialog>}
     {!confirming && error && error !== task.deletion_error && <p role="alert">{error}</p>}
   </section>;
 }
 
-function ArchivedTask({ task, refresh, notify, expanded = false, draft }: { task: Task; refresh: () => Promise<void>; notify: (text: string) => void; expanded?: boolean; draft?: DescriptionDraft }) {
+function ArchivedTask({ task, refresh, notify, expanded = false, draft, openTask }: { task: Task; refresh: () => Promise<void>; notify: (text: string) => void; expanded?: boolean; draft?: DescriptionDraft; openTask?: (id: string) => void }) {
   const [open, setOpen] = useState(expanded);
   const [history, setHistory] = useState<{ revisions: Revision[]; messages: ChatMessage[]; runs: AgentRun[] } | null>(null);
   const [error, setError] = useState('');
@@ -101,7 +102,11 @@ function ArchivedTask({ task, refresh, notify, expanded = false, draft }: { task
       <SourceIssue task={task} />
       {task.publication_status === 'unknown' || task.publication_status === 'pending' ? <p role="alert">Remote операция могла завершиться. Проверьте hosting; автоматического повтора публикации нет.</p> : null}
       {task.pr_url && <a href={task.pr_url} target="_blank" rel="noreferrer">Существующий PR</a>}
-      <TaskDisposition task={task} refresh={refresh} notify={notify} />
+      {openTask ? <>
+        {task.archive_source === 'github-filter' && <p role="status">Автоматический архив: {task.archive_reason}</p>}
+        {task.deletion_error && <p role="alert">{task.deletion_error}</p>}
+        <button id={`open-${task.id}`} onClick={() => openTask(task.id)}>Открыть задачу / сверить остановку ↗</button>
+      </> : <TaskDisposition task={task} refresh={refresh} notify={notify} />}
       {error && <p role="alert">{error}</p>}
       {history && <>
         <details><summary>История описания</summary>{history.revisions.map(revision => <div key={revision.revision}><p>Редакция {revision.revision}</p><pre>{revision.description}</pre></div>)}</details>
@@ -520,7 +525,7 @@ function App() {
     </div>
     {!!snapshot.projects.length && <details className="projects"><summary>Подключённые проекты ({snapshot.projects.length})</summary>{snapshot.projects.map(p => <div key={p.id}><strong>{p.host}/{p.repository}</strong><p>{p.checkout}</p><p>{p.hosting} · {p.remote} → {p.remote_url} · target: {p.target_branch}</p></div>)}</details>}
     <section className="projects" aria-label="Настройки моделей">{snapshot.projects.map(project => <ModelSettings key={project.id} project={project} refresh={refresh} />)}</section>
-    <section aria-label="Архив" className="projects"><h2>Архив ({archived.length})</h2>{archived.map(task => <ArchivedTask key={task.id} task={task} refresh={refresh} notify={setNotice} draft={drafts[task.id]} />)}{!archived.length && <p>Архив пуст.</p>}</section>
+    <section aria-label="Архив" className="projects"><h2>Архив ({archived.length})</h2>{archived.map(task => <ArchivedTask key={task.id} task={task} refresh={refresh} notify={setNotice} draft={drafts[task.id]} openTask={openTask} />)}{!archived.length && <p>Архив пуст.</p>}</section>
     <div className="board-heading"><h2>Доска <span>{visibleTasks.length}</span></h2><label>Проект <select value={filter} onChange={event => setFilter(event.target.value)}><option value="">Все проекты</option>{snapshot.projects.map(p => <option key={p.id} value={p.id}>{p.host}/{p.repository} · {p.checkout}</option>)}</select></label></div>
     <div className="board" tabIndex={0} role="region" aria-label="Kanban, горизонтальная прокрутка">
       {stages.map((stage, index) => {

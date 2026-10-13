@@ -621,6 +621,53 @@ for (const state of ['backlog', 'local-edit', 'queued', 'running', 'needs-human'
   assert.equal(controller.chat.messages(task.id)[0].status, 'revoked');
 });
 
+for (const state of ['queued', 'running', 'needs-human'] as const) test(`restored ${state} card permits an explicit new Spec after verified stop without resuming old work`, async t => {
+  const { app, store, project, headers } = await apiFixture(t);
+  store.pauseExecution(null);
+  const task = githubCard(store, project.id);
+  const original = store.queueSpec(project.id, task.id, 1, '/tmp');
+  if (state === 'running') {
+    original.status = 'running'; store.updateRun(original, 'spec', 'running');
+    store.db.prepare('UPDATE tasks SET stop_unverified = 1, execution_unverified = 1 WHERE id = ?').run(task.id);
+  }
+  if (state === 'needs-human') {
+    original.status = 'completed'; original.outcome = 'NEEDS_INPUT'; original.report = 1;
+    store.updateRun(original, 'needs-human', 'waiting', undefined,
+      { title: 'Saved title', outcome: 'NEEDS_INPUT', summary: 'Saved questions', requirements: [], acceptance_criteria: [], assumptions: [], out_of_scope: [], questions: [] });
+  }
+  store.reconcileGithubIssue(project.id, 1, false, 'Removed label');
+  store.finishDeletion(task.id, state === 'running' ? 'Unknown processes' : undefined);
+  store.reconcileGithubIssue(project.id, 1, true, '');
+  const path = `/api/projects/${project.id}/tasks/${task.id}`;
+  const post = (action: string, payload: object) => app.inject({ method: 'POST', url: path + action, headers, payload });
+  const blocked = store.rawTask(project.id, task.id);
+  assert.equal((await post('/start', { request_id: randomUUID(), state_version: blocked.state_version })).statusCode, 409);
+  if (state === 'running') {
+    store.releaseStoppedTask(project.id, task.id);
+    assert.equal(store.rawTask(project.id, task.id).deletion_state, 'failed');
+  }
+  const payload = { request_id: randomUUID(), state_version: store.rawTask(project.id, task.id).state_version,
+    ...(state === 'running' ? { reconciliation: 'Checked processes and sessions: all stopped; no remote publication.' } : {}) };
+  const stop = await post('/stop', payload);
+  assert.equal(stop.statusCode, 200); assert.equal(stop.json().deleted, true);
+  const ready = store.rawTask(project.id, task.id);
+  assert.equal(ready.deletion_state, null); assert.equal(ready.stage, 'backlog'); assert.equal(ready.run_state, 'idle');
+  const history = store.runs();
+  assert.equal(history.length, 1); assert.equal(history[0].id, original.id);
+  assert.equal(history[0].status, state === 'needs-human' ? 'completed' : 'interrupted');
+  if (state === 'needs-human') {
+    assert.equal(history[0].outcome, 'NEEDS_INPUT'); assert.equal(history[0].report, 1);
+    assert.equal(store.humanRequests()[0].status, 'revoked');
+  }
+  assert.deepEqual((await post('/stop', payload)).json(), stop.json());
+  assert.deepEqual(store.rawTask(project.id, task.id), ready, 'request replay cannot reset the new lifecycle');
+  const start = await post('/start', { request_id: randomUUID(), state_version: ready.state_version });
+  assert.equal(start.statusCode, 200);
+  assert.notEqual(start.json().id, original.id); assert.notEqual(start.json().worktree, original.worktree);
+  assert.equal(start.json().parent_run_id, null); assert.equal(start.json().status, 'queued');
+  assert.deepEqual(store.runs()[0], history[0], 'new run preserves the old result and interruption');
+});
+
 test('restored card permits stop/reconciliation without re-archiving, preserves unknown publication and replays requests', async t => {
   const { app, store, project, headers } = await apiFixture(t);
   const task = githubCard(store, project.id);
