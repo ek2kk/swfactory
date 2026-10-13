@@ -28,7 +28,8 @@ function equal(a: string, b: string) {
 
 type Action = { request_id: string; state_version: number; description: string };
 export async function createApp(options: {
-  directory: string; origin: string; discoverModels?: typeof discoverModels; staticRoot?: string; inspect?: typeof inspectProject; command?: Run; execute?: ExecuteSpec; executeBuild?: ExecuteBuild; executeReview?: ExecuteReview; executeApprove?: ExecuteApprove; generateTitle?: typeof generateTitle;
+  discoverModels?: typeof discoverModels;
+  directory: string; origin: string; staticRoot?: string; inspect?: typeof inspectProject; command?: Run; execute?: ExecuteSpec; executeBuild?: ExecuteBuild; executeReview?: ExecuteReview; executeApprove?: ExecuteApprove; generateTitle?: typeof generateTitle;
 }) {
   const store = new Store(options.directory);
   const directory = realpathSync(options.directory);
