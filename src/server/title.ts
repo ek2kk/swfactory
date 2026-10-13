@@ -75,8 +75,11 @@ export class Titles {
       for (const task of this.store.snapshot().tasks) {
         if (task.title_state !== 'pending' || task.run_state !== 'idle' || task.stage !== 'backlog' || this.active.has(task.id)) continue;
         if (task.deletion_state) continue;
-        const scope = new ProcessScope(pid => this.store.event('execution.process-started', task.id, { pid, pgid: pid, role: 'title' }));
-        this.scopes.set(task.id, [...(this.scopes.get(task.id) ?? []).filter(scope => !scope.provenStopped()), scope]);
+        const scope = new ProcessScope(pid => {
+          this.store.db.prepare('UPDATE tasks SET stop_unverified = 1 WHERE id = ?').run(task.id);
+          this.store.event('execution.process-started', task.id, { pid, pgid: pid, role: 'title' });
+        });
+        this.scopes.set(task.id, [...(this.scopes.get(task.id) ?? []).filter(scope => !scope.knownGroupsStopped()), scope]);
         const controller = scope.controller;
         const done = this.scheduler.enqueue(task.id, () => scope.run(async () => {
           try {
@@ -86,7 +89,7 @@ export class Titles {
             const title = await this.generate(task.description, controller.signal).then(title => parseTitle({ title })).catch(error => { this.executionFailure(error); return null; });
             if (!this.stopped) { this.store.finishTitle(task, title); this.publish(); }
           } catch (error) { if (!this.store.blocked(task.id)) this.fail(error); }
-          finally { if (scope.provenStopped()) this.store.db.prepare('UPDATE tasks SET execution_unverified = 0 WHERE id = ?').run(task.id); }
+          finally { if (scope.knownGroupsStopped()) this.store.db.prepare('UPDATE tasks SET execution_unverified = 0 WHERE id = ?').run(task.id); }
         }))
           .finally(() => { this.active.delete(task.id); this.kick(); });
         this.active.set(task.id, { controller, scope, done });

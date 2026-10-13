@@ -41,7 +41,7 @@ function DeleteTask({ task, refresh, notify }: { task: Task; refresh: () => Prom
     {confirming && <dialog ref={dialog} onCancel={event => { event.preventDefault(); if (!busy) setConfirming(false); }} aria-labelledby={`delete-title-${task.id}`} className="delete-confirmation">
       <h4 id={`delete-title-${task.id}`}>Удалить «{task.title ?? task.description}»?</h4>
       <p>Исполнение и публикация будут остановлены, карточка скрыта. История, worktrees, branches, отчёты и логи сохранятся. Существующий PR останется. Уже отправленная remote операция могла завершиться — при неизвестном результате потребуется ручная сверка. Восстановление карточки не предусмотрено.</p>
-      {!!task.stop_unverified && task.deletion_state === 'failed' && <label>Ручная сверка: проверьте отсутствие процессов старого backend, Codex sessions и их дочерних процессов, а также remote результат публикации. Опишите фактические наблюдения (не вводите credentials). Это ваше подтверждение остановки; backend проверить его самостоятельно не может.<textarea minLength={20} maxLength={4096} value={reconciliation} onChange={event => setReconciliation(event.target.value)} /></label>}
+      {!!task.stop_unverified && task.deletion_state === 'failed' && <label>Ручная сверка: проверьте отсутствие процессов задачи, Codex sessions и их дочерних процессов, а также remote результат публикации. Опишите фактические наблюдения (не вводите credentials). Это ваше подтверждение остановки; backend проверить его самостоятельно не может.<textarea minLength={20} maxLength={4096} value={reconciliation} onChange={event => setReconciliation(event.target.value)} /></label>}
       <button disabled={busy || version !== task.state_version || (!!task.stop_unverified && task.deletion_state === 'failed' && reconciliation.trim().length < 20)} onClick={async () => {
         setBusy(true); setError('');
         try {
@@ -54,8 +54,9 @@ function DeleteTask({ task, refresh, notify }: { task: Task; refresh: () => Prom
       }}>{busy ? 'Останавливаем исполнение…' : 'Подтвердить удаление'}</button>{' '}
       <button ref={cancelButton} className="secondary" disabled={busy} onClick={() => setConfirming(false)}>Отмена</button>
       {!busy && version !== task.state_version && <p role="status">Карточка изменилась. Отмените подтверждение и откройте его снова.</p>}
+      {error && <p role="alert">{error}</p>}
     </dialog>}
-    {error && <p role="alert">{error}</p>}
+    {!confirming && error && <p role="alert">{error}</p>}
   </section>;
 }
 

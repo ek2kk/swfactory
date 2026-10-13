@@ -17,14 +17,15 @@ export class ProcessScope {
       try { return await work(); }
       finally {
         // Keep the scheduler slot while deletion is stopping descendant processes.
-        while ((this.cancelled || this.controller.signal.aborted) && (this.scanning || !this.provenStopped())) await delay(25);
+        while ((this.cancelled || this.controller.signal.aborted) && (this.scanning || !this.knownGroupsStopped())) await delay(25);
       }
     });
     this.jobs.add(job);
     void job.finally(() => this.jobs.delete(job)).catch(() => {});
     return job;
   }
-  provenStopped() { return [...this.groups].every(pid => !this.alive(pid)); }
+  // shortcut: ps cannot recover orphan ancestry; deletion also requires persisted human reconciliation.
+  knownGroupsStopped() { return [...this.groups].every(pid => !this.alive(pid)); }
   check() { if (this.cancelled) throw new Error('Task execution aborted'); this.controller.signal.throwIfAborted(); }
   track(child: ChildProcess) {
     if (!child.pid) return;

@@ -197,7 +197,7 @@ export class Store {
     if (task.deletion_state === 'deleted') return task;
     if (task.state_version !== version) throw new Problem(409, 'Карточка изменилась. Обновите её перед удалением.');
     if (reconciliation) {
-      if (task.deletion_state !== 'failed' || !task.stop_unverified) throw new Problem(409, 'Ручная сверка доступна только для неподтверждённой остановки прежнего backend.');
+      if (task.deletion_state !== 'failed' || !task.stop_unverified) throw new Problem(409, 'Ручная сверка доступна только для неподтверждённой остановки процессов.');
       this.db.prepare('UPDATE tasks SET stop_unverified = 0, execution_unverified = 0 WHERE id = ?').run(id);
       this.event('task.stop-verified-by-human', id, { evidence: reconciliation, state_version: task.state_version, revision: task.revision });
     }

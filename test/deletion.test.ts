@@ -93,7 +93,7 @@ test('paused queue cancellation does not start the task and leaves other jobs ru
   assert.deepEqual(calls, [b.id]);
 });
 
-test('controlled leader and detached TERM-resistant descendant end before deletion success; other task keeps running', async t => {
+test('controlled groups stop before manual reconciliation; other task keeps running', async t => {
   const { store, project, controller } = fixture(t);
   const task = store.createTask(project.id, 'Active', 1);
   let ready!: () => void; const started = new Promise<void>(resolve => { ready = resolve; });
@@ -114,11 +114,51 @@ test('controlled leader and detached TERM-resistant descendant end before deleti
   store.beginDeletion(project.id, task.id, store.rawTask(project.id, task.id).state_version);
   assert.equal(store.snapshot().tasks.length, 2);
   await controller.deleteTask(task.id);
-  assert.equal(store.rawTask(project.id, task.id).deletion_state, 'deleted');
+  assert.equal(store.rawTask(project.id, task.id).deletion_state, 'failed');
   assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
   assert.throws(() => process.kill(descendant, 0), { code: 'ESRCH' });
+  store.beginDeletion(project.id, task.id, store.rawTask(project.id, task.id).state_version, 'Checked leader and descendants: stopped, no remote publication.');
+  await controller.deleteTask(task.id);
   assert.equal(store.snapshot().tasks[0].id, other.id);
   releaseOther();
+});
+
+for (const role of ['spec', 'title'] as const) test(`orphaned detached descendant prevents deletion after ${role} leader exits`, async t => {
+  const { store, project, controller } = fixture(t);
+  const task = store.createTask(project.id, 'Orphan regression', 1);
+  let descendant = 0;
+  const work = async () => {
+    const child = spawn(process.execPath, ['-e', `const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',detached:true});console.log(c.pid);c.unref();`], { stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout!.on('data', chunk => { descendant = Number(String(chunk).trim()); });
+    await once(child, 'close');
+    return 'Title';
+  };
+  t.after(() => { if (descendant) { try { process.kill(-descendant, 'SIGKILL'); } catch {} } });
+  if (role === 'spec') {
+    await (controller as any).owned(store.queueSpec(project.id, task.id, 1, '/tmp'), work);
+  } else {
+    t.mock.method(controller.titles as any, 'generate', work);
+    controller.titles.kick();
+    for (let i = 0; i < 200 && store.rawTask(project.id, task.id).title_state !== 'completed'; i++) await delay(10);
+    assert.equal(store.rawTask(project.id, task.id).title_state, 'completed');
+  }
+  assert.ok(descendant > 0);
+  process.kill(descendant, 0);
+  store.beginDeletion(project.id, task.id, store.rawTask(project.id, task.id).state_version);
+  await controller.deleteTask(task.id);
+  assert.equal(store.rawTask(project.id, task.id).deletion_state, 'failed');
+  assert.equal(store.rawTask(project.id, task.id).stop_unverified, 1);
+  assert.equal(store.snapshot().tasks.length, 1);
+  process.kill(descendant, 0);
+  store.beginDeletion(project.id, task.id, store.rawTask(project.id, task.id).state_version);
+  await controller.deleteTask(task.id);
+  assert.equal(store.rawTask(project.id, task.id).deletion_state, 'failed', 'retry cannot infer termination');
+  process.kill(-descendant, 'SIGKILL');
+  while (true) { try { process.kill(descendant, 0); await delay(10); } catch { break; } }
+  descendant = 0;
+  store.beginDeletion(project.id, task.id, store.rawTask(project.id, task.id).state_version, 'Checked orphan PID: terminated; no remote publication occurred.');
+  await controller.deleteTask(task.id);
+  assert.equal(store.snapshot().tasks.length, 0);
 });
 
 test('scope holds scheduler slot after leader exit until detached descendants end', async () => {
@@ -298,5 +338,5 @@ test('an inaccessible process group is never treated as confirmed stopped', asyn
   const scope = new ProcessScope();
   scope.track({ pid: 123456 } as import('node:child_process').ChildProcess);
   t.mock.method(process, 'kill', () => { throw Object.assign(new Error('denied'), { code: 'EPERM' }); });
-  assert.equal(scope.provenStopped(), false);
+  assert.equal(scope.knownGroupsStopped(), false);
 });

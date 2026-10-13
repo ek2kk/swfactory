@@ -37,7 +37,13 @@ export class SpecController {
 
   private scope(taskId: string) {
     let scope = this.scopes.get(taskId);
-    if (!scope) { scope = new ProcessScope(pid => this.store.event('execution.process-started', taskId, { pid, pgid: pid })); this.scopes.set(taskId, scope); }
+    if (!scope) {
+      scope = new ProcessScope(pid => {
+        this.store.db.prepare('UPDATE tasks SET stop_unverified = 1 WHERE id = ?').run(taskId);
+        this.store.event('execution.process-started', taskId, { pid, pgid: pid });
+      });
+      this.scopes.set(taskId, scope);
+    }
     return scope;
   }
   private async owned(run: AgentRun, work: () => Promise<void>) {
@@ -45,7 +51,7 @@ export class SpecController {
     const scope = this.scope(run.task_id);
     this.store.db.prepare('UPDATE tasks SET execution_unverified = 1 WHERE id = ?').run(run.task_id);
     await scope.run(work).finally(() => {
-      if (scope.provenStopped()) this.store.db.prepare('UPDATE tasks SET execution_unverified = 0 WHERE id = ?').run(run.task_id);
+      if (scope.knownGroupsStopped()) this.store.db.prepare('UPDATE tasks SET execution_unverified = 0 WHERE id = ?').run(run.task_id);
     });
   }
   deleteTask(taskId: string) {
@@ -59,7 +65,7 @@ export class SpecController {
         const titleStop = this.titles.cancel(taskId);
         await Promise.all([scope?.stop(), titleStop]);
         const task = this.store.db.prepare('SELECT execution_unverified, stop_unverified FROM tasks WHERE id = ?').get(taskId) as { execution_unverified: number; stop_unverified: number };
-        if (task.stop_unverified || (task.execution_unverified && !scope)) throw new Error('Нет доказательств остановки процессов прежнего backend. Нужна ручная сверка процессов и remote публикации; автоматический повтор запрещён.');
+        if (task.stop_unverified || (task.execution_unverified && !scope)) throw new Error('Остановка всех потомков не подтверждена: detached-процесс мог потерять связь с родителем. Нужна ручная сверка процессов и remote публикации; автоматический повтор запрещён.');
         this.store.finishDeletion(taskId);
       } catch (error) { this.store.finishDeletion(taskId, (error as Error).message); }
       this.publish();
