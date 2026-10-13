@@ -1,3 +1,4 @@
+import { readTranscript } from './transcript.js';
 import Fastify from 'fastify';
 import staticFiles from '@fastify/static';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
@@ -37,7 +38,7 @@ export async function createApp(options: {
   const origin = new URL(options.origin);
   const cookieName = `swfactory_${origin.port}`;
   function sendUpdate(client: ServerResponse, cursor: number) {
-    const snapshot = { ...store.snapshot(), execution_error: controller.error, title_error: titles.error };
+    const snapshot = { ...store.snapshot(), execution_error: controller.error ?? controller.chat.error, title_error: titles.error };
     while (cursor < snapshot.cursor) {
       const events = store.events(cursor);
       if (!events.length) break;
@@ -83,7 +84,7 @@ export async function createApp(options: {
   });
   app.get('/api/snapshot', async () => {
     await controller.refreshReviewState();
-    return { ...store.snapshot(), execution_error: controller.error, title_error: titles.error };
+    return { ...store.snapshot(), execution_error: controller.error ?? controller.chat.error, title_error: titles.error };
   });
   app.post<{ Body: ProjectInput & { request_id: string; state_version: number } }>('/api/projects', {
     schema: { body: object({ checkout: text, remote: text, hosting: { enum: ['github', 'gitlab'] }, target_branch: text, request_id: uuid, state_version: { const: 0 } }) },
@@ -118,6 +119,20 @@ export async function createApp(options: {
     if (changed) setImmediate(() => titles.kick());
     publish();
     return result;
+  });
+  app.get<{ Params: { projectId: string; taskId: string } }>('/api/projects/:projectId/tasks/:taskId/messages', { schema: { params: taskParams } }, async request => {
+    store.task(request.params.projectId, request.params.taskId);
+    return controller.chat.messages(request.params.taskId);
+  });
+  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number; text: string; kind: 'guidance' | 'requirements' } }>('/api/projects/:projectId/tasks/:taskId/messages', {
+    schema: { params: taskParams, body: object({ request_id: uuid, state_version: version, text: { ...text, pattern: '\\S' }, kind: { enum: ['guidance', 'requirements'] } }) },
+  }, async request => {
+    const { projectId, taskId } = request.params;
+    const { request_id, state_version, text, kind } = request.body;
+    const result = store.mutate(request_id, JSON.stringify(['chat', projectId, taskId, state_version, text, kind]), () => controller.chat.add(projectId, taskId, state_version, text, kind));
+    controller.chat.flush(taskId);
+    if (kind === 'requirements') setImmediate(() => titles.kick());
+    publish(); return result;
   });
   app.get<{ Params: { projectId: string; taskId: string } }>('/api/projects/:projectId/tasks/:taskId/revisions', { schema: { params: taskParams } }, async request => store.revisions(request.params.projectId, request.params.taskId));
   app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/settings', { schema: { params: projectParams } }, async request => store.settings(request.params.projectId));
@@ -260,6 +275,13 @@ export async function createApp(options: {
     store.specRun(projectId, taskId, runId);
     return store.output(runId) ?? { text: '', updated_at: null, version: 0 };
   });
+  app.get<{ Params: { projectId: string; taskId: string; runId: string }; Querystring: { offset: string } }>('/api/projects/:projectId/tasks/:taskId/runs/:runId/transcript', {
+    schema: { params: object({ projectId: uuid, taskId: uuid, runId: uuid }), querystring: object({ offset: { type: 'string', pattern: '^[0-9]{1,10}$' } }) },
+  }, async request => {
+    const { projectId, taskId, runId } = request.params;
+    store.specRun(projectId, taskId, runId);
+    return readTranscript(directory, runId, Number(request.query.offset));
+  });
   app.get<{ Params: { projectId: string; taskId: string; runId: string }; Querystring: { name: 'events.jsonl' | 'stderr.log'; offset: string } }>('/api/projects/:projectId/tasks/:taskId/runs/:runId/log', {
     schema: { params: object({ projectId: uuid, taskId: uuid, runId: uuid }), querystring: object({ name: { enum: ['events.jsonl', 'stderr.log'] }, offset: { type: 'string', pattern: '^(0|[1-9][0-9]{0,8})$' } }) },
   }, async request => {
@@ -290,7 +312,7 @@ export async function createApp(options: {
     await controller.refreshReviewState();
     const lastId = request.headers['last-event-id'];
     if (lastId !== undefined && (typeof lastId !== 'string' || !/^\d{1,15}$/.test(lastId))) throw new Problem(400, 'Некорректный курсор событий.');
-    const snapshot = { ...store.snapshot(), execution_error: controller.error, title_error: titles.error };
+    const snapshot = { ...store.snapshot(), execution_error: controller.error ?? controller.chat.error, title_error: titles.error };
     const cursor = Number(lastId ?? snapshot.cursor);
     if (cursor > snapshot.cursor) throw new Problem(400, 'Курсор событий новее базы.');
     reply.hijack();

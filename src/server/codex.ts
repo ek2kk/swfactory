@@ -1,3 +1,4 @@
+import { executeInteractive, type Steer } from './interactive.js';
 import { executionArgs, headlessInstructions } from './agent-policy.js';
 import { execFile, spawn } from 'node:child_process';
 import { openSync, writeSync, closeSync } from 'node:fs';
@@ -41,7 +42,7 @@ export function validateSpec(value: unknown): SpecResult {
   catch { throw new Problem(422, 'Codex вернул невалидный заголовок Spec. Переход заблокирован.'); }
   return { ...result, title: result.title.trim() };
 }
-export type CodexInput = { cwd: string; directory: string; model: string; prompt: string; output?: (text: string) => void; metadata?: (value: RunDiagnostic) => void };
+export type CodexInput = { control?: (steer: Steer | null) => void; cwd: string; directory: string; model: string; prompt: string; output?: (text: string) => void; metadata?: (value: RunDiagnostic) => void };
 export type ExecuteSpec = (input: CodexInput) => Promise<SpecResult>;
 
 export function executeSpec(input: CodexInput, executable = 'codex') {
@@ -52,6 +53,7 @@ export function executeBuild(input: CodexInput, executable = 'codex') {
   return executeResult(input, buildSchema, validateBuild, executable);
 }
 async function executeResult<T>(input: CodexInput, schema: object, validate: (value: unknown) => T, executable: string): Promise<T> {
+  if (input.control) return executeInteractive(input, schema, validate, executable);
   const version = await new Promise<string | undefined>(resolve => {
     const child = execFile(executable, ['--version'], { cwd: input.cwd, timeout: 2000, maxBuffer: 4096 }, (error, output) => resolve(!error && /^codex[- ]cli [\w.+-]+\s*$/.test(output) ? output.trim() : undefined));
     child.stdin?.end();

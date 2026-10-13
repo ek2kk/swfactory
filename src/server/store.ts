@@ -31,7 +31,7 @@ export class Store {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       const version = this.db.pragma('user_version', { simple: true });
-      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10) throw new Error('Версия базы новее приложения. Обновите приложение.');
+      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11) throw new Error('Версия базы новее приложения. Обновите приложение.');
       this.db.transaction(() => {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS projects (
@@ -104,7 +104,13 @@ export class Store {
         }
         this.db.exec(`CREATE TABLE IF NOT EXISTS run_output (
           run_id TEXT PRIMARY KEY REFERENCES runs(id), text TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL);`);
-        this.db.pragma('user_version = 10');
+        this.db.exec(`CREATE TABLE IF NOT EXISTS chat_messages (
+          id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), revision INTEGER NOT NULL,
+          run_id TEXT REFERENCES runs(id), session_id TEXT, kind TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), delivered_at TEXT, error TEXT);
+          CREATE INDEX IF NOT EXISTS chat_task ON chat_messages(task_id);
+          UPDATE chat_messages SET status = 'unknown', error = 'Backend перезапущен без подтверждения доставки. Автоматического повтора нет.' WHERE status = 'sending';`);
+        this.db.pragma('user_version = 11');
         for (const task of this.db.prepare("SELECT * FROM tasks WHERE title_state IN ('pending','running')").all() as Task[]) {
           this.db.prepare("UPDATE tasks SET title_state = 'interrupted' WHERE id = ?").run(task.id);
           this.event('title.interrupted', task.id, { revision: task.revision });
@@ -190,6 +196,7 @@ export class Store {
     this.db.prepare("UPDATE human_requests SET status = 'revoked' WHERE task_id = ? AND status = 'pending'").run(id);
     this.db.prepare("UPDATE tasks SET stage = 'backlog', run_state = 'idle', description = ?, title = NULL, title_state = 'pending', revision = revision + 1, state_version = state_version + 1 WHERE id = ?").run(description, id);
     this.db.prepare('INSERT INTO task_revisions(task_id, revision, description) VALUES (?, ?, ?)').run(id, task.revision + 1, description);
+    this.db.prepare("UPDATE chat_messages SET status = 'revoked' WHERE task_id = ? AND status = 'queued'").run(id);
     this.event('task.edited', id, { revision: task.revision + 1 });
     return this.task(projectId, id);
   }
@@ -469,6 +476,20 @@ export class Store {
       this.event('review.stale', run.task_id, { run_id: run.id, reason: 'Git state или source изменён' });
     })();
   }
+  applyRequirements(taskId: string) {
+    const messages = this.db.prepare("SELECT id, text FROM chat_messages WHERE task_id = ? AND kind = 'requirements' AND status = 'queued' ORDER BY rowid").all(taskId) as { id: string; text: string }[];
+    if (!messages.length) return;
+    const task = this.db.prepare('SELECT * FROM tasks WHERE id = ?').get(taskId) as Task;
+    const description = task.description + '\n\nУточнения требований:\n' + messages.map(m => m.text).join('\n\n');
+    if (description.length > 100000) {
+      this.db.prepare("UPDATE chat_messages SET status = 'failed', error = 'Описание превысит 100000 символов. Измените требования через редактор.' WHERE task_id = ? AND kind = 'requirements' AND status = 'queued'").run(taskId);
+      this.event('chat.failed', taskId, {}); return;
+    }
+    // The current executor has finished; its worktree and reports remain in history.
+    this.db.prepare("UPDATE tasks SET stage = 'build', run_state = 'idle' WHERE id = ?").run(taskId);
+    this.db.prepare("UPDATE chat_messages SET status = 'applied' WHERE task_id = ? AND kind = 'requirements' AND status = 'queued'").run(taskId);
+    this.editTask(task.project_id, taskId, description, task.state_version);
+  }
   updateRun(run: AgentRun, stage: Task['stage'], state: Task['run_state'], title?: string, result?: SpecResult | BuildResult | ReviewResult | ApproveResult) {
     this.db.transaction(() => {
       const task = this.task(run.project_id, run.task_id);
@@ -496,6 +517,7 @@ export class Store {
         this.event('human.requested', task.id, { human_request_id: id, run_id: run.id });
       }
       this.event(`${run.role}.${run.status}`, run.task_id, { run_id: run.id, stage, outcome: run.outcome, error: run.error });
+      if (run.status === 'completed') this.applyRequirements(run.task_id);
     })();
   }
   humanRequests(): HumanRequest[] {

@@ -1,31 +1,18 @@
-import { useEffect, useState } from 'react';
+import { api } from './api.js';
+import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { stages, type Project, type Task, type Snapshot, type Revision, roles, type Settings, type AgentRun, type HumanRequest } from '../shared.js';
+import { stages, type Project, type Task, type Snapshot, type Revision, roles, type Settings, type AgentRun, type HumanRequest, type ChatMessage } from '../shared.js';
 import './style.css';
+import { Composer, Message, RunConversation } from './chat.js';
 import { AgentOutput } from './output.js';
 import { applyTheme, readTheme, type Theme } from './theme.js';
 
 applyTheme(readTheme());
 
-const pendingRequests = new Map<string, string>();
-async function api<T>(path: string, method = 'GET', body?: Record<string, unknown>): Promise<T> {
-  const key = JSON.stringify([method, path, body]);
-  if (body && path !== '/session') {
-    // Keep the same ID after a lost response so retry cannot duplicate a saved action.
-    const id = pendingRequests.get(key) ?? crypto.randomUUID();
-    pendingRequests.set(key, id);
-    body = { ...body, request_id: id };
-  }
-  const response = await fetch(`/api${path}`, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
-  const data = await response.json();
-  pendingRequests.delete(key);
-  if (!response.ok) throw new Error(data.message ?? 'Backend недоступен. Проверьте терминал.');
-  return data as T;
-}
 const labels = ['Backlog', 'Spec', 'Build', 'Review', 'Approve', 'PR/MR created', 'Needs human'];
 const taskPath = (task: Task) => `/projects/${task.project_id}/tasks/${task.id}`;
 
-function TaskCard({ task, project, runs, questions, refresh }: { task: Task; project: Project; runs: AgentRun[]; questions: HumanRequest[]; refresh: () => Promise<void> }) {
+function TaskCard({ task, project, runs, questions, refresh, active, cursor }: { task: Task; project: Project; runs: AgentRun[]; questions: HumanRequest[]; refresh: () => Promise<void>; active: boolean; cursor: number }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(task.description);
   const [editVersion, setEditVersion] = useState(task.state_version);
@@ -34,10 +21,29 @@ function TaskCard({ task, project, runs, questions, refresh }: { task: Task; pro
   const [revisions, setRevisions] = useState<Revision[] | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const latest = runs.at(-1);
+  const [tab, setTab] = useState<string>('overview');
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [chatError, setChatError] = useState('');
+  useEffect(() => {
+    if (!active) return;
+    let disposed = false;
+    api<ChatMessage[]>(`${taskPath(task)}/messages`).then(value => { if (!disposed) { setMessages(value); setChatError(''); } }).catch(error => { if (!disposed) setChatError(error.message); });
+    return () => { disposed = true; };
+  }, [active, task.id, cursor]);
   return <article className="card">
     <span className="project-name">{project.host}/{project.repository} · {project.checkout}</span>
     <h3>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3>
     <p className="meta">Редакция {task.revision} · {{ idle: task.stage === 'build' ? 'Spec готова · можно запустить Build' : task.stage === 'review' ? 'Ожидает запуска следующего Review' : task.stage === 'approve' ? 'Четыре PASS · ожидает Approve' : 'Не запущена', queued: 'В очереди · ожидает слот', running: task.stage === 'spec' ? 'Codex готовит Spec' : task.stage === 'build' ? 'Codex реализует задачу' : task.stage === 'review' ? 'Codex выполняет Review' : task.stage === 'approve' ? 'Codex принимает решение о публикации' : 'Проверяем checkout и создаём worktree', waiting: 'Нужен ответ человека', interrupted: 'Прервана — нужна ручная проверка', completed: task.stage === 'approve' ? 'Разрешена только публикация PR/MR · публикация ещё не выполнена' : 'Завершена' }[task.run_state]}</p>
+    <div className="stage-tabs" role="tablist" aria-label="Этапы задачи" onKeyDown={event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      const tabs = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role=tab]')];
+      const index = tabs.indexOf(document.activeElement as HTMLButtonElement);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      event.preventDefault(); tabs[next].click(); tabs[next].focus();
+    }}>
+      {['overview', ...roles].map(role => <button key={role} id={`${task.id}-tab-${role}`} role="tab" aria-selected={tab === role} aria-controls={`${task.id}-panel-${role}`} tabIndex={tab === role ? 0 : -1} className={tab === role ? '' : 'secondary'} onClick={() => setTab(role)}>{role === 'overview' ? `Обзор${questions.some(q => q.status === 'pending') ? ' · нужен ответ' : ''}` : `${role} (${runs.filter(r => r.role === role).length})`}</button>)}
+    </div>
+    <div role="tabpanel" id={`${task.id}-panel-overview`} aria-labelledby={`${task.id}-tab-overview`} hidden={tab !== 'overview'} tabIndex={0}>
     {latest?.description_revision === task.revision && <AgentOutput key={latest.id} run={latest} stage={task.stage} load={() => api(`${taskPath(task)}/runs/${latest.id}/output`)} />}
     {task.publication_status === 'pending' && <p role="status">Публикуем GitHub PR… Повторный запуск заблокирован.</p>}
     {task.publication_status === 'unknown' && <p role="alert">Исход публикации неизвестен. Нужна ручная сверка GitHub и source branch из отчёта (task marker: {task.id}). Слепой повтор запрещён; worktree сохранён.</p>}
@@ -91,7 +97,19 @@ function TaskCard({ task, project, runs, questions, refresh }: { task: Task; pro
     <details onToggle={event => setShowHistory(event.currentTarget.open)}><summary>История описания</summary>
       {showHistory && <History task={task} revisions={revisions} setRevisions={setRevisions} />}
     </details>
+    {messages.map(message => <Message key={message.id} message={message} />)}
     {error && <p role="alert" className="error">{error}</p>}
+    </div>
+    {roles.map(role => <div key={role} role="tabpanel" id={`${task.id}-panel-${role}`} aria-labelledby={`${task.id}-tab-${role}`} hidden={tab !== role} tabIndex={0}>
+      {active && tab === role && (runs.some(run => run.role === role) ? runs.filter(run => run.role === role).map(run => <section className="run-history" key={run.id}>
+        <h4>{role} · {run.outcome ?? run.status} · {run.config.models[role]}</h4>
+        <RunConversation run={run} path={taskPath(task)} api={api} messages={messages} />
+        <RunReport task={task} run={run} />
+      </section>) : <p className="empty">Этот этап ещё не запускался.</p>)}
+    </div>)}
+    {tab !== 'overview' && messages.filter(message => message.status !== 'delivered').map(message => <Message key={message.id} message={message} />)}
+    {chatError && <p role="alert">{chatError}</p>}
+    <Composer task={task} path={taskPath(task)} api={api} refresh={refresh} />
   </article>;
 }
 function HumanDecision({ task, request, refresh }: { task: Task; request: HumanRequest; refresh: () => Promise<void> }) {
@@ -219,6 +237,36 @@ function ModelSettings({ project, refresh }: { project: Project; refresh: () => 
 
 function App() {
   const [theme, setTheme] = useState(readTheme);
+  const readTaskId = () => new URLSearchParams(location.search).get('task') ?? '';
+  const [detailId, setDetailId] = useState(readTaskId);
+  const [opened, setOpened] = useState<string[]>(() => readTaskId() ? [readTaskId()] : []);
+  const boardPosition = useRef({ x: 0, y: 0 });
+  const previousDetail = useRef(detailId);
+  const returnButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const navigate = () => {
+      const id = readTaskId(); setDetailId(id);
+      if (id) setOpened(ids => ids.includes(id) ? ids : [...ids, id]);
+    };
+    addEventListener('popstate', navigate); return () => removeEventListener('popstate', navigate);
+  }, []);
+  useEffect(() => {
+    if (detailId) { window.scrollTo(0, 0); returnButton.current?.focus(); }
+    else if (previousDetail.current) {
+      document.getElementById(`open-${previousDetail.current}`)?.focus({ preventScroll: true });
+      window.scrollTo(boardPosition.current.x, boardPosition.current.y);
+    }
+    previousDetail.current = detailId;
+  }, [detailId]);
+  function openTask(id: string) {
+    boardPosition.current = { x: window.scrollX, y: window.scrollY };
+    history.pushState({ taskDetail: true }, '', `?task=${encodeURIComponent(id)}`);
+    setOpened(ids => ids.includes(id) ? ids : [...ids, id]); setDetailId(id);
+  }
+  function closeTask() {
+    if (history.state?.taskDetail) history.back();
+    else { history.replaceState(null, '', location.pathname); setDetailId(''); }
+  }
   const [snapshot, setSnapshot] = useState<Snapshot>({ projects: [], tasks: [], runs: [], human_requests: [], cursor: 0 });
   const [ready, setReady] = useState(false);
   const [connection, setConnection] = useState('Подключаемся к backend…');
@@ -233,7 +281,7 @@ function App() {
     (async () => {
       const token = new URLSearchParams(location.hash.slice(1)).get('token');
       if (token) {
-        history.replaceState(null, '', location.pathname);
+        history.replaceState(null, '', location.pathname + location.search);
         await api('/session', 'POST', { token });
       }
       const initial = await api<Snapshot>('/snapshot');
@@ -255,13 +303,14 @@ function App() {
         try { localStorage.setItem('theme', next); } catch { /* The theme still works when storage is unavailable. */ }
       }}><option value="system">Системная</option><option value="light">Светлая</option><option value="dark">Тёмная</option></select></label>
     </header>
-    <p className="intro">Из описания — в проверяемую спецификацию. Codex работает в отдельном worktree; закрытие вкладки не останавливает задачу.</p>
+    <p className="intro" hidden={!!detailId}>Из описания — в проверяемую спецификацию. Codex работает в отдельном worktree; закрытие вкладки не останавливает задачу.</p>
     {error && <p role="alert" className="error">{error}</p>}
     {snapshot.title_error && <p role="alert" className="error">{snapshot.title_error}</p>}
     {snapshot.execution_error && <p role="alert" className="error">{snapshot.execution_error}</p>}
     {!!snapshot.execution_pause?.paused && <section aria-label="Лимит Codex"><p role="status">Новые запуски приостановлены: {snapshot.execution_pause.reset_at ? `до ${snapshot.execution_pause.reset_at}` : 'reset time неизвестен; после восстановления лимитов продолжите вручную'}. Уже работающие задачи завершаются.</p>
       {!snapshot.execution_pause.reset_at && <button disabled={!!busy} onClick={async () => { setBusy('resume'); try { await api('/execution/resume', 'POST', { state_version: snapshot.execution_pause!.state_version }); await refresh(); } catch (error) { setError((error as Error).message); } finally { setBusy(''); } }}>Лимит восстановлен — продолжить очередь</button>}
     </section>}
+    <div hidden={!!detailId}>
     <div className="setup">
       <section aria-labelledby="connect-title"><h2 id="connect-title">Подключить проект</h2>
         <form onSubmit={async event => {
@@ -302,8 +351,24 @@ function App() {
       {stages.map((stage, index) => {
         const tasks = visibleTasks.filter(t => t.stage === stage);
         return <section key={stage} className={`column ${stage === 'needs-human' ? 'human' : ''}`} aria-label={labels[index]}><h2>{labels[index]} <span>{tasks.length}</span></h2>
-          {tasks.length ? tasks.map(task => <TaskCard key={task.id} task={task} questions={snapshot.human_requests.filter(request => request.task_id === task.id)} runs={snapshot.runs.filter(run => run.task_id === task.id)} project={snapshot.projects.find(p => p.id === task.project_id)!} refresh={refresh} />) : <p className="empty">{stage === 'backlog' ? 'Добавьте первую задачу' : 'Пока нет задач'}</p>}
+          {tasks.length ? tasks.map(task => <article className="card" key={task.id}>
+            <span className="project-name">{snapshot.projects.find(p => p.id === task.project_id)?.repository}</span>
+            <h3>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3><p className="meta">{{ idle: 'Ожидает запуска', queued: 'В очереди', running: 'В работе', waiting: 'Нужен ответ', interrupted: 'Нужна сверка', completed: 'Завершена' }[task.run_state]} · редакция {task.revision}</p>
+            <p className="agent-preview">{task.description}</p>
+            {snapshot.runs.filter(run => run.task_id === task.id).at(-1)?.output_preview && <p className="agent-preview">{snapshot.runs.filter(run => run.task_id === task.id).at(-1)?.output_preview}</p>}
+            <button id={`open-${task.id}`} onClick={() => openTask(task.id)}>Открыть задачу ↗</button>
+          </article>) : <p className="empty">{stage === 'backlog' ? 'Добавьте первую задачу' : 'Пока нет задач'}</p>}
         </section>;
+      })}
+    </div>
+    </div>
+    <div hidden={!detailId} className="task-page">
+      <button ref={returnButton} className="secondary" onClick={closeTask}>← На доску</button>
+      {ready && !snapshot.tasks.some(task => task.id === detailId) && <p role="status">Задача не найдена.</p>}
+      {opened.map(id => {
+        const task = snapshot.tasks.find(task => task.id === id);
+        const project = task && snapshot.projects.find(project => project.id === task.project_id);
+        return task && project ? <div key={id} hidden={id !== detailId}><TaskCard task={task} project={project} runs={snapshot.runs.filter(run => run.task_id === id)} questions={snapshot.human_requests.filter(request => request.task_id === id)} refresh={refresh} active={id === detailId} cursor={snapshot.cursor} /></div> : null;
       })}
     </div>
   </main>;
