@@ -501,6 +501,59 @@ async function syncCard(store: Store, controller: SpecController, matches: boole
   assert.deepEqual(importer.errors, []);
 }
 
+test('legacy delete manually archives a restored card whose stop is already confirmed', async t => {
+  const { app, store, project, headers } = await apiFixture(t);
+  const task = githubCard(store, project.id);
+  store.reconcileGithubIssue(project.id, 1, false, 'Removed label');
+  store.finishDeletion(task.id);
+  store.reconcileGithubIssue(project.id, 1, true, '');
+  const payload = { request_id: randomUUID(), state_version: store.rawTask(project.id, task.id).state_version };
+  const send = () => app.inject({ method: 'POST', url: `/api/projects/${project.id}/tasks/${task.id}/delete`, headers, payload });
+  const response = await send();
+  assert.equal(response.statusCode, 200); assert.equal(response.json().deleted, true);
+  assert.equal(store.snapshot().tasks.length, 0);
+  assert.equal(store.snapshot().archived_tasks![0].archive_source, 'manual');
+  assert.equal(store.reconcileGithubIssue(project.id, 1, true, ''), undefined);
+  assert.deepEqual((await send()).json(), response.json());
+  assert.equal(store.events(0).filter(event => event.type === 'task.archived').length, 2);
+  assert.equal(store.revisions(project.id, task.id)[0].description, task.description);
+});
+
+test('legacy delete saves manual visibility atomically before stop and concurrent filter changes', async t => {
+  const { app, store, project, headers } = await apiFixture(t);
+  const task = githubCard(store, project.id);
+  store.reconcileGithubIssue(project.id, 1, false, 'Removed label');
+  store.reconcileGithubIssue(project.id, 1, true, '');
+  let entered!: () => void, release!: () => void;
+  const stopping = new Promise<void>(resolve => { entered = resolve; });
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  t.after(() => release());
+  t.mock.method(SpecController.prototype, 'deleteTask', async (id: string) => {
+    assert.equal(id, task.id); entered(); await barrier; store.finishDeletion(id);
+  });
+  const payload = { request_id: randomUUID(), state_version: store.rawTask(project.id, task.id).state_version };
+  const response = app.inject({ method: 'POST', url: `/api/projects/${project.id}/tasks/${task.id}/delete`, headers, payload }).then(value => value);
+  await stopping;
+  try {
+    assert.equal(store.snapshot().tasks.length, 0);
+    assert.equal(store.rawTask(project.id, task.id).archive_source, 'manual');
+    const cursor = store.snapshot().cursor;
+    for (const matches of [false, true, false, true]) {
+      const importer = new GithubIssues(store, () => {}, async args => JSON.stringify(args.at(-1)!.includes('?') ? [] : {
+        number: 1, title: 'Remote title', body: 'Remote description', state: 'open', labels: matches ? ['ready-for-agent'] : [], html_url: task.issue_url,
+      }));
+      importer.start(); await importer.settled(); await importer.close();
+      assert.deepEqual(importer.errors, []);
+      assert.equal(store.snapshot().tasks.length, 0);
+      assert.equal(store.rawTask(project.id, task.id).archive_source, 'manual');
+      assert.equal(store.snapshot().cursor, cursor);
+    }
+  } finally { release(); await response; }
+  assert.equal((await response).json().deleted, true);
+  assert.equal(store.snapshot().archived_tasks![0].deletion_state, 'deleted');
+  assert.equal(store.rawTask(project.id, task.id).archive_source, 'manual');
+});
+
 for (const state of ['backlog', 'local-edit', 'queued', 'running', 'needs-human', 'completed'] as const) test(`filter archive stops ${state}, restores without running and retains results`, async t => {
   const { store, project, controller, directory } = fixture(t);
   const task = githubCard(store, project.id);

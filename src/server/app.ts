@@ -178,7 +178,7 @@ export async function createApp(options: {
     if (!prior) {
       store.mutate(request_id, fingerprint, () => {
         const task = store.beginDeletion(projectId, taskId, state_version, reconciliation);
-        if (action === 'delete') store.db.prepare("UPDATE tasks SET archive_source = 'manual', archive_reason = NULL WHERE id = ?").run(taskId);
+        if (action === 'delete') store.archiveTask(projectId, taskId, task.state_version);
         return { stopping: task.deletion_state !== 'deleted' };
       });
       publish();

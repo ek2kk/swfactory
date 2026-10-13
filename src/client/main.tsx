@@ -39,7 +39,7 @@ function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () =>
   const [version, setVersion] = useState(task.state_version);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const checkingStop = !archiving && !!(task.archived || task.deletion_state);
+  const checkingStop = !(confirming && archiving) && !!(task.archived || task.deletion_state);
   return <section aria-label={checkingStop ? "Остановка исполнения" : "Архивирование задачи"}>
     {task.archive_source === 'github-filter' && <p role="status">{task.archived ? `Автоматический архив: ${task.archive_reason}` : 'Соответствие фильтру GitHub восстановлено. Исполнение автоматически не возобновляется.'}</p>}
     {task.deletion_state === 'stopping' && <p role="status">Останавливаем известные процессы. Подтверждение остановки всех процессов пока не получено.</p>}
@@ -428,7 +428,11 @@ function App() {
       setSnapshot(initial); setReady(true);
       events = new EventSource('/api/events');
       events.addEventListener('snapshot', event => { setSnapshot(JSON.parse((event as MessageEvent).data)); setConnection('Сохранено локально · Соединение активно'); });
-      events.addEventListener('change', event => { const change = JSON.parse((event as MessageEvent).data); if (change.type === 'task.archived') setNotice('Карточка скрыта. Результат остановки и история доступны в архиве.'); });
+      events.addEventListener('change', event => {
+        const change = JSON.parse((event as MessageEvent).data);
+        if (change.type === 'task.archived') setNotice('Карточка скрыта. Результат остановки и история доступны в архиве.');
+        if (change.type === 'task.restored') setNotice('Карточка возвращена на доску. Исполнение автоматически не возобновляется.');
+      });
       events.onerror = () => setConnection('Связь потеряна. Переподключаемся; сохранённые данные остаются на backend. Если backend перезапущен, откройте новый URL из терминала.');
     })().catch(error => { if (!disposed) { setError(error.message); setConnection('Подключение не выполнено'); } });
     return () => { disposed = true; events?.close(); };
