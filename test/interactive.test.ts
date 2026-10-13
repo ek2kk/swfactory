@@ -71,3 +71,42 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   assert.ok(!log.includes('hidden-value')); assert.ok(!log.includes('partial secret'));
   if (scenario === 'success') assert.deepEqual(metadata.usage, { input_tokens: 10, output_tokens: 20, cached_input_tokens: 3 });
 });
+
+for (const mode of ['ack', 'silent', 'no-terminal'] as const) test(`stream activity and interrupt ${mode}: no chunk secrets leak and process closes`, { timeout: 12000 }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'factory-stream-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const cli = join(directory, 'codex');
+  writeFileSync(cli, `#!${process.execPath}
+if (process.argv[2] === '--version') { console.log('codex-cli 0.160.1'); process.exit(0); }
+const send = x => console.log(JSON.stringify(x));
+require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+ const r = JSON.parse(line);
+ if(r.method === 'initialize') send({id:r.id,result:{}});
+ if(r.method === 'thread/start') send({id:r.id,result:{thread:{id:'thread'}}});
+ if(r.method === 'turn/start') {
+   send({id:r.id,result:{turn:{id:'turn'}}});
+   send({method:'turn/started',params:{threadId:'thread',turn:{id:'turn'}}});
+   for (const delta of ['token=', '"split-', 'credential"']) send({method:'item/agentMessage/delta',params:{threadId:'thread',turnId:'turn',itemId:'message',delta}});
+ }
+ if(r.method === 'turn/interrupt') {
+   require('node:assert/strict').equal(r.params.turnId,'turn');
+   if (${JSON.stringify(mode)} !== 'silent') send({id:r.id,result:{}});
+   if (${JSON.stringify(mode)} === 'ack') send({method:'turn/completed',params:{threadId:'thread',turn:{id:'turn',status:'interrupted'}}});
+ }
+});`, { mode: 0o700 });
+  let interrupt: (() => void) | null = null;
+  const metadata: RunDiagnostic[] = [], output: string[] = [];
+  const execution = executeSpec({ directory, cwd: directory, model: 'fake', prompt: 'test', control: () => {},
+    interrupt: value => { interrupt = value; }, output: value => output.push(value), metadata: value => {
+      metadata.push(value);
+      if (value.stream_updates === 3 && interrupt) interrupt();
+    },
+  }, cli);
+  await assert.rejects(execution, error => error instanceof CodexFailure && error.kind === 'interrupted' && error.finished);
+  assert.equal(interrupt, null);
+  assert.ok(metadata.some(v => v.stream_updates === 3 && v.stream_chars === 'token="split-credential"'.length && v.last_activity_at));
+  assert.ok(metadata.length < 10, 'progress writes are batched');
+  const log = readFileSync(join(directory, 'events.jsonl'), 'utf8');
+  assert.match(log, /run\/progress/);
+  for (const text of [log, JSON.stringify(metadata), ...output]) assert.ok(!text.includes('split-') && !text.includes('credential'));
+});

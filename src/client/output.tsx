@@ -1,6 +1,28 @@
 import { useEffect, useState } from 'react';
 import type { AgentRun, Task } from '../shared.js';
 
+export function RunProgress({ run, onInterrupt, busy = false }: { run: AgentRun; onInterrupt?: () => void; busy?: boolean }) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (run.status !== 'running') return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [run.id, run.status]);
+  const activity = run.diagnostic?.last_activity_at;
+  const elapsed = run.started_at ? Math.max(0, Math.floor((now - Date.parse(run.started_at)) / 1000)) : 0;
+  const idle = activity ? Math.max(0, Math.floor((now - Date.parse(activity)) / 1000)) : elapsed;
+  return <section aria-label="Прогресс этапа">
+    <p className="meta">{run.role} · {run.status === 'running' ? `Выполняется ${Math.floor(elapsed / 60)} мин ${elapsed % 60} с` : run.status}<br />
+      Последняя активность: {activity ? <time dateTime={activity}>{new Date(activity).toLocaleTimeString('ru')}</time> : 'пока нет событий'}
+      {run.status === 'running' && ` · ${idle} с назад`}<br />
+      Получено {run.diagnostic?.stream_updates ?? 0} фрагментов ответа · {run.diagnostic?.stream_chars ?? 0} символов. Текст показывается после завершения сообщения.</p>
+    {run.status === 'running' && elapsed >= 600 && <p role="status">Этап выполняется более 10 минут. {idle < 60 ? 'Данные продолжают поступать.' : 'Новых событий давно нет.'} Можно прервать этап, сохранив изменения.</p>}
+    {onInterrupt && <button className="secondary" disabled={busy || !!run.diagnostic?.interrupt_requested_at} onClick={onInterrupt}>
+      {run.diagnostic?.interrupt_requested_at ? 'Прерываем этап…' : 'Прервать этап'}
+    </button>}
+  </section>;
+}
+
 export function AgentOutput({ run, stage, load }: {
   run: AgentRun; stage: Task['stage']; load: () => Promise<{ text: string }>;
 }) {

@@ -6,6 +6,7 @@ export class CodexFailure extends Problem {
   constructor(public kind: FailureKind, public resetAt: string | null = null) {
     super(422, ({ authentication: 'Authentication: выполните codex login.', model_unavailable: 'Модель недоступна: проверьте доступ к выбранной модели.',
       rate_limit: 'Rate limit: новые запуски приостановлены до reset time или ручного продолжения.',
+      interrupted: 'Этап прерван пользователем. Частичные изменения сохранены; результат не засчитан.',
       protocol_error: 'Protocol error: проверьте CLI version и локальные логи.', missing_artifact: 'Missing artifact: обязательный результат отсутствует.' })[kind]);
   }
 }

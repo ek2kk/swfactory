@@ -394,6 +394,19 @@ export async function createApp(options: {
     const result = store.mutate(request_id, fingerprint, () => store.retryRun(projectId, taskId, state_version)) as AgentRun;
     controller.enqueue(result); publish(); return result;
   });
+  app.post<{ Params: { projectId: string; taskId: string; runId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/runs/:runId/interrupt', {
+    schema: { params: object({ projectId: uuid, taskId: uuid, runId: uuid }), body: object({ request_id: uuid, state_version: version }) },
+  }, async request => {
+    const { projectId, taskId, runId } = request.params;
+    const { request_id, state_version } = request.body;
+    const fingerprint = JSON.stringify(['run.interrupt', projectId, taskId, runId, state_version]);
+    const prior = store.replay(request_id, fingerprint);
+    if (prior !== undefined) return prior;
+    store.specRun(projectId, taskId, runId);
+    if (!controller.canInterrupt(runId)) throw new Problem(409, 'Активная сессия недоступна. Нужна ручная сверка.');
+    const run = store.mutate(request_id, fingerprint, () => store.requestInterrupt(projectId, taskId, runId, state_version)) as AgentRun;
+    controller.interrupt(run); publish(); return run;
+  });
   app.get('/api/events', async (request, reply) => {
     await controller.refreshReviewState();
     const lastId = request.headers['last-event-id'];

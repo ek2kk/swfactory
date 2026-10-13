@@ -8,7 +8,7 @@ export type Task = {
   id: string; project_id: string; description: string; title: string | null;
   stage: typeof stages[number]; run_state: 'idle' | 'queued' | 'running' | 'waiting' | 'interrupted' | 'completed';
   publication_status: 'pending' | 'confirmed' | 'unknown' | null; pr_url: string | null; pr_number: number | null;
-  archived?: number;
+  archived?: number; execution_unverified?: number;
   deletion_state?: 'stopping' | 'failed' | 'deleted' | null; deletion_error?: string | null; stop_unverified?: number;
   state_version: number; revision: number;
   title_state: 'pending' | 'running' | 'completed' | 'failed' | 'interrupted';
@@ -37,8 +37,8 @@ export type ReviewResult = {
 export type ApproveResult = {
   outcome: 'APPROVE' | 'ESCALATE' | 'NEEDS_INPUT'; summary: string; risks: string[]; affected_paths: string[]; questions: Question[];
 };
-export type FailureKind = 'authentication' | 'model_unavailable' | 'rate_limit' | 'protocol_error' | 'missing_artifact';
-export type RunDiagnostic = { result_saved?: boolean; result_run_id?: string; error_kind?: FailureKind; execution_finished?: boolean; reset_at?: string | null; cli_version?: string; session_id?: string; usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number } };
+export type FailureKind = 'authentication' | 'model_unavailable' | 'rate_limit' | 'protocol_error' | 'missing_artifact' | 'interrupted';
+export type RunDiagnostic = { last_activity_at?: string; stream_chars?: number; stream_updates?: number; can_interrupt?: boolean; interrupt_requested_at?: string; result_saved?: boolean; result_run_id?: string; error_kind?: FailureKind; execution_finished?: boolean; reset_at?: string | null; cli_version?: string; session_id?: string; usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number } };
 export type ExecutionPause = { paused: number; reset_at: string | null; state_version: number };
 export type AgentRun = {
   output_preview?: string | null; output_at?: string | null; output_version?: number | null;

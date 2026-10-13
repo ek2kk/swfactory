@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { Store } from '../src/server/store.js';
 import { formatOutput } from '../src/server/output.js';
 import { executeSpec } from '../src/server/codex.js';
-import { AgentOutput } from '../src/client/output.js';
+import { AgentOutput, RunProgress } from '../src/client/output.js';
 import { RunConversation } from '../src/client/chat.js';
 
 function fixture(t: { after: (fn: () => void) => void }) {
@@ -27,6 +27,15 @@ test('run conversation displays backend failure outside collapsed reports', t =>
   run.status = 'failed'; run.error = 'Backend could not save the result';
   const html = renderToStaticMarkup(createElement(RunConversation, { run, path: '/task', api: async () => { throw new Error('not rendered'); }, messages: [] }));
   assert.match(html, /role="alert"[^>]*>Backend could not save the result/);
+});
+
+test('long running stages show streamed progress, last activity and a disabled pending interrupt', t => {
+  const { run } = fixture(t);
+  run.started_at = new Date(Date.now() - 660_000).toISOString();
+  run.diagnostic = { last_activity_at: new Date().toISOString(), stream_updates: 1000, stream_chars: 4500, interrupt_requested_at: new Date().toISOString() };
+  const html = renderToStaticMarkup(createElement(RunProgress, { run, onInterrupt: () => {} }));
+  for (const text of ['1000', '4500', 'Последняя активность', 'Данные продолжают поступать', 'Прерываем этап']) assert.ok(html.includes(text), text);
+  assert.match(html, /button[^>]+disabled/);
 });
 
 test('readable structured results retain fields and redact secrets before presentation', () => {

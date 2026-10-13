@@ -304,10 +304,22 @@ export class Store {
     this.event('execution.resumed', null, {});
     return this.executionPause();
   }
+  requestInterrupt(projectId: string, taskId: string, runId: string, version: number) {
+    const task = this.task(projectId, taskId);
+    const run = this.specRun(projectId, taskId, runId);
+    if (task.state_version !== version || task.run_state !== 'running' || task.publication_status
+      || run.status !== 'running' || !run.diagnostic?.can_interrupt || run.diagnostic.interrupt_requested_at
+      || run.diagnostic.result_saved || this.runs().filter(r => r.task_id === taskId).at(-1)?.id !== runId) throw new Problem(409, 'Этот этап уже завершён, прерывается или недоступен.');
+    run.diagnostic = { ...run.diagnostic, interrupt_requested_at: new Date().toISOString() };
+    this.db.prepare('UPDATE runs SET diagnostic = ? WHERE id = ?').run(JSON.stringify(run.diagnostic), run.id);
+    this.db.prepare('UPDATE tasks SET state_version = state_version + 1 WHERE id = ?').run(task.id);
+    this.event('run.interrupt-requested', taskId, { run_id: run.id });
+    return run;
+  }
   retryRun(projectId: string, taskId: string, version: number) {
     const task = this.task(projectId, taskId);
     const previous = this.runs().filter(r => r.task_id === taskId).at(-1);
-    if (task.state_version !== version || task.run_state !== 'interrupted' || task.publication_status
+    if (task.state_version !== version || task.run_state !== 'interrupted' || task.publication_status || task.execution_unverified
       || !previous || previous.status !== 'failed' || !previous.diagnostic?.execution_finished || previous.stale
       || !previous.source_hash || !previous.base_sha || previous.description_revision !== task.revision) {
       throw new Problem(409, 'Повтор запрещён: требуется ручная проверка неизвестного исполнения, публикации или worktree.');

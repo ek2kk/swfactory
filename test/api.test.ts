@@ -437,3 +437,29 @@ for (const status of [401, 409, 500]) test(`client retry resolves only confirmed
   assert.equal(requests[2].state_version, 3);
   assert.notEqual(requests[2].request_id, requests[1].request_id, 'confirmed success permits a new action');
 });
+
+test('interrupt endpoint binds current run/version, rejects publication and replays without another signal', async t => {
+  const { app, store, headers, project } = await fixture(t);
+  const task = store.createTask(project.id, 'interrupt', 1);
+  const run = store.queueSpec(project.id, task.id, 1, '/tmp');
+  run.status = 'running'; run.diagnostic = { can_interrupt: true };
+  store.updateRun(run, 'spec', 'running');
+  const available = t.mock.method(SpecController.prototype, 'canInterrupt', () => true);
+  const interrupt = t.mock.method(SpecController.prototype, 'interrupt', () => {});
+  const url = `/api/projects/${project.id}/tasks/${task.id}/runs/${run.id}/interrupt`;
+  const payload = { request_id: randomUUID(), state_version: store.task(project.id, task.id).state_version };
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...payload, state_version: 1 } })).statusCode, 409);
+  assert.equal((await app.inject({ method: 'POST', url: url.replace(run.id, randomUUID()), headers, payload })).statusCode, 404);
+  assert.equal((await app.inject({ method: 'POST', url, headers: { ...headers, origin: 'https://other.test' }, payload })).statusCode, 403);
+  store.db.prepare("UPDATE tasks SET publication_status='pending' WHERE id=?").run(task.id);
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload })).statusCode, 409);
+  store.db.prepare('UPDATE tasks SET publication_status=NULL WHERE id=?').run(task.id);
+  available.mock.mockImplementation(() => false);
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload })).statusCode, 409);
+  available.mock.mockImplementation(() => true);
+  const response = await app.inject({ method: 'POST', url, headers, payload });
+  assert.equal(response.statusCode, 200); assert.ok(response.json().diagnostic.interrupt_requested_at);
+  assert.deepEqual((await app.inject({ method: 'POST', url, headers, payload })).json(), response.json());
+  assert.equal(interrupt.mock.callCount(), 1);
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...payload, request_id: randomUUID(), state_version: store.task(project.id, task.id).state_version } })).statusCode, 409);
+});

@@ -29,14 +29,28 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
       let sequence = 0, buffer = '', stderr = '', bytes = 0, threadId = '', turnId = '', message = '';
       let finished = false, failure: Error | undefined, result: T;
       let killTimer: ReturnType<typeof setTimeout> | undefined;
+      let interruptTimer: ReturnType<typeof setTimeout> | undefined, progressTimer: ReturnType<typeof setTimeout> | undefined;
+      let interruptRequested = false, progressPending = false;
+      const progress = { last_activity_at: '', stream_chars: 0, stream_updates: 0 };
+      function flushProgress() {
+        clearTimeout(progressTimer); progressTimer = undefined;
+        if (!progressPending) return;
+        progressPending = false;
+        // Store counters, never raw deltas: credentials can span stream chunks.
+        writeSync(out, JSON.stringify({ method: 'run/progress', params: { ...progress }, recorded_at: progress.last_activity_at }) + '\n');
+        input.metadata?.({ ...progress });
+      }
       const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout>; method: string }>();
       function stop(error?: Error) {
         failure ??= error;
+        clearTimeout(interruptTimer);
+        input.interrupt?.(null);
         input.control?.(null);
         if (!killTimer) {
           child.stdin.end();
-          child.kill('SIGTERM');
-          killTimer = setTimeout(() => child.kill('SIGKILL'), 3000);
+          const kill = (signal: NodeJS.Signals) => { if (child.pid) { try { process.kill(-child.pid, signal); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; } } };
+          kill('SIGTERM');
+          killTimer = setTimeout(() => kill('SIGKILL'), 3000);
         }
       }
       function send(value: unknown) { input.signal?.throwIfAborted(); child.stdin.write(JSON.stringify(value) + '\n'); }
@@ -85,6 +99,13 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
             }
             const p = event.params;
             if (p?.threadId !== threadId) continue;
+            progress.last_activity_at = new Date().toISOString(); progressPending = true;
+            if (event.method === 'item/agentMessage/delta' && typeof p.delta === 'string') {
+              progress.stream_chars += Array.from(p.delta).length; progress.stream_updates++;
+            }
+            if (!progressTimer) progressTimer = setTimeout(() => {
+              try { flushProgress(); } catch { stop(new CodexFailure('protocol_error')); }
+            }, 1000);
             if (event.method === 'thread/tokenUsage/updated' && p.tokenUsage?.total) {
               const usage = p.tokenUsage.total;
               input.metadata?.({ usage: Object.fromEntries([['input_tokens', usage.inputTokens], ['output_tokens', usage.outputTokens], ['cached_input_tokens', usage.cachedInputTokens]].filter(([, value]) => Number.isSafeInteger(value) && Number(value) >= 0)) });
@@ -92,6 +113,12 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
             if (event.method === 'turn/started') {
               turnId = p.turn.id;
               input.control?.(steer);
+              input.interrupt?.(() => {
+                if (finished || interruptRequested) return;
+                interruptRequested = true;
+                interruptTimer = setTimeout(() => stop(new CodexFailure('interrupted')), 5000);
+                void rpc('turn/interrupt', { threadId, turnId }).catch(() => stop(new CodexFailure('interrupted')));
+              });
             }
             if (event.method === 'item/completed' && p.item?.type === 'agentMessage') {
               message = p.item.text;
@@ -102,6 +129,7 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
             if (event.method === 'turn/completed') {
               if (p.turn.id !== turnId) throw new Error('Wrong turn');
               finished = true;
+              if (p.turn.status === 'interrupted') throw new CodexFailure('interrupted');
               if (p.turn.status !== 'completed') throw classifyFailure(p.turn.error);
               if (!message) throw new CodexFailure('missing_artifact');
               result = validate(JSON.parse(message));
@@ -127,7 +155,8 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
       if (input.signal?.aborted) abort();
       child.on('close', () => {
         input.signal?.removeEventListener('abort', abort);
-        clearTimeout(killTimer); input.control?.(null);
+        clearTimeout(killTimer); clearTimeout(interruptTimer); clearTimeout(progressTimer); input.control?.(null); input.interrupt?.(null);
+        try { flushProgress(); } catch { failure ??= new CodexFailure('protocol_error'); }
         for (const request of pending.values()) { clearTimeout(request.timer); request.reject(new DeliveryError('unknown', 'Соединение с CLI закрыто без подтверждения доставки.')); }
         pending.clear();
         try { if (stderr) writeSync(err, redact(stderr)); } catch { failure = new CodexFailure('protocol_error'); }

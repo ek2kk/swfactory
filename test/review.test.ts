@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { Store } from '../src/server/store.js';
 import { SpecController } from '../src/server/spec.js';
 import { run as command } from '../src/server/git.js';
-import { validateReview, type ExecuteBuild, type ExecuteReview } from '../src/server/codex.js';
+import { executeReview, validateReview, type ExecuteBuild, type ExecuteReview } from '../src/server/codex.js';
 import type { BuildResult, SpecResult, ReviewResult } from '../src/shared.js';
 
 const spec: SpecResult = { title: 'Hello', outcome: 'READY', summary: 'Implement hello', requirements: ['Say hello'], acceptance_criteria: ['README says hello'], assumptions: [], out_of_scope: [], questions: [] };
@@ -42,6 +42,38 @@ async function fixture(t: { after: (fn: () => void) => void }, completedRepairs 
 
 const approved = async () => ({ outcome: 'APPROVE' as const, summary: 'Publish only', risks: [], affected_paths: ['README.md'], questions: [] });
 const pass: ReviewResult = { outcome: 'PASS', summary: 'Looks good', findings: [], evidence: ['Inspected change'], applicable: true, applicability: '', questions: [] };
+test('interrupted Review preserves work and permits an explicit retry only after execution stops', async t => {
+  const { store, project, task, queue, controller, root } = await fixture(t);
+  const run = queue();
+  const cli = join(root, 'codex');
+  writeFileSync(cli, `#!${process.execPath}
+if (process.argv[2] === '--version') { console.log('codex-cli 0.160.1'); process.exit(0); }
+const send = x => console.log(JSON.stringify(x));
+require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+ const r=JSON.parse(line);
+ if(r.method==='initialize') send({id:r.id,result:{}});
+ if(r.method==='thread/start') send({id:r.id,result:{thread:{id:'thread'}}});
+ if(r.method==='turn/start') { send({id:r.id,result:{turn:{id:'turn'}}}); send({method:'turn/started',params:{threadId:'thread',turn:{id:'turn'}}}); }
+ if(r.method==='turn/interrupt') { send({id:r.id,result:{}}); send({method:'turn/completed',params:{threadId:'thread',turn:{id:'turn',status:'interrupted'}}}); }
+});`, { mode: 0o700 });
+  const runner = controller(input => executeReview(input, cli));
+  runner.enqueue(run);
+  for (let i = 0; i < 200 && !runner.canInterrupt(run.id); i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(runner.canInterrupt(run.id), true);
+  const requested = store.requestInterrupt(project.id, task.id, run.id, store.task(project.id, task.id).state_version);
+  runner.interrupt(requested); await settled(store, task.id); await runner.close();
+  const failed = store.specRun(project.id, task.id, run.id);
+  assert.equal(failed.status, 'failed'); assert.equal(failed.diagnostic?.error_kind, 'interrupted');
+  assert.equal(failed.diagnostic?.execution_finished, true); assert.equal(failed.diagnostic?.can_interrupt, false);
+  assert.equal(store.task(project.id, task.id).execution_unverified, 0);
+  store.db.prepare('UPDATE tasks SET execution_unverified=1 WHERE id=?').run(task.id);
+  assert.throws(() => store.retryRun(project.id, task.id, store.task(project.id, task.id).state_version), /Повтор запрещён/);
+  store.db.prepare('UPDATE tasks SET execution_unverified=0 WHERE id=?').run(task.id);
+  const retry = store.retryRun(project.id, task.id, store.task(project.id, task.id).state_version);
+  const continuation = controller(async () => pass);
+  continuation.enqueue(retry); await continuation.close();
+  assert.equal(store.specRun(project.id, task.id, retry.id).outcome, 'PASS');
+});
 async function settled(store: Store, taskId: string) {
   for (let i = 0; i < 1000; i++) {
     const task = store.snapshot().tasks.find(t => t.id === taskId)!;

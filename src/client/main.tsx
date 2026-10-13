@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { stages, type Project, type Task, type Snapshot, type Revision, roles, type Settings, type AgentRun, type HumanRequest, type ChatMessage } from '../shared.js';
 import './style.css';
 import { Composer, Message, RunConversation } from './chat.js';
-import { AgentOutput } from './output.js';
+import { AgentOutput, RunProgress } from './output.js';
 import { applyTheme, readTheme, type Theme } from './theme.js';
 
 applyTheme(readTheme());
@@ -119,6 +119,12 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
     <p className="meta">Редакция {task.revision} · {{ idle: task.stage === 'build' ? 'Spec готова · можно запустить Build' : task.stage === 'review' ? 'Ожидает запуска следующего Review' : task.stage === 'approve' ? 'Четыре PASS · ожидает Approve' : 'Не запущена', queued: 'В очереди · ожидает слот', running: task.stage === 'spec' ? 'Codex готовит Spec' : task.stage === 'build' ? 'Codex реализует задачу' : task.stage === 'review' ? 'Codex выполняет Review' : task.stage === 'approve' ? 'Codex принимает решение о публикации' : 'Проверяем checkout и создаём worktree', waiting: 'Нужен ответ человека', interrupted: 'Прервана — нужна ручная проверка', completed: task.stage === 'approve' ? 'Разрешена только публикация PR/MR · публикация ещё не выполнена' : 'Завершена' }[task.run_state]}</p>
     <TaskDisposition task={task} refresh={refresh} notify={notify} />
     <fieldset className="task-controls" disabled={!!task.deletion_state}>
+    {latest?.description_revision === task.revision && <RunProgress run={latest} busy={busy}
+      onInterrupt={latest.status === 'running' && latest.diagnostic?.can_interrupt && !latest.diagnostic.result_saved && !task.publication_status ? async () => {
+        setBusy(true); setError('');
+        try { await api(`${taskPath(task)}/runs/${latest.id}/interrupt`, 'POST', { state_version: task.state_version }); await refresh(); }
+        catch (error) { setError((error as Error).message); } finally { setBusy(false); }
+      } : undefined} />}
     <div className="stage-tabs" role="tablist" aria-label="Этапы задачи" onKeyDown={event => {
       if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
       const tabs = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role=tab]')];
@@ -172,7 +178,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
       }}>{busy ? 'Ставим в очередь…' : 'Доработать: новый цикл (до двух доработок)'}</button>
     </>}
     {!editing && questions.map(request => request.result.outcome === 'ESCALATE' ? <HumanDecision key={request.id} task={task} request={request} refresh={refresh} /> : <HumanQuestions key={request.id} task={task} request={request} refresh={refresh} />)}
-    {task.run_state === 'interrupted' && runs.at(-1)?.status === 'failed' && runs.at(-1)?.diagnostic?.execution_finished && !task.publication_status && <button disabled={busy} onClick={async () => {
+    {task.run_state === 'interrupted' && !task.execution_unverified && runs.at(-1)?.status === 'failed' && runs.at(-1)?.diagnostic?.execution_finished && !task.publication_status && <button disabled={busy} onClick={async () => {
       setBusy(true); setError('');
       try { await api(`${taskPath(task)}/retry`, 'POST', { state_version: task.state_version }); await refresh(); }
       catch (error) { setError((error as Error).message); } finally { setBusy(false); }
@@ -184,7 +190,6 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
       {showHistory && <History task={task} revisions={revisions} setRevisions={setRevisions} />}
     </details>
     {messages.map(message => <Message key={message.id} message={message} />)}
-    {error && <p role="alert" className="error">{error}</p>}
     </div>
     {roles.map(role => <div key={role} role="tabpanel" id={`${task.id}-panel-${role}`} aria-labelledby={`${task.id}-tab-${role}`} hidden={tab !== role} tabIndex={0}>
       {active && tab === role && (runs.some(run => run.role === role) ? runs.filter(run => run.role === role).map(run => <section className="run-history" key={run.id}>
@@ -195,6 +200,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
     </div>)}
     {tab !== 'overview' && messages.filter(message => message.status !== 'delivered').map(message => <Message key={message.id} message={message} />)}
     {chatError && <p role="alert">{chatError}</p>}
+    {error && <p role="alert" className="error">{error}</p>}
     <Composer task={task} path={taskPath(task)} api={api} refresh={refresh} />
     </fieldset>
   </article>;
