@@ -6,6 +6,7 @@ import type { ServerResponse } from 'node:http';
 import { Store, Problem } from './store.js';
 import { generateTitle } from './title.js';
 import { inspectProject } from './git.js';
+import { chooseProjectFolder } from './folder-dialog.js';
 import { roles, type ProjectInput, type Settings, type AgentRun } from '../shared.js';
 import { realpathSync } from 'node:fs';
 import { SpecController } from './spec.js';
@@ -28,6 +29,7 @@ function equal(a: string, b: string) {
 type Action = { request_id: string; state_version: number; description: string };
 export async function createApp(options: {
   directory: string; origin: string; staticRoot?: string; inspect?: typeof inspectProject; command?: Run; execute?: ExecuteSpec; executeBuild?: ExecuteBuild; executeReview?: ExecuteReview; executeApprove?: ExecuteApprove; generateTitle?: typeof generateTitle;
+  chooseFolder?: () => Promise<string | null>;
 }) {
   const store = new Store(options.directory);
   const directory = realpathSync(options.directory);
@@ -85,6 +87,14 @@ export async function createApp(options: {
   app.get('/api/snapshot', async () => {
     await controller.refreshReviewState();
     return { ...store.snapshot(), execution_error: controller.error ?? controller.chat.error, title_error: titles.error };
+  });
+  let choosingFolder = false;
+  app.post('/api/projects/choose-folder', async (_request, reply) => {
+    if (choosingFolder) throw new Problem(409, 'Диалог выбора папки уже открыт. Выберите папку или отмените выбор.');
+    choosingFolder = true;
+    try { return { checkout: await (options.chooseFolder ?? chooseProjectFolder)() }; }
+    catch { return reply.code(503).send({ message: 'Не удалось открыть диалог выбора папки. Повторите попытку или введите абсолютный путь вручную.' }); }
+    finally { choosingFolder = false; }
   });
   app.post<{ Body: ProjectInput & { request_id: string; state_version: number } }>('/api/projects', {
     schema: { body: object({ checkout: text, remote: text, hosting: { enum: ['github', 'gitlab'] }, target_branch: text, request_id: uuid, state_version: { const: 0 } }) },
