@@ -39,6 +39,7 @@ export type FailureKind = 'authentication' | 'model_unavailable' | 'rate_limit' 
 export type RunDiagnostic = { error_kind?: FailureKind; execution_finished?: boolean; reset_at?: string | null; cli_version?: string; session_id?: string; usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number } };
 export type ExecutionPause = { paused: number; reset_at: string | null; state_version: number };
 export type AgentRun = {
+  output_preview?: string | null; output_at?: string | null; output_version?: number | null;
   diagnostic?: RunDiagnostic; started_at?: string | null; finished_at?: string | null;
   repair_round_id: string | null; repair_attempt: number;
   spec_run_id: string | null; round_id: string | null; stale: number;

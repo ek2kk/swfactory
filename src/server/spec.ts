@@ -7,6 +7,7 @@ import { executeApprove, validateApprove, type ExecuteApprove, executeSpec, vali
 import { publishGithub } from './publication.js';
 import { sourceHash, commitBuild } from './build.js';
 import { Titles, generateTitle } from './title.js';
+import { formatOutput } from './output.js';
 import { CodexFailure } from './diagnostics.js';
 import { Scheduler } from './scheduler.js';
 import { artifactDirectory, saveArtifact } from './artifacts.js';
@@ -37,6 +38,10 @@ export class SpecController {
     return false;
   }
   resume() { this.scheduler.wake(); }
+  private recordOutput(run: AgentRun, text: string) {
+    this.store.recordOutput(run, formatOutput(text));
+    this.publish();
+  }
   private recordMetadata(run: AgentRun, value: RunDiagnostic) {
     run.diagnostic = { ...run.diagnostic, ...value };
     this.store.db.transaction(() => {
@@ -147,7 +152,7 @@ Previous results and human answers:
 ${JSON.stringify(context)}`;
       saveArtifact(directory, 'input.json', JSON.stringify({ run, description: task.description, specification, feedback, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'build', 'running'); this.publish();
-      const result = validateBuild(await this.build({ cwd: run.worktree, directory, metadata: value => this.recordMetadata(run, value), model: run.config.models.build, prompt }));
+      const result = validateBuild(await this.build({ cwd: run.worktree, directory, metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.build, prompt }));
       await verifyRepository(project, run.worktree, this.command);
       run.head_sha = result.outcome === 'READY' ? await commitBuild(run, result, this.command)
         : await this.command('git', ['rev-parse', 'HEAD'], run.worktree);
@@ -240,7 +245,7 @@ Human answers:
 ${JSON.stringify(context)}`;
       saveArtifact(directory, 'input.json', JSON.stringify({ run, specification, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'review', 'running'); this.publish();
-      const result = validateReview(await this.review({ cwd: run.worktree, directory, metadata: value => this.recordMetadata(run, value), model: run.config.models[run.role], prompt }), run.role as ReviewRole);
+      const result = validateReview(await this.review({ cwd: run.worktree, directory, metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models[run.role], prompt }), run.role as ReviewRole);
       await this.verifyReviewSource(run);
       saveArtifact(directory, 'result.json', JSON.stringify({ schema_version: 1, task_id: task.id, run_id: run.id, role: run.role,
         round_id: run.round_id, description_revision: run.description_revision, spec_revision: run.spec_run_id,
@@ -297,7 +302,7 @@ Return only the structured result. Reports/logs belong in ${directory}.
 Context: ${JSON.stringify({ run, description: task.description, specification, reports, human_answers: context })}`;
       saveArtifact(directory, 'input.json', JSON.stringify({ run, specification, reports, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'approve', 'running'); this.publish();
-      const result = validateApprove(await this.approve({ cwd: run.worktree, directory, metadata: value => this.recordMetadata(run, value), model: run.config.models.approve, prompt }));
+      const result = validateApprove(await this.approve({ cwd: run.worktree, directory, metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.approve, prompt }));
       await this.verifyReviewSource(run);
       if (!this.store.reviewPasses(run)) throw new Problem(409, 'Review устарел.');
       saveArtifact(directory, 'result.json', JSON.stringify({ schema_version: 1, run_id: run.id, task_id: task.id,
@@ -355,7 +360,7 @@ ${context.length ? `Previous Spec results and human answers (same revision):\n${
       saveArtifact(directory, 'input.json', JSON.stringify({ run, description: task.description, prompt }, null, 2));
       this.store.updateRun(run, 'spec', 'running');
       this.publish();
-      const result = validateSpec(await this.execute({ cwd: run.worktree, directory, metadata: value => this.recordMetadata(run, value), model: run.config.models.spec, prompt }));
+      const result = validateSpec(await this.execute({ cwd: run.worktree, directory, metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.spec, prompt }));
       const head = await this.verifyWorktree(run);
       const report = [result.summary, ...[
         ['Требования', result.requirements], ['Acceptance criteria', result.acceptance_criteria],

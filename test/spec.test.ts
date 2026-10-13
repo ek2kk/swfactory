@@ -66,6 +66,12 @@ test('READY uses fetched remote SHA, immutable config, separate worktree, durabl
     assert.match(input.prompt, /AGENTS.md/); assert.match(input.prompt, /Добавить hello/);
     assert.equal(existsSync(join(input.cwd, 'local-only')), false);
     assert.equal(readFileSync(join(input.cwd, 'README.md'), 'utf8'), 'initial');
+    input.output?.('Проверяю требования: token="hidden-value"');
+    assert.equal(store.specRun(project.id, run.task_id, run.id).status, 'running');
+    assert.match(store.output(run.id)!.text, /\[REDACTED\]/);
+    assert.ok(!store.output(run.id)!.text.includes('hidden-value'));
+    input.output?.(JSON.stringify(ready));
+    assert.match(store.output(run.id)!.text, /Критерии приёмки/);
     return ready;
   });
   runner.enqueue(run); await runner.close();

@@ -41,7 +41,7 @@ export function validateSpec(value: unknown): SpecResult {
   catch { throw new Problem(422, 'Codex вернул невалидный заголовок Spec. Переход заблокирован.'); }
   return { ...result, title: result.title.trim() };
 }
-export type CodexInput = { cwd: string; directory: string; model: string; prompt: string; metadata?: (value: RunDiagnostic) => void };
+export type CodexInput = { cwd: string; directory: string; model: string; prompt: string; output?: (text: string) => void; metadata?: (value: RunDiagnostic) => void };
 export type ExecuteSpec = (input: CodexInput) => Promise<SpecResult>;
 
 export function executeSpec(input: CodexInput, executable = 'codex') {
@@ -94,7 +94,11 @@ async function executeResult<T>(input: CodexInput, schema: object, validate: (va
             if (event.type === 'thread.started') { thread = true; if (typeof event.thread_id === 'string' && event.thread_id.length <= 256) input.metadata?.({ session_id: redact(event.thread_id) }); }
             if (event.type === 'turn.started') { if (started || !thread) throw new Error('Invalid turn'); started = true; }
             if (event.type === 'error' || event.type === 'turn.failed') throw classifyFailure(event);
-            if (event.type === 'item.completed' && event.item?.type === 'agent_message') message = event.item.text;
+            if (event.type === 'item.completed' && event.item?.type === 'agent_message') {
+              if (typeof event.item.text !== 'string') throw new Error('Invalid agent message');
+              message = event.item.text;
+              if (message.trim()) input.output?.(message);
+            }
             if (event.type === 'turn.completed') { if (!started) throw new Error('Incomplete turn'); if (!message) throw new CodexFailure('missing_artifact'); completed = true;
               if (event.usage) { const usage = Object.fromEntries(['input_tokens', 'output_tokens', 'cached_input_tokens'].filter(k => Number.isSafeInteger(event.usage[k]) && event.usage[k] >= 0).map(k => [k, event.usage[k]])); input.metadata?.({ usage }); } }
           }
