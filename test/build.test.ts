@@ -34,6 +34,38 @@ async function fixture(t: { after: (fn: () => void) => void }) {
   return { root, checkout, directory, store, project, task, initial, git, queue, controller };
 }
 
+for (const failure of ['artifact', 'event', 'secret', 'changed', 'missing', 'restart'] as const) test(`Build backend recovery ${failure} reuses result without calling the agent`, async t => {
+  const { store, directory, project, task, git, queue, controller } = await fixture(t);
+  const run = queue();
+  const runner = controller(async input => {
+    writeFileSync(join(input.cwd, 'README.md'), failure === 'secret' ? 'ghp_' + 'a'.repeat(36) : 'hello');
+    if (failure === 'event') store.db.exec("CREATE TRIGGER fail_completion BEFORE INSERT ON events WHEN NEW.type = 'build.completed' BEGIN SELECT RAISE(ABORT, 'disk failed'); END");
+    else if (failure !== 'secret') writeFileSync(join(input.directory, 'report.md.tmp'), 'partial');
+    return ready;
+  });
+  runner.enqueue(run); await runner.close();
+  let active = store;
+  const failed = store.specRun(project.id, task.id, run.id);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.diagnostic?.result_saved, true);
+  assert.equal(failed.diagnostic?.execution_finished, true);
+  assert.ok(failed.source_hash);
+  if (failure === 'event') store.db.exec('DROP TRIGGER fail_completion');
+  if (failure === 'changed') writeFileSync(join(run.worktree, 'README.md'), 'changed after failure');
+  if (failure === 'missing') rmSync(join(directory, 'artifacts', run.id, 'agent-result.json'));
+  if (failure === 'restart') { store.close(); active = new Store(directory); t.after(() => active.close()); }
+  const retry = active.retryRun(project.id, task.id, active.task(project.id, task.id).state_version);
+  assert.equal(retry.diagnostic?.result_run_id, run.id);
+  const continuation = new SpecController(active, directory, () => {}, command, undefined, undefined, async () => { assert.fail('agent must not run again'); });
+  continuation.enqueue(retry); await continuation.close();
+  const blocked = ['secret', 'changed', 'missing'].includes(failure);
+  const saved = active.specRun(project.id, task.id, retry.id);
+  assert.equal(saved.status, blocked ? 'failed' : 'completed', saved.error ?? '');
+  assert.equal(active.task(project.id, task.id).stage, blocked ? 'needs-human' : 'review');
+  assert.equal(active.specRun(project.id, task.id, run.id).status, 'failed');
+  if (!blocked) assert.equal(git(run.worktree, 'rev-list', '--count', `${run.base_sha}..HEAD`), '1');
+});
+
 test('Build schema rejects incomplete, extra, inconsistent and duplicate fields', () => {
   assert.deepEqual(validateBuild(ready), ready);
   for (const bad of [null, {}, { ...ready, extra: true }, { ...ready, changed_paths: [] }, { ...ready, changed_paths: ['a', 'a'] },
@@ -183,6 +215,12 @@ test('failed automatic Build queue rolls back Spec completion and never launches
     assert.equal(store.runs().filter(r => r.task_id === task.id && r.role === 'build').length, 0);
     assert.equal(calls, 0);
   } finally { await runner.close(); }
+  store.db.exec('DROP TRIGGER fail_auto');
+  const retry = store.retryRun(project.id, task.id, store.task(project.id, task.id).state_version);
+  const continuation = new SpecController(store, directory, () => {}, command, async () => { assert.fail('Spec must not run again'); });
+  continuation.enqueue(retry); await continuation.close();
+  assert.equal(store.specRun(project.id, task.id, retry.id).status, 'completed');
+  assert.equal(store.task(project.id, task.id).stage, 'build');
 });
 
 test('sourceHash includes the content of the first NUL-separated path with leading space', async t => {

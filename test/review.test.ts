@@ -123,6 +123,14 @@ for (const scenario of ['source-before', 'source-during', 'branch', 'blocked', '
   assert.equal(store.runs().filter(r => r.role.startsWith('review-')).length, 1);
   if (scenario.startsWith('source') || scenario === 'branch') assert.equal(store.specRun(project.id, task.id, first.id).stale, 1);
   if (scenario === 'source-during') assert.equal(readFileSync(join(first.worktree, 'README.md'), 'utf8'), 'keep changes');
+  if (scenario === 'artifact-failure' || scenario === 'event-failure') {
+    if (scenario === 'event-failure') store.db.exec('DROP TRIGGER fail_review');
+    const retry = store.retryRun(project.id, task.id, store.task(project.id, task.id).state_version);
+    const continuation = controller(async () => { assert.fail('Reviewer must not run again'); });
+    continuation.enqueue(retry); await continuation.close();
+    assert.equal(store.specRun(project.id, task.id, retry.id).outcome, 'PASS');
+    assert.equal(store.task(project.id, task.id).stage, 'review');
+  }
 });
 test('Saved PASS becomes stale when source changes before Approve verification', async t => {
   const { store, task, queue, controller } = await fixture(t);
@@ -334,6 +342,15 @@ for (const mode of ['question', 'drift', 'invalid', 'save'] as const) test(`Appr
     assert.equal(store.runs().at(-1)!.outcome, null);
   }
   await runner.close();
+  if (mode === 'save') {
+    store.db.exec('DROP TRIGGER fail_approve');
+    const retry = store.retryRun(project.id, task.id, store.task(project.id, task.id).state_version);
+    const continuation = new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, undefined, async () => { assert.fail('Approve must not run again'); });
+    continuation.enqueue(retry); await continuation.close();
+    assert.equal(store.specRun(project.id, task.id, retry.id).outcome, 'APPROVE');
+    assert.equal(store.task(project.id, task.id).run_state, 'completed');
+    assert.equal(store.task(project.id, task.id).publication_status, null);
+  }
 });
 
 

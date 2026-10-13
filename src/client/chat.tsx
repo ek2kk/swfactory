@@ -18,6 +18,7 @@ export function RunConversation({ run, path, api, messages }: { run: AgentRun; p
     let disposed = false, offset = 0;
     let timer: ReturnType<typeof setTimeout>;
     setEntries([]); setError(''); setLoaded(false);
+    if (run.diagnostic?.result_run_id) { setLoaded(true); return; }
     async function poll() {
       try {
         const page = await api<{ entries: TranscriptEntry[]; next_offset: number; more: boolean }>(`${path}/runs/${run.id}/transcript?offset=${offset}`);
@@ -32,7 +33,7 @@ export function RunConversation({ run, path, api, messages }: { run: AgentRun; p
     }
     void poll();
     return () => { disposed = true; clearTimeout(timer); };
-  }, [run.id, run.status, path, retry]);
+  }, [run.id, run.status, run.diagnostic?.result_run_id, path, retry]);
   const timeline = [
     ...entries.map((entry, i) => ({ id: entry.id, at: entry.at || run.started_at || '', index: i, element: <article className={`chat-message ${entry.kind}-message`}>
       <p className="meta">{entry.title}{entry.status && ` · ${entry.status}`}</p>
@@ -43,8 +44,10 @@ export function RunConversation({ run, path, api, messages }: { run: AgentRun; p
   return <section className="conversation" aria-label={`История ${run.role}`}>
     <div className="actions"><span className="meta">Редакция {run.description_revision} · {run.status}{run.stale ? ' · Неактуально' : ''}</span><button className="secondary" onClick={() => end.current?.scrollIntoView({ block: 'end' })}>К последним сообщениям</button></div>
     {timeline.map(item => <div key={item.id}>{item.element}</div>)}
+    {run.diagnostic?.result_run_id && <p className="hint">Продолжение по сохранённому результату предыдущей попытки. Новый вызов модели не выполняется.</p>}
+    {run.error && <p role="alert" className="error">{run.error}</p>}
     {!loaded && <p role="status">Загружаем историю…</p>}
-    {loaded && !timeline.length && !error && <p className="hint">Сообщений пока нет. Текст появляется, когда CLI завершает сообщение; вызовы инструментов — при начале и завершении.</p>}
+    {loaded && !timeline.length && !error && !run.diagnostic?.result_run_id && <p className="hint">Сообщений пока нет. Текст появляется, когда CLI завершает сообщение; вызовы инструментов — при начале и завершении.</p>}
     {error && <p role="status">{error} <button className="secondary" onClick={() => setRetry(value => value + 1)}>Повторить загрузку</button></p>}
     <div ref={end} />
   </section>;

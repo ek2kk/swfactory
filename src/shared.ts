@@ -38,7 +38,7 @@ export type ApproveResult = {
   outcome: 'APPROVE' | 'ESCALATE' | 'NEEDS_INPUT'; summary: string; risks: string[]; affected_paths: string[]; questions: Question[];
 };
 export type FailureKind = 'authentication' | 'model_unavailable' | 'rate_limit' | 'protocol_error' | 'missing_artifact';
-export type RunDiagnostic = { error_kind?: FailureKind; execution_finished?: boolean; reset_at?: string | null; cli_version?: string; session_id?: string; usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number } };
+export type RunDiagnostic = { result_saved?: boolean; result_run_id?: string; error_kind?: FailureKind; execution_finished?: boolean; reset_at?: string | null; cli_version?: string; session_id?: string; usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number } };
 export type ExecutionPause = { paused: number; reset_at: string | null; state_version: number };
 export type AgentRun = {
   output_preview?: string | null; output_at?: string | null; output_version?: number | null;

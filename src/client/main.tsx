@@ -176,7 +176,8 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
       setBusy(true); setError('');
       try { await api(`${taskPath(task)}/retry`, 'POST', { state_version: task.state_version }); await refresh(); }
       catch (error) { setError((error as Error).message); } finally { setBusy(false); }
-    }}>Повторить завершённый запуск</button>}
+    }}>{runs.at(-1)?.diagnostic?.result_saved ? 'Продолжить по сохранённому результату' : 'Повторить завершённый запуск'}</button>}
+    {task.run_state === 'interrupted' && runs.at(-1)?.diagnostic?.result_saved && <p>Результат агента сохранён. Продолжение повторит проверки backend и переход этапа без нового вызова модели.</p>}
     {task.run_state === 'interrupted' && (runs.at(-1)?.status === 'interrupted' || !runs.at(-1)?.diagnostic?.execution_finished) && <p>Перед продолжением нужна ручная проверка процесса и worktree. Автоматический повтор недоступен.</p>}
     {runs.map(run => <RunReport key={run.id} task={task} run={run} />)}
     <details onToggle={event => setShowHistory(event.currentTarget.open)}><summary>История описания</summary>

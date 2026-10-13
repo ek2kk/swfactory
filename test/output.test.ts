@@ -9,6 +9,7 @@ import { Store } from '../src/server/store.js';
 import { formatOutput } from '../src/server/output.js';
 import { executeSpec } from '../src/server/codex.js';
 import { AgentOutput } from '../src/client/output.js';
+import { RunConversation } from '../src/client/chat.js';
 
 function fixture(t: { after: (fn: () => void) => void }) {
   const directory = mkdtempSync(join(tmpdir(), 'factory-output-'));
@@ -20,6 +21,13 @@ function fixture(t: { after: (fn: () => void) => void }) {
   run.status = 'running'; store.updateRun(run, 'spec', 'running');
   return { directory, store, project, task, run, restart: () => { store.close(); store = new Store(directory); return store; } };
 }
+
+test('run conversation displays backend failure outside collapsed reports', t => {
+  const { run } = fixture(t);
+  run.status = 'failed'; run.error = 'Backend could not save the result';
+  const html = renderToStaticMarkup(createElement(RunConversation, { run, path: '/task', api: async () => { throw new Error('not rendered'); }, messages: [] }));
+  assert.match(html, /role="alert"[^>]*>Backend could not save the result/);
+});
 
 test('readable structured results retain fields and redact secrets before presentation', () => {
   const result = formatOutput(JSON.stringify({ outcome: 'NEEDS_INPUT', summary: 'token="very secret value"',

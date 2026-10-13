@@ -1,6 +1,6 @@
 import { ProcessScope, checkExecution, executionSignal } from './processes.js';
 import { Chat } from './chat.js';
-import { mkdirSync, realpathSync, readFileSync } from 'node:fs';
+import { mkdirSync, realpathSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { reviewRoles, type ReviewRole, type AgentRun, type RunDiagnostic } from '../shared.js';
 import { Store, Problem } from './store.js';
@@ -101,6 +101,14 @@ export class SpecController {
     this.publish();
   }
   private async diagnose(run: AgentRun, error: unknown) {
+    if (run.diagnostic?.result_saved) {
+      try {
+        const hash = await sourceHash(run, this.command);
+        if (run.role === 'build' || run.role === 'spec') run.source_hash = hash;
+        run.diagnostic.execution_finished = true;
+      } catch { run.diagnostic.execution_finished = false; }
+      return;
+    }
     if (error instanceof CodexFailure) {
       if (error.kind === 'rate_limit') this.detectingLimits++;
       run.diagnostic = { ...run.diagnostic, error_kind: error.kind, execution_finished: error.finished, reset_at: error.resetAt };
@@ -112,6 +120,20 @@ export class SpecController {
       run.diagnostic = { ...run.diagnostic, execution_finished: false,
         ...((error as NodeJS.ErrnoException)?.code === 'ENOENT' ? { error_kind: 'missing_artifact' as const } : {}) };
     }
+  }
+  private async agentResult<T>(run: AgentRun, directory: string, execute: () => Promise<unknown>, validate: (value: unknown) => T): Promise<T> {
+    let result: T;
+    if (run.diagnostic?.result_run_id) {
+      const previous = this.store.specRun(run.project_id, run.task_id, run.diagnostic.result_run_id);
+      if (previous.role !== run.role || previous.description_revision !== run.description_revision || !previous.diagnostic?.result_saved
+        || !run.source_hash || await sourceHash(run, this.command) !== run.source_hash) throw new Problem(409, 'Сохранённый результат не соответствует текущему source.');
+      const path = join(this.directory, 'artifacts', previous.id, 'agent-result.json');
+      if (realpathSync(path) !== path || !statSync(path).isFile() || statSync(path).size > 2 * 1024 * 1024) throw new Problem(422, 'Небезопасный путь результата агента.');
+      result = validate(JSON.parse(readFileSync(path, 'utf8')));
+    } else result = validate(await execute());
+    saveArtifact(directory, 'agent-result.json', JSON.stringify(result));
+    this.recordMetadata(run, { result_saved: true, execution_finished: true });
+    return result;
   }
   enqueue(run: AgentRun) {
     if (this.closing || this.error || this.titles.error) throw new Problem(503, 'Исполнение остановлено. Нужна ручная проверка backend.');
@@ -209,7 +231,7 @@ ${JSON.stringify(context)}`;
       prompt += this.chatContext(run);
       saveArtifact(directory, 'input.json', JSON.stringify({ run, description: task.description, specification, feedback, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'build', 'running'); this.publish();
-      const result = validateBuild(await this.build({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.build, reasoningEffort: run.config.reasoning_efforts?.build, prompt }));
+      const result = await this.agentResult(run, directory, () => this.build({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.build, reasoningEffort: run.config.reasoning_efforts?.build, prompt }), validateBuild);
       await verifyRepository(project, run.worktree, this.command);
       run.head_sha = result.outcome === 'READY' ? await commitBuild(run, result, this.command)
         : await this.command('git', ['rev-parse', 'HEAD'], run.worktree);
@@ -305,7 +327,7 @@ ${JSON.stringify(context)}`;
       prompt += this.chatContext(run);
       saveArtifact(directory, 'input.json', JSON.stringify({ run, specification, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'review', 'running'); this.publish();
-      const result = validateReview(await this.review({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models[run.role], reasoningEffort: run.config.reasoning_efforts?.[run.role], prompt }), run.role as ReviewRole);
+      const result = await this.agentResult(run, directory, () => this.review({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models[run.role], reasoningEffort: run.config.reasoning_efforts?.[run.role], prompt }), value => validateReview(value, run.role as ReviewRole));
       await this.verifyReviewSource(run);
       saveArtifact(directory, 'result.json', JSON.stringify({ schema_version: 1, task_id: task.id, run_id: run.id, role: run.role,
         round_id: run.round_id, description_revision: run.description_revision, spec_revision: run.spec_run_id,
@@ -364,7 +386,7 @@ Context: ${JSON.stringify({ run, description: task.description, specification, r
       prompt += this.chatContext(run);
       saveArtifact(directory, 'input.json', JSON.stringify({ run, specification, reports, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'approve', 'running'); this.publish();
-      const result = validateApprove(await this.approve({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.approve, reasoningEffort: run.config.reasoning_efforts?.approve, prompt }));
+      const result = await this.agentResult(run, directory, () => this.approve({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.approve, reasoningEffort: run.config.reasoning_efforts?.approve, prompt }), validateApprove);
       await this.verifyReviewSource(run);
       if (!this.store.reviewPasses(run)) throw new Problem(409, 'Review устарел.');
       saveArtifact(directory, 'result.json', JSON.stringify({ schema_version: 1, run_id: run.id, task_id: task.id,
@@ -424,7 +446,7 @@ ${context.length ? `Previous Spec results and human answers (same revision):\n${
       saveArtifact(directory, 'input.json', JSON.stringify({ run, description: task.description, prompt }, null, 2));
       this.store.updateRun(run, 'spec', 'running');
       this.publish();
-      const result = validateSpec(await this.execute({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.spec, reasoningEffort: run.config.reasoning_efforts?.spec, prompt }));
+      const result = await this.agentResult(run, directory, () => this.execute({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.spec, reasoningEffort: run.config.reasoning_efforts?.spec, prompt }), validateSpec);
       const head = await this.verifyWorktree(run);
       const report = [result.summary, ...[
         ['Требования', result.requirements], ['Acceptance criteria', result.acceptance_criteria],

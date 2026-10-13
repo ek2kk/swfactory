@@ -18,10 +18,10 @@ function fixture(t: { after: (fn: () => void) => void }) {
   return { directory, store, project, task, run, restart: () => { store.close(); store = new Store(directory); return store; } };
 }
 
-test('failed run retry keeps evidence, budget and frozen model; stale/unknown/publication retries are refused', t => {
+for (const resultSaved of [false, true]) test(`failed run retry keeps evidence, budget and frozen model; saved result=${resultSaved}`, t => {
   const { store, project, task, run, restart } = fixture(t);
   run.status = 'failed'; run.base_sha = 'base'; run.source_hash = 'hash'; run.repair_attempt = 1;
-  run.diagnostic = { error_kind: 'authentication', execution_finished: true };
+  run.diagnostic = { error_kind: 'authentication', execution_finished: true, result_saved: resultSaved };
   store.updateRun(run, 'needs-human', 'interrupted');
   const version = store.task(project.id, task.id).state_version;
   assert.throws(() => store.retryRun(project.id, task.id, version - 1));
@@ -30,7 +30,7 @@ test('failed run retry keeps evidence, budget and frozen model; stale/unknown/pu
   store.db.prepare('UPDATE tasks SET publication_status = NULL WHERE id = ?').run(task.id);
   const retry = store.mutate('retry', 'retry', () => store.retryRun(project.id, task.id, version)) as typeof run;
   assert.equal(retry.parent_run_id, run.id); assert.equal(retry.repair_attempt, 1); assert.deepEqual(retry.config, run.config);
-  assert.deepEqual(retry.diagnostic, {}); assert.equal(retry.finished_at, null);
+  assert.deepEqual(retry.diagnostic, resultSaved ? { result_run_id: run.id } : {}); assert.equal(retry.finished_at, null);
   assert.equal(store.runs()[0].status, 'failed'); assert.throws(() => store.retryRun(project.id, task.id, version));
   const restarted = restart();
   assert.equal(restarted.runs().at(-1)?.status, 'interrupted');

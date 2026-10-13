@@ -317,6 +317,8 @@ export class Store {
       status, branch, worktree, base_sha, parent_run_id, role, head_sha, source_hash, spec_run_id, round_id, stale, repair_round_id, repair_attempt)
       SELECT ?, task_id, project_id, description_revision, config, project_version, 'queued', branch, worktree, base_sha,
       id, role, head_sha, source_hash, spec_run_id, round_id, stale, repair_round_id, repair_attempt FROM runs WHERE id = ?`).run(id, previous.id);
+    if (previous.diagnostic?.result_saved) this.db.prepare('UPDATE runs SET diagnostic = ? WHERE id = ?')
+      .run(JSON.stringify({ result_run_id: previous.id }), id);
     this.db.prepare("UPDATE tasks SET stage = ?, run_state = 'queued', state_version = state_version + 1 WHERE id = ?")
       .run(previous.role.startsWith('review-') ? 'review' : previous.role, taskId);
     this.event('run.retried', taskId, { run_id: id, parent_run_id: previous.id });
