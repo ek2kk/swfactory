@@ -275,6 +275,8 @@ function App() {
   const [projectId, setProjectId] = useState('');
   const [filter, setFilter] = useState('');
   const [description, setDescription] = useState('');
+  const [checkout, setCheckout] = useState('');
+  const selectingFolder = useRef(false);
   async function refresh() { setSnapshot(await api<Snapshot>('/snapshot')); }
   useEffect(() => {
     let events: EventSource | undefined, disposed = false;
@@ -314,14 +316,24 @@ function App() {
     <div className="setup">
       <section aria-labelledby="connect-title"><h2 id="connect-title">Подключить проект</h2>
         <form onSubmit={async event => {
-          event.preventDefault(); const form = event.currentTarget; const fields = new FormData(form);
+          event.preventDefault(); if (!ready || busy || selectingFolder.current) return;
+          const form = event.currentTarget; const fields = new FormData(form);
           setBusy('project'); setError('');
           try {
             const project = await api<Project>('/projects', 'POST', { ...Object.fromEntries(fields), state_version: 0 });
-            await refresh(); setProjectId(project.id); form.reset();
+            await refresh(); setProjectId(project.id); form.reset(); setCheckout('');
           } catch (error) { setError((error as Error).message); } finally { setBusy(''); }
         }}>
-          <label>Checkout<input name="checkout" required placeholder="/Users/you/projects/repository" /></label>
+          <label>Checkout<input name="checkout" required placeholder="/Users/you/projects/repository" value={checkout} disabled={busy === 'folder'} onChange={event => setCheckout(event.target.value)} /></label>
+          <button type="button" className="secondary" disabled={!ready || !!busy} onClick={async () => {
+            if (!ready || busy || selectingFolder.current) return;
+            selectingFolder.current = true; setBusy('folder'); setError('');
+            try {
+              const result = await api<{ checkout: string | null }>('/projects/choose-folder', 'POST');
+              if (result.checkout !== null) setCheckout(result.checkout);
+            } catch (error) { setError((error as Error).message); }
+            finally { selectingFolder.current = false; setBusy(''); }
+          }}>{busy === 'folder' ? 'Выбираем папку…' : 'Выбрать папку…'}</button>
           <div className="fields"><label>Remote<input name="remote" required defaultValue="origin" /></label>
           <label>Целевая ветка<input name="target_branch" required defaultValue="main" /></label>
           <label>Hosting<select name="hosting"><option value="github">GitHub</option><option value="gitlab">GitLab</option></select></label></div>
