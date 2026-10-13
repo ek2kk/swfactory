@@ -13,14 +13,14 @@ applyTheme(readTheme());
 const labels = ['Backlog', 'Spec', 'Build', 'Review', 'Approve', 'PR/MR created', 'Needs human'];
 const taskPath = (task: Task) => `/projects/${task.project_id}/tasks/${task.id}`;
 
-function DeleteTask({ task, refresh, notify }: { task: Task; refresh: () => Promise<void>; notify: (text: string) => void }) {
+function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () => Promise<void>; notify: (text: string) => void }) {
   const [verification, setVerification] = useState<unknown>(null);
   useEffect(() => {
     if (!task.deletion_state) return;
     let disposed = false;
     api<{ verification: unknown }>(`${taskPath(task)}/deletion`).then(result => { if (!disposed) setVerification(result.verification); }).catch(() => {});
     return () => { disposed = true; };
-  }, [task.id, task.deletion_state]);
+  }, [task.id, task.deletion_state, task.state_version]);
   const [reconciliation, setReconciliation] = useState('');
   const [confirming, setConfirming] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -34,31 +34,65 @@ function DeleteTask({ task, refresh, notify }: { task: Task; refresh: () => Prom
   const [version, setVersion] = useState(task.state_version);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  return <section aria-label="Удаление задачи">
-    {task.deletion_state === 'stopping' && <p role="status">Останавливаем исполнение и публикацию… Карточка будет скрыта после подтверждения остановки.</p>}
+  return <section aria-label={task.archived ? "Остановка исполнения" : "Архивирование задачи"}>
+    {task.deletion_state === 'stopping' && <p role="status">Останавливаем известные процессы. Подтверждение остановки всех процессов пока не получено.</p>}
     {task.deletion_error && <p role="alert">{task.deletion_error}</p>}
     {!!verification && <details><summary>Данные для ручной сверки процессов и публикации</summary><pre>{JSON.stringify(verification, null, 2)}</pre></details>}
-    <button className="secondary" disabled={busy || task.deletion_state === 'stopping'} onClick={() => { setVersion(task.state_version); setConfirming(true); setError(''); }}>{task.deletion_state === 'failed' ? 'Повторить удаление' : 'Удалить'}</button>
+    {!!task.archived && task.deletion_state === 'deleted' && <p role="status">Остановка подтверждена. Карточка остаётся в архиве.</p>}
+    {(!task.archived || task.deletion_state !== 'deleted') && <button className="secondary" disabled={busy || (!!task.archived && task.deletion_state === 'stopping')} onClick={() => { setVersion(task.state_version); setConfirming(true); setError(''); }}>{task.archived ? 'Остановить исполнение / сверить' : 'Архивировать'}</button>}
     {confirming && <dialog ref={dialog} onCancel={event => { event.preventDefault(); if (!busy) setConfirming(false); }} aria-labelledby={`delete-title-${task.id}`} className="delete-confirmation">
-      <h4 id={`delete-title-${task.id}`}>Удалить «{task.title ?? task.description}»?</h4>
-      <p>Исполнение и публикация будут остановлены, карточка скрыта. История, worktrees, branches, отчёты и логи сохранятся. Существующий PR останется. Уже отправленная remote операция могла завершиться — при неизвестном результате потребуется ручная сверка. Восстановление карточки не предусмотрено.</p>
-      {!!task.stop_unverified && task.deletion_state === 'failed' && <label>Ручная сверка: проверьте отсутствие процессов задачи, Codex sessions и их дочерних процессов, а также remote результат публикации. Опишите фактические наблюдения (не вводите credentials). Это ваше подтверждение остановки; backend проверить его самостоятельно не может.<textarea minLength={20} maxLength={4096} value={reconciliation} onChange={event => setReconciliation(event.target.value)} /></label>}
-      <button disabled={busy || version !== task.state_version || (!!task.stop_unverified && task.deletion_state === 'failed' && reconciliation.trim().length < 20)} onClick={async () => {
+      <h4 id={`delete-title-${task.id}`}>{task.archived ? 'Проверить остановку' : 'Архивировать'} «{task.title ?? task.description}»?</h4>
+      <p>{task.archived ? 'Повторим остановку известных процессов. Карточка останется в архиве независимо от результата. Ручная сверка ниже нужна только для подтверждения отсутствия всех процессов и проверки remote результата.' : <>Карточка будет скрыта с доски, новые запуски и публикация заблокированы. Попытаемся остановить известные процессы. Архивирование не подтверждает остановку всех процессов: неизвестный потомок может продолжать работу. История и результаты остановки доступны в архиве; файлы и существующие PR сохраняются. Уже отправленная remote операция могла завершиться. Восстановление карточки не предусмотрено.</>}</p>
+      {!!task.archived && !!task.stop_unverified && task.deletion_state === 'failed' && <label>Необязательная ручная сверка (оставьте пустым для повторной попытки остановки): проверьте отсутствие процессов задачи, Codex sessions и их дочерних процессов, а также remote результат публикации. Опишите фактические наблюдения (не вводите credentials). Это ваше подтверждение остановки; backend проверить его самостоятельно не может.<textarea minLength={20} maxLength={4096} value={reconciliation} onChange={event => setReconciliation(event.target.value)} /></label>}
+      <button disabled={busy || version !== task.state_version || (!!reconciliation.trim() && reconciliation.trim().length < 20)} onClick={async () => {
         setBusy(true); setError('');
         try {
-          const result = await api<{ deleted: boolean; error: string | null; warning: string | null; verification: unknown }>(`${taskPath(task)}/delete`, 'POST', { state_version: version, ...(reconciliation.trim() ? { reconciliation: reconciliation.trim() } : {}) });
-          if (!result.deleted) { setError(result.error ?? 'Остановка не подтверждена.'); setConfirming(false); }
-          else notify(`Задача удалена.${result.warning ? ' ' + result.warning + ' Данные для сверки: ' + JSON.stringify(result.verification) : ''}`);
+          if (task.archived) {
+            const result = await api<{ deleted: boolean; error: string | null; warning: string | null }>(`${taskPath(task)}/stop`, 'POST', { state_version: version, ...(reconciliation.trim() ? { reconciliation: reconciliation.trim() } : {}) });
+            setError(result.error ?? ''); setConfirming(false); setReconciliation('');
+            notify(`${result.deleted ? 'Остановка подтверждена.' : 'Остановка не подтверждена; карточка остаётся в архиве.'}${result.warning ? ' ' + result.warning : ''}`);
+          } else {
+            await api(`${taskPath(task)}/archive`, 'POST', { state_version: version });
+            setConfirming(false);
+            notify('Карточка скрыта. Результат остановки и история доступны в архиве.');
+          }
           await refresh();
         } catch (error) { setError((error as Error).message); await refresh().catch(() => {}); }
         finally { setBusy(false); }
-      }}>{busy ? 'Останавливаем исполнение…' : 'Подтвердить удаление'}</button>{' '}
+      }}>{busy ? 'Выполняем…' : task.archived ? 'Проверить остановку' : 'Подтвердить архивирование'}</button>{' '}
       <button ref={cancelButton} className="secondary" disabled={busy} onClick={() => setConfirming(false)}>Отмена</button>
       {!busy && version !== task.state_version && <p role="status">Карточка изменилась. Отмените подтверждение и откройте его снова.</p>}
       {error && <p role="alert">{error}</p>}
     </dialog>}
-    {!confirming && error && <p role="alert">{error}</p>}
+    {!confirming && error && error !== task.deletion_error && <p role="alert">{error}</p>}
   </section>;
+}
+
+function ArchivedTask({ task, refresh, notify }: { task: Task; refresh: () => Promise<void>; notify: (text: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [history, setHistory] = useState<{ revisions: Revision[]; messages: ChatMessage[]; runs: AgentRun[] } | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    if (!open) return;
+    let disposed = false;
+    api<NonNullable<typeof history>>(`${taskPath(task)}/history`).then(value => { if (!disposed) setHistory(value); }).catch(error => { if (!disposed) setError(error.message); });
+    return () => { disposed = true; };
+  }, [open, task.id, task.state_version]);
+  return <details onToggle={event => { if (event.target === event.currentTarget) setOpen(event.currentTarget.open); }}>
+    <summary>{task.title ?? task.id} · {task.deletion_state === 'deleted' ? 'остановка подтверждена' : task.deletion_state === 'stopping' ? 'остановка выполняется' : 'остановка не подтверждена'}</summary>
+    {open && <>
+      <p>{task.description}</p>
+      {task.publication_status === 'unknown' || task.publication_status === 'pending' ? <p role="alert">Remote операция могла завершиться. Проверьте hosting; автоматического повтора публикации нет.</p> : null}
+      {task.pr_url && <a href={task.pr_url} target="_blank" rel="noreferrer">Существующий PR</a>}
+      <TaskDisposition task={task} refresh={refresh} notify={notify} />
+      {error && <p role="alert">{error}</p>}
+      {history && <>
+        <details><summary>История описания</summary>{history.revisions.map(revision => <div key={revision.revision}><p>Редакция {revision.revision}</p><pre>{revision.description}</pre></div>)}</details>
+        {history.messages.map(message => <Message key={message.id} message={message} />)}
+        {history.runs.map(run => <RunReport key={run.id} task={task} run={run} />)}
+      </>}
+    </>}
+  </details>;
 }
 
 function TaskCard({ task, project, runs, questions, refresh, active, cursor, notify }: { task: Task; project: Project; runs: AgentRun[]; questions: HumanRequest[]; refresh: () => Promise<void>; active: boolean; cursor: number; notify: (text: string) => void }) {
@@ -83,7 +117,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
     <span className="project-name">{project.host}/{project.repository} · {project.checkout}</span>
     <h3>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3>
     <p className="meta">Редакция {task.revision} · {{ idle: task.stage === 'build' ? 'Spec готова · можно запустить Build' : task.stage === 'review' ? 'Ожидает запуска следующего Review' : task.stage === 'approve' ? 'Четыре PASS · ожидает Approve' : 'Не запущена', queued: 'В очереди · ожидает слот', running: task.stage === 'spec' ? 'Codex готовит Spec' : task.stage === 'build' ? 'Codex реализует задачу' : task.stage === 'review' ? 'Codex выполняет Review' : task.stage === 'approve' ? 'Codex принимает решение о публикации' : 'Проверяем checkout и создаём worktree', waiting: 'Нужен ответ человека', interrupted: 'Прервана — нужна ручная проверка', completed: task.stage === 'approve' ? 'Разрешена только публикация PR/MR · публикация ещё не выполнена' : 'Завершена' }[task.run_state]}</p>
-    <DeleteTask task={task} refresh={refresh} notify={notify} />
+    <TaskDisposition task={task} refresh={refresh} notify={notify} />
     <fieldset className="task-controls" disabled={!!task.deletion_state}>
     <div className="stage-tabs" role="tablist" aria-label="Этапы задачи" onKeyDown={event => {
       if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
@@ -339,7 +373,7 @@ function App() {
     if (ready && detailId && !snapshot.tasks.some(task => task.id === detailId)) {
       history.replaceState(null, '', location.pathname);
       setDetailId(''); setOpened(ids => ids.filter(id => id !== detailId));
-      setNotice(value => value || 'Карточка удалена или недоступна.');
+      setNotice(value => value || 'Карточка архивирована или недоступна.');
     }
   }, [ready, snapshot, detailId]);
   const [connection, setConnection] = useState('Подключаемся к backend…');
@@ -364,12 +398,14 @@ function App() {
       setSnapshot(initial); setReady(true);
       events = new EventSource('/api/events');
       events.addEventListener('snapshot', event => { setSnapshot(JSON.parse((event as MessageEvent).data)); setConnection('Сохранено локально · Соединение активно'); });
-      events.addEventListener('change', event => { const change = JSON.parse((event as MessageEvent).data); if (change.type === 'task.deleted') { const payload = JSON.parse(change.payload); setNotice(`Задача удалена.${payload.warning ? ' ' + payload.warning : ''}`); } });
+      events.addEventListener('change', event => { const change = JSON.parse((event as MessageEvent).data); if (change.type === 'task.archived') setNotice('Карточка скрыта. Результат остановки и история доступны в архиве.'); });
       events.onerror = () => setConnection('Связь потеряна. Переподключаемся; сохранённые данные остаются на backend. Если backend перезапущен, откройте новый URL из терминала.');
     })().catch(error => { if (!disposed) { setError(error.message); setConnection('Подключение не выполнено'); } });
     return () => { disposed = true; events?.close(); };
   }, []);
   const visibleTasks = snapshot.tasks.filter(task => !filter || task.project_id === filter);
+  const archived = (snapshot.archived_tasks ?? []).filter(task => !filter || task.project_id === filter);
+  const unverified = (snapshot.archived_tasks ?? []).filter(task => task.deletion_state !== 'deleted');
   const selected = snapshot.projects.find(p => p.id === projectId) ?? snapshot.projects[0];
   return <main>
     <header><div><p className="eyebrow">LOCAL WORKSPACE</p><h1>SW Factory</h1></div><p className="connection" role="status">{connection}</p>
@@ -381,6 +417,7 @@ function App() {
     </header>
     <p className="intro" hidden={!!detailId}>Из описания — в проверяемую спецификацию. Codex работает в отдельном worktree; закрытие вкладки не останавливает задачу.</p>
     {notice && <p role="status">{notice}</p>}
+    {!!unverified.length && <p role="alert">В архиве {unverified.length} задач: остановка всех процессов не подтверждена. Проверьте раздел «Архив» на доске.</p>}
     {error && <p role="alert" className="error">{error}</p>}
     {snapshot.title_error && <p role="alert" className="error">{snapshot.title_error}</p>}
     {snapshot.execution_error && <p role="alert" className="error">{snapshot.execution_error}</p>}
@@ -433,6 +470,7 @@ function App() {
     </div>
     {!!snapshot.projects.length && <details className="projects"><summary>Подключённые проекты ({snapshot.projects.length})</summary>{snapshot.projects.map(p => <div key={p.id}><strong>{p.host}/{p.repository}</strong><p>{p.checkout}</p><p>{p.hosting} · {p.remote} → {p.remote_url} · target: {p.target_branch}</p></div>)}</details>}
     <section className="projects" aria-label="Настройки моделей">{snapshot.projects.map(project => <ModelSettings key={project.id} project={project} refresh={refresh} />)}</section>
+    <section aria-label="Архив" className="projects"><h2>Архив ({archived.length})</h2>{archived.map(task => <ArchivedTask key={task.id} task={task} refresh={refresh} notify={setNotice} />)}{!archived.length && <p>Архив пуст.</p>}</section>
     <div className="board-heading"><h2>Доска <span>{visibleTasks.length}</span></h2><label>Проект <select value={filter} onChange={event => setFilter(event.target.value)}><option value="">Все проекты</option>{snapshot.projects.map(p => <option key={p.id} value={p.id}>{p.host}/{p.repository} · {p.checkout}</option>)}</select></label></div>
     <div className="board" tabIndex={0} role="region" aria-label="Kanban, горизонтальная прокрутка">
       {stages.map((stage, index) => {

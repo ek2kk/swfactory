@@ -31,7 +31,7 @@ export class Store {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       const version = this.db.pragma('user_version', { simple: true });
-      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13) throw new Error('Версия базы новее приложения. Обновите приложение.');
+      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13 && version !== 14) throw new Error('Версия базы новее приложения. Обновите приложение.');
       this.db.transaction(() => {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS projects (
@@ -90,7 +90,7 @@ export class Store {
           }
         }
         const taskColumns = this.db.pragma('table_info(tasks)') as { name: string }[];
-        for (const [name, type] of [['publication_status', 'TEXT'], ['pr_url', 'TEXT'], ['pr_number', 'INTEGER'], ['deletion_state', 'TEXT'], ['deletion_error', 'TEXT'], ['execution_unverified', 'INTEGER NOT NULL DEFAULT 0'], ['stop_unverified', 'INTEGER NOT NULL DEFAULT 0']]) {
+        for (const [name, type] of [['publication_status', 'TEXT'], ['pr_url', 'TEXT'], ['pr_number', 'INTEGER'], ['deletion_state', 'TEXT'], ['deletion_error', 'TEXT'], ['execution_unverified', 'INTEGER NOT NULL DEFAULT 0'], ['stop_unverified', 'INTEGER NOT NULL DEFAULT 0'], ['archived', 'INTEGER NOT NULL DEFAULT 0']]) {
           if (!taskColumns.some(c => c.name === name)) this.db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
         }
         for (const task of this.db.prepare("SELECT id FROM tasks WHERE publication_status = 'pending'").all() as { id: string }[]) {
@@ -110,7 +110,8 @@ export class Store {
           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), delivered_at TEXT, error TEXT);
           CREATE INDEX IF NOT EXISTS chat_task ON chat_messages(task_id);
           UPDATE chat_messages SET status = 'unknown', error = 'Backend перезапущен без подтверждения доставки. Автоматического повтора нет.' WHERE status = 'sending';`);
-        this.db.pragma('user_version = 13');
+        this.db.pragma('user_version = 14');
+        if (Number(version) < 14) this.db.exec("UPDATE tasks SET archived = 1 WHERE deletion_state = 'deleted'");
         // No OS proof survives restart. Never infer termination from SQLite run status.
         if (Number(version) < 13) {
           this.db.exec(`UPDATE tasks SET stop_unverified = 1
@@ -142,7 +143,8 @@ export class Store {
   snapshot(): Snapshot {
     return {
       projects: this.db.prepare('SELECT * FROM projects ORDER BY rowid').all() as Project[],
-      tasks: this.db.prepare("SELECT * FROM tasks WHERE deletion_state IS NOT 'deleted' ORDER BY rowid").all() as Task[],
+      tasks: this.db.prepare("SELECT * FROM tasks WHERE archived = 0 AND deletion_state IS NOT 'deleted' ORDER BY rowid").all() as Task[],
+      archived_tasks: this.db.prepare("SELECT * FROM tasks WHERE archived = 1 OR deletion_state = 'deleted' ORDER BY rowid").all() as Task[],
       runs: this.runs().filter(r => !this.blocked(r.task_id)), execution_pause: this.executionPause(),
       human_requests: this.humanRequests().filter(r => !this.blocked(r.task_id)),
       cursor: (this.db.prepare('SELECT coalesce(max(id), 0) AS id FROM events').get() as { id: number }).id,
@@ -197,6 +199,15 @@ export class Store {
     if (task.deletion_state) throw new Problem(409, 'Удаление задачи принято. Новые действия заблокированы.');
     return task;
   }
+  archiveTask(projectId: string, id: string, version: number) {
+    const task = this.rawTask(projectId, id);
+    if (task.state_version !== version) throw new Problem(409, 'Карточка изменилась. Обновите её перед архивированием.');
+    if (task.archived) return task;
+    if (task.deletion_state !== 'stopping') this.beginDeletion(projectId, id, version);
+    this.db.prepare('UPDATE tasks SET archived = 1, state_version = state_version + 1 WHERE id = ?').run(id);
+    this.event('task.archived', id, { warning: 'Карточка скрыта; результат остановки доступен в архиве.' });
+    return this.rawTask(projectId, id);
+  }
   beginDeletion(projectId: string, id: string, version: number, reconciliation?: string) {
     const task = this.rawTask(projectId, id);
     if (task.deletion_state === 'deleted') return task;
@@ -218,7 +229,7 @@ export class Store {
         .run(error ? 'failed' : 'deleted', error ?? null, id);
       if (!error) {
         this.db.prepare("UPDATE runs SET status = 'interrupted', error = 'Задача удалена.', finished_at = ? WHERE task_id = ? AND status IN ('queued','running')").run(new Date().toISOString(), id);
-        this.db.prepare("UPDATE tasks SET run_state = 'interrupted', title_state = CASE WHEN title_state IN ('pending','running') THEN 'interrupted' ELSE title_state END, publication_status = CASE WHEN publication_status = 'pending' THEN 'unknown' ELSE publication_status END WHERE id = ?").run(id);
+        this.db.prepare("UPDATE tasks SET archived = 1, run_state = 'interrupted', title_state = CASE WHEN title_state IN ('pending','running') THEN 'interrupted' ELSE title_state END, publication_status = CASE WHEN publication_status = 'pending' THEN 'unknown' ELSE publication_status END WHERE id = ?").run(id);
       }
       this.event(error ? 'task.deletion-failed' : 'task.deleted', id, { error: error ?? null, warning: (this.db.prepare('SELECT publication_status FROM tasks WHERE id = ?').get(id) as Task).publication_status === 'unknown' ? 'Remote операция могла завершиться. Проверьте hosting вручную; автоматического повтора нет. Task marker: ' + id : null });
     })();
@@ -334,6 +345,10 @@ export class Store {
   }
   specRun(projectId: string, taskId: string, id: string) {
     this.task(projectId, taskId);
+    return this.readRun(projectId, taskId, id);
+  }
+  readRun(projectId: string, taskId: string, id: string) {
+    this.rawTask(projectId, taskId);
     const run = this.runs().find(run => run.id === id && run.task_id === taskId && run.project_id === projectId);
     if (!run) throw new Problem(404, 'Запуск не найден в этой задаче.');
     return run;
@@ -608,7 +623,7 @@ export class Store {
     })();
   }
   revisions(projectId: string, id: string): Revision[] {
-    this.task(projectId, id);
+    this.rawTask(projectId, id);
     return this.db.prepare('SELECT * FROM task_revisions WHERE task_id = ? ORDER BY revision').all(id) as Revision[];
   }
 }

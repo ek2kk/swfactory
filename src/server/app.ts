@@ -127,6 +127,24 @@ export async function createApp(options: {
     publish();
     return result;
   });
+  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/archive', {
+    schema: { params: taskParams, body: object({ request_id: uuid, state_version: version }) },
+  }, async request => {
+    const { projectId, taskId } = request.params;
+    const { request_id, state_version } = request.body;
+    const result = store.mutate(request_id, JSON.stringify(['task.archive', projectId, taskId, state_version]),
+      () => store.archiveTask(projectId, taskId, state_version));
+    if (store.rawTask(projectId, taskId).deletion_state === 'stopping') {
+      void controller.deleteTask(taskId).catch(() => { controller.error = 'Не удалось сохранить результат остановки. Проверьте архив и backend.'; publish(); });
+    }
+    publish();
+    return result;
+  });
+  app.get<{ Params: { projectId: string; taskId: string } }>('/api/projects/:projectId/tasks/:taskId/history', { schema: { params: taskParams } }, async request => {
+    const { projectId, taskId } = request.params;
+    store.rawTask(projectId, taskId);
+    return { revisions: store.revisions(projectId, taskId), messages: controller.chat.messages(taskId), runs: store.runs().filter(run => run.task_id === taskId) };
+  });
   function deletionResult(projectId: string, taskId: string) {
     const task = store.rawTask(projectId, taskId);
     return {
@@ -139,12 +157,13 @@ export async function createApp(options: {
     };
   }
   app.get<{ Params: { projectId: string; taskId: string } }>('/api/projects/:projectId/tasks/:taskId/deletion', { schema: { params: taskParams } }, async request => deletionResult(request.params.projectId, request.params.taskId));
-  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number; reconciliation?: string } }>('/api/projects/:projectId/tasks/:taskId/delete', {
+  for (const action of ['delete', 'stop']) app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number; reconciliation?: string } }>(`/api/projects/:projectId/tasks/:taskId/${action}`, {
     schema: { params: taskParams, body: { ...object({ request_id: uuid, state_version: version, reconciliation: { type: 'string', minLength: 20, maxLength: 4096 } }), required: ['request_id', 'state_version'] } },
   }, async request => {
     const { projectId, taskId } = request.params;
     const { request_id, state_version, reconciliation } = request.body;
-    const fingerprint = JSON.stringify(['task.delete', projectId, taskId, state_version, reconciliation ?? null]);
+    const fingerprint = JSON.stringify([`task.${action}`, projectId, taskId, state_version, reconciliation ?? null]);
+    if (action === 'stop' && !store.rawTask(projectId, taskId).archived) throw new Problem(409, 'Сначала архивируйте задачу.');
     const prior = store.replay(request_id, fingerprint) as { stopping?: boolean } | undefined;
     if (prior && !prior.stopping) return prior;
     if (!prior) {
@@ -315,7 +334,7 @@ export async function createApp(options: {
     schema: { params: object({ projectId: uuid, taskId: uuid, runId: uuid }) },
   }, async request => {
     const { projectId, taskId, runId } = request.params;
-    const run = store.specRun(projectId, taskId, runId);
+    const run = store.readRun(projectId, taskId, runId);
     if (!run.report) throw new Problem(404, 'Сохранённый отчёт пока отсутствует.');
     return { text: readReport(directory, runId) };
   });
@@ -323,21 +342,21 @@ export async function createApp(options: {
     schema: { params: object({ projectId: uuid, taskId: uuid, runId: uuid }) },
   }, async request => {
     const { projectId, taskId, runId } = request.params;
-    store.specRun(projectId, taskId, runId);
+    store.readRun(projectId, taskId, runId);
     return store.output(runId) ?? { text: '', updated_at: null, version: 0 };
   });
   app.get<{ Params: { projectId: string; taskId: string; runId: string }; Querystring: { offset: string } }>('/api/projects/:projectId/tasks/:taskId/runs/:runId/transcript', {
     schema: { params: object({ projectId: uuid, taskId: uuid, runId: uuid }), querystring: object({ offset: { type: 'string', pattern: '^[0-9]{1,10}$' } }) },
   }, async request => {
     const { projectId, taskId, runId } = request.params;
-    store.specRun(projectId, taskId, runId);
+    store.readRun(projectId, taskId, runId);
     return readTranscript(directory, runId, Number(request.query.offset));
   });
   app.get<{ Params: { projectId: string; taskId: string; runId: string }; Querystring: { name: 'events.jsonl' | 'stderr.log'; offset: string } }>('/api/projects/:projectId/tasks/:taskId/runs/:runId/log', {
     schema: { params: object({ projectId: uuid, taskId: uuid, runId: uuid }), querystring: object({ name: { enum: ['events.jsonl', 'stderr.log'] }, offset: { type: 'string', pattern: '^(0|[1-9][0-9]{0,8})$' } }) },
   }, async request => {
     const { projectId, taskId, runId } = request.params;
-    store.specRun(projectId, taskId, runId);
+    store.readRun(projectId, taskId, runId);
     return readLog(directory, runId, request.query.name, Number(request.query.offset));
   });
   app.post<{ Body: { request_id: string; state_version: number } }>('/api/execution/resume', {
