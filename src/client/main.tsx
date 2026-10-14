@@ -2,7 +2,7 @@ import { ModelPicker, ReasoningPicker } from './models.js';
 import { api } from './api.js';
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { stages, type Project, type Task, type Snapshot, type Revision, roles, allRoles, reviewsFor, type Settings, type AgentRun, type HumanRequest, type ChatMessage } from '../shared.js';
+import { stages, type Project, type Task, type Snapshot, type Revision, roles, allRoles, requiredReviews, type Settings, type AgentRun, type HumanRequest, type ChatMessage } from '../shared.js';
 import './style.css';
 import { Composer, Message, RunConversation } from './chat.js';
 import { AgentOutput, RunProgress } from './output.js';
@@ -215,11 +215,14 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
       <div className="stage-tabs">{taskRoles.map(role => {
         const status = role === 'spec' && decision?.required === false
           ? { state: 'idle', icon: '−', label: decision.mode === 'skip' ? 'Пропущена пользователем' : 'Не требуется' }
-          : stageStatus(runs.filter(run => run.role === role), task.revision, questions);
-        return <button key={role} id={`${task.id}-tab-${role}`} role="tab" aria-selected={tab === role} aria-label={`${stageNames[role]}: ${status.label}`} title={status.label} aria-controls={`${task.id}-panel-${role}`} tabIndex={tab === role ? 0 : -1} className={`stage-tab status-${status.state}`} onClick={() => setTab(role)}><span aria-hidden="true">{status.icon}</span> {stageNames[role]}</button>;
+          : latest?.description_revision === task.revision && latest.review_plan?.checks.some(c => c.role === role && (!c.required || c.reuse_run_id))
+            ? { state: 'idle', icon: '○', label: latest.review_plan.checks.find(c => c.role === role)!.reuse_run_id ? 'Предыдущий PASS применим' : 'Не требуется' }
+            : stageStatus(runs.filter(run => run.role === role), task.revision, questions);
+        return <button key={role} id={`${task.id}-tab-${role}`} role="tab" aria-selected={tab === role} aria-label={`${stageNames[role]}: ${status.label}`} title={latest?.review_plan?.checks.find(c => c.role === role)?.reason ?? status.label} aria-controls={`${task.id}-panel-${role}`} tabIndex={tab === role ? 0 : -1} className={`stage-tab status-${status.state}`} onClick={() => setTab(role)}><span aria-hidden="true">{status.icon}</span> {stageNames[role]}</button>;
       })}</div>
     </div>
     <div role="tabpanel" id={`${task.id}-panel-overview`} aria-labelledby={`${task.id}-tab-overview`} hidden={tab !== 'overview'} tabIndex={0}>
+    {latest?.review_plan && <div aria-label="План Review">{latest.review_plan.checks.map(check => <p key={check.role} className="meta">{stageNames[check.role]}: {check.reuse_run_id ? 'Предыдущий PASS применим' : check.required ? 'Обязателен' : 'Не требуется'} — {check.reason}</p>)}</div>}
     {task.publication_status === 'pending' && <p role="status">Публикуем GitHub PR… Повторный запуск заблокирован.</p>}
     {task.publication_status === 'unknown' && <p role="alert">Исход публикации неизвестен. Нужна ручная сверка GitHub и source branch из отчёта (task marker: {task.id}). Слепой повтор запрещён; worktree сохранён.</p>}
     {task.publication_status === 'confirmed' && task.pr_url && <p><a href={task.pr_url} target="_blank" rel="noreferrer">GitHub PR #{task.pr_number}</a> · CI не проверен; merge выполняется на GitHub.</p>}
@@ -242,7 +245,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
       try { await api(`${taskPath(task)}/${task.stage === 'approve' ? 'approve' : task.stage === 'review' ? 'review' : task.stage === 'build' ? 'build' : 'start'}`, 'POST', { state_version: task.state_version, ...(task.stage === 'backlog' ? { spec_mode: specMode } : {}) }); await refresh(); }
       catch (error) { setError((error as Error).message); } finally { setBusy(false); }
     }}>{busy ? 'Ставим в очередь…' : task.stage === 'approve' ? 'Запустить Approve' : task.stage === 'review' ? 'Продолжить Review' : task.stage === 'build' ? 'Запустить Build' : 'Приступить к реализации'}</button>}
-    {!editing && task.stage === 'needs-human' && task.run_state === 'interrupted' && latest && latest.role === reviewsFor(latest.config).at(-1)
+    {!editing && task.stage === 'needs-human' && task.run_state === 'interrupted' && latest && latest.role === requiredReviews(latest).at(-1)
       && runs.at(-1)?.status === 'completed' && !runs.at(-1)?.stale && ['PASS', 'CHANGES'].includes(runs.at(-1)?.outcome ?? '') && <>
       <p>Раунд завершён с замечаниями. Выполнено доработок: {runs.at(-1)?.repair_attempt}/2. Отчёты и оставшиеся findings — на вкладках этапов.</p>
       <button disabled={busy} onClick={async () => {
