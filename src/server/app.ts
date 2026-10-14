@@ -10,7 +10,7 @@ import { generateTitle } from './title.js';
 import { inspectProject } from './git.js';
 import { chooseProjectFolder } from './folder-dialog.js';
 import { GithubIssues, type IssueCommand } from './issues.js';
-import { roles, allRoles, type ProjectInput, type Project, type Settings, type AgentRun } from '../shared.js';
+import { roles, allRoles, type SpecMode, type ProjectInput, type Project, type Settings, type AgentRun } from '../shared.js';
 import { realpathSync } from 'node:fs';
 import { SpecController } from './spec.js';
 import { readLog, readReport } from './artifacts.js';
@@ -247,16 +247,16 @@ export async function createApp(options: {
     const result = store.mutate(request_id, fingerprint, () => store.saveSettings(projectId, config, state_version));
     publish(); return result;
   });
-  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/start', {
-    schema: { params: taskParams, body: object({ request_id: uuid, state_version: version }) },
+  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number; spec_mode?: SpecMode } }>('/api/projects/:projectId/tasks/:taskId/start', {
+    schema: { params: taskParams, body: { ...object({ request_id: uuid, state_version: version, spec_mode: { enum: ['auto', 'spec', 'skip'] } }), required: ['request_id', 'state_version'] } },
   }, async request => {
     const { projectId, taskId } = request.params;
-    const { request_id, state_version } = request.body;
-    const fingerprint = JSON.stringify(['spec.start', projectId, taskId, state_version]);
+    const { request_id, state_version, spec_mode = 'spec' } = request.body;
+    const fingerprint = JSON.stringify(['spec.start', projectId, taskId, state_version, ...(spec_mode === 'spec' ? [] : [spec_mode])]);
     const prior = store.replay(request_id, fingerprint);
     if (prior !== undefined) return prior;
     if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
-    const result = store.mutate(request_id, fingerprint, () => store.queueSpec(projectId, taskId, state_version, directory)) as AgentRun;
+    const result = store.mutate(request_id, fingerprint, () => store.queueSpec(projectId, taskId, state_version, directory, spec_mode)) as AgentRun;
     controller.enqueue(result);
     publish(); return result;
   });

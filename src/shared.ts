@@ -4,7 +4,10 @@ export type Project = {
   hosting: 'github' | 'gitlab'; host: string; repository: string; target_branch: string; state_version: number;
 };
 export type ProjectInput = Pick<Project, 'checkout' | 'remote' | 'hosting' | 'target_branch'>;
+export type SpecMode = 'auto' | 'spec' | 'skip';
+export type SpecDecision = { revision: number; mode: SpecMode; required: boolean | null; reason: string; missing: string[] };
 export type Task = {
+  spec_decision?: SpecDecision | null;
   issue_number?: number | null; issue_url?: string | null;
   id: string; project_id: string; description: string; title: string | null;
   stage: typeof stages[number]; run_state: 'idle' | 'queued' | 'running' | 'waiting' | 'interrupted' | 'completed';

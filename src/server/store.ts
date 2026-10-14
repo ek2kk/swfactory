@@ -2,7 +2,11 @@ import Database from 'better-sqlite3';
 import { mkdirSync, chmodSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { defaultModels, reviewsFor, type ApproveResult, type ReviewResult, type BuildResult, type HumanRequest, type SpecResult, type Settings, type AgentRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision, type ExecutionPause } from '../shared.js';
+import { defaultModels, reviewsFor, type SpecMode, type SpecDecision, type ApproveResult, type ReviewResult, type BuildResult, type HumanRequest, type SpecResult, type Settings, type AgentRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision, type ExecutionPause } from '../shared.js';
+
+function parseTask(task: Task): Task {
+  return { ...task, spec_decision: typeof task.spec_decision === 'string' ? JSON.parse(task.spec_decision) : task.spec_decision };
+}
 
 export class Problem extends Error {
   constructor(public statusCode: number, message: string) { super(message); }
@@ -33,7 +37,7 @@ export class Store {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       const version = this.db.pragma('user_version', { simple: true });
-      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13 && version !== 14 && version !== 15 && version !== 16) throw new Error('Версия базы новее приложения. Обновите приложение.');
+      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13 && version !== 14 && version !== 15 && version !== 16 && version !== 17) throw new Error('Версия базы новее приложения. Обновите приложение.');
       this.db.transaction(() => {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS projects (
@@ -92,7 +96,7 @@ export class Store {
           }
         }
         const taskColumns = this.db.pragma('table_info(tasks)') as { name: string }[];
-        for (const [name, type] of [['publication_status', 'TEXT'], ['pr_url', 'TEXT'], ['pr_number', 'INTEGER'], ['deletion_state', 'TEXT'], ['deletion_error', 'TEXT'], ['execution_unverified', 'INTEGER NOT NULL DEFAULT 0'], ['stop_unverified', 'INTEGER NOT NULL DEFAULT 0'], ['archived', 'INTEGER NOT NULL DEFAULT 0'], ['archive_source', 'TEXT'], ['archive_reason', 'TEXT']]) {
+        for (const [name, type] of [['spec_decision', 'TEXT'], ['publication_status', 'TEXT'], ['pr_url', 'TEXT'], ['pr_number', 'INTEGER'], ['deletion_state', 'TEXT'], ['deletion_error', 'TEXT'], ['execution_unverified', 'INTEGER NOT NULL DEFAULT 0'], ['stop_unverified', 'INTEGER NOT NULL DEFAULT 0'], ['archived', 'INTEGER NOT NULL DEFAULT 0'], ['archive_source', 'TEXT'], ['archive_reason', 'TEXT']]) {
           if (!taskColumns.some(c => c.name === name)) this.db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
         }
         for (const task of this.db.prepare("SELECT id FROM tasks WHERE publication_status = 'pending'").all() as { id: string }[]) {
@@ -133,7 +137,7 @@ export class Store {
           }
           this.db.exec("UPDATE tasks SET archive_source = 'manual' WHERE archived = 1 AND archive_source IS NULL");
         }
-        this.db.pragma('user_version = 16');
+        this.db.pragma('user_version = 17');
         // No OS proof survives restart. Never infer termination from SQLite run status.
         if (Number(version) < 13) {
           this.db.exec(`UPDATE tasks SET stop_unverified = 1
@@ -165,8 +169,8 @@ export class Store {
   snapshot(): Snapshot {
     return {
       projects: this.db.prepare('SELECT * FROM projects ORDER BY rowid').all() as Project[],
-      tasks: this.db.prepare("SELECT t.*, g.issue_number, g.issue_url FROM tasks t LEFT JOIN github_issues g ON g.task_id = t.id WHERE archived = 0 ORDER BY t.rowid").all() as Task[],
-      archived_tasks: this.db.prepare("SELECT t.*, g.issue_number, g.issue_url FROM tasks t LEFT JOIN github_issues g ON g.task_id = t.id WHERE archived = 1 ORDER BY t.rowid").all() as Task[],
+      tasks: (this.db.prepare("SELECT t.*, g.issue_number, g.issue_url FROM tasks t LEFT JOIN github_issues g ON g.task_id = t.id WHERE archived = 0 ORDER BY t.rowid").all() as Task[]).map(parseTask),
+      archived_tasks: (this.db.prepare("SELECT t.*, g.issue_number, g.issue_url FROM tasks t LEFT JOIN github_issues g ON g.task_id = t.id WHERE archived = 1 ORDER BY t.rowid").all() as Task[]).map(parseTask),
       runs: this.runs().filter(r => !(this.db.prepare('SELECT archived FROM tasks WHERE id = ?').get(r.task_id) as Task).archived), execution_pause: this.executionPause(),
       human_requests: this.humanRequests().filter(r => !this.blocked(r.task_id)),
       cursor: (this.db.prepare('SELECT coalesce(max(id), 0) AS id FROM events').get() as { id: number }).id,
@@ -211,7 +215,7 @@ export class Store {
   rawTask(projectId: string, id: string) {
     const task = this.db.prepare('SELECT t.*, g.issue_number, g.issue_url FROM tasks t LEFT JOIN github_issues g ON g.task_id = t.id WHERE t.id = ? AND t.project_id = ?').get(id, projectId) as Task | undefined;
     if (!task) throw new Problem(404, 'Задача не найдена в этом проекте.');
-    return task;
+    return parseTask(task);
   }
   blocked(id: string) {
     const task = this.db.prepare('SELECT archived, deletion_state FROM tasks WHERE id = ?').get(id) as Task | undefined;
@@ -462,11 +466,14 @@ export class Store {
     if (!run) throw new Problem(404, 'Запуск не найден в этой задаче.');
     return run;
   }
-  queueSpec(projectId: string, taskId: string, version: number, directory: string) {
+  queueSpec(projectId: string, taskId: string, version: number, directory: string, mode: SpecMode = 'spec') {
     const task = this.task(projectId, taskId);
     if (task.state_version !== version || task.stage !== 'backlog' || task.run_state !== 'idle') throw new Problem(409, 'Задача изменилась или уже запущена.');
+    const decision: SpecDecision = mode === 'auto' && task.spec_decision?.revision === task.revision && task.spec_decision.mode === 'auto'
+      ? task.spec_decision : { revision: task.revision, mode, required: mode === 'auto' ? null : mode === 'spec',
+        reason: mode === 'auto' ? 'Ожидается оценка достаточности требований.' : mode === 'skip' ? 'Выбран прямой Build по сохранённым требованиям.' : 'Spec запрошена пользователем', missing: [] };
     const id = randomUUID();
-    const run: AgentRun = { output_preview: null, output_at: null, output_version: null, output_length: null, diagnostic: {}, started_at: null, finished_at: null, repair_round_id: null, repair_attempt: 0, spec_run_id: null, round_id: null, stale: 0, role: 'spec', head_sha: null, source_hash: null, id, task_id: taskId, project_id: projectId, description_revision: task.revision,
+    const run: AgentRun = { output_preview: null, output_at: null, output_version: null, output_length: null, diagnostic: {}, started_at: null, finished_at: null, repair_round_id: null, repair_attempt: 0, spec_run_id: null, round_id: null, stale: 0, role: decision.required === true ? 'spec' : 'build', head_sha: null, source_hash: null, id, task_id: taskId, project_id: projectId, description_revision: task.revision,
       config: this.settings(projectId), project_version: this.project(projectId).state_version, status: 'queued', parent_run_id: null,
       branch: `swfactory/${taskId}/${id}`, worktree: join(directory, 'worktrees', projectId, id),
       base_sha: null, outcome: null, error: null, report: 0 };
@@ -478,8 +485,14 @@ export class Store {
       this.db.prepare("UPDATE tasks SET title_state = 'interrupted' WHERE id = ?").run(taskId);
       this.event('title.interrupted', taskId, { revision: task.revision, reason: 'spec' });
     }
-    this.event('spec.queued', taskId, { run_id: id });
+    this.saveSpecDecision(run, decision);
+    this.event(`${run.role}.queued`, taskId, { run_id: id });
     return run;
+  }
+  saveSpecDecision(run: AgentRun, decision: SpecDecision) {
+    this.db.prepare('UPDATE tasks SET spec_decision = ? WHERE id = ? AND revision = ?')
+      .run(JSON.stringify(decision), run.task_id, run.description_revision);
+    this.event('spec.decision', run.task_id, { ...decision, run_id: run.id });
   }
   queueBuild(projectId: string, taskId: string, version: number) {
     const task = this.task(projectId, taskId);
@@ -503,7 +516,8 @@ export class Store {
       const previous = this.runs().filter(run => run.task_id === taskId).at(-1);
       if (task.state_version !== version || task.stage !== 'review' || task.run_state !== 'idle'
         || !previous || previous.status !== 'completed' || previous.description_revision !== task.revision
-        || previous.stale || !previous.head_sha || !previous.source_hash || !previous.spec_run_id
+        || previous.stale || !previous.head_sha || !previous.source_hash
+        || (!previous.spec_run_id && !(task.spec_decision?.revision === task.revision && task.spec_decision.required === false))
         || !(previous.role === 'build' ? previous.outcome === 'READY' : ['PASS', 'CHANGES'].includes(previous.outcome ?? ''))) {
         throw new Problem(409, 'Нужна актуальная реализация или завершённый reviewer.');
       }

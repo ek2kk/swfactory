@@ -37,6 +37,7 @@ export type HistoryItem = {
 };
 const time = (at: string) => Date.parse(at) || 0;
 const eventTitles: Record<string, string> = {
+  'spec.decision': 'Решение о Spec',
   'run.interrupt-requested': 'Запрошена остановка', 'run.retried': 'Продолжение',
   'human.requested': 'Нужен ответ человека', 'human.answered': 'Ответ человека',
   'approve.decided': 'Решение человека', 'repair.queued': 'Доработка', 'repair.restarted': 'Продолжение после доработки',

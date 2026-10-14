@@ -577,3 +577,20 @@ test('task event history is scoped, paginated and preserves saved order for relo
   assert.equal((await app.inject({ url: `${url}?after=0`, headers: { host: headers.host } })).statusCode, 401);
   assert.equal((await app.inject({ url: `/api/projects/${randomUUID()}/tasks/${task.id}/events?after=0`, headers })).statusCode, 404);
 });
+
+test('start persists explicit Spec mode, validates it and binds replay to the selection', async t => {
+  const { app, store, headers, project } = await fixture(t);
+  t.mock.method(SpecController.prototype, 'enqueue', () => {});
+  for (const spec_mode of ['skip', 'auto', 'spec']) {
+    const task = store.createTask(project.id, 'Concrete requirements', 1);
+    const url = `/api/projects/${project.id}/tasks/${task.id}/start`;
+    const payload = { request_id: randomUUID(), state_version: task.state_version, spec_mode };
+    assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...payload, spec_mode: 'invalid' } })).statusCode, 400);
+    const started = await app.inject({ method: 'POST', url, headers, payload });
+    assert.equal(started.statusCode, 200);
+    assert.equal(started.json().role, spec_mode === 'spec' ? 'spec' : 'build');
+    assert.deepEqual((await app.inject({ method: 'POST', url, headers, payload })).json(), started.json());
+    assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...payload, spec_mode: spec_mode === 'spec' ? 'skip' : 'spec' } })).statusCode, 409);
+    assert.equal(store.snapshot().tasks.find(t => t.id === task.id)?.spec_decision?.mode, spec_mode);
+  }
+});
