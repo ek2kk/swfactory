@@ -6,6 +6,7 @@ import { setImmediate } from 'node:timers/promises';
 import { transformSync } from 'esbuild';
 import * as jsx from 'react/jsx-runtime';
 import * as shared from '../src/shared.js';
+import * as stageHistory from '../src/client/stageHistory.js';
 
 test('App reports unavailable live updates and restores active status and current data on snapshot', async () => {
   const initial = { projects: [], tasks: [], human_requests: [], cursor: 1,
@@ -34,7 +35,7 @@ test('App reports unavailable live updates and restores active status and curren
     'react-dom/client': { createRoot: () => ({ render: (element: { type: () => unknown }) => element.type() }) },
     './api.js': { api: async () => structuredClone(initial) },
     './theme.js': { readTheme: () => 'system', applyTheme: () => {} },
-    '../shared.js': shared,
+    '../shared.js': shared, './stageHistory.js': stageHistory,
     './models.js': {}, './chat.js': {}, './output.js': {}, './taskView.js': {}, './style.css': {},
   };
   // Run the real App with hook/module doubles; no browser or extra runtime dependency.
@@ -95,7 +96,7 @@ test('GitHub refresh controls follow project snapshots, prevent double clicks an
     'react-dom/client': { createRoot: () => ({ render: (element: { type: () => any }) => { App = element.type; App(); } }) },
     './api.js': { api: (...args: unknown[]) => { calls.push(args); return request; } },
     './theme.js': { readTheme: () => 'system', applyTheme: () => {} },
-    '../shared.js': shared,
+    '../shared.js': shared, './stageHistory.js': stageHistory,
     './models.js': {}, './chat.js': {}, './output.js': {}, './taskView.js': {}, './style.css': {},
   };
   const source = readFileSync(new URL('../src/client/main.tsx', import.meta.url), 'utf8');

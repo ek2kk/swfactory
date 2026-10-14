@@ -76,3 +76,29 @@ test('manual archive of a restored blocked card focuses its summary when the dia
     else Reflect.deleteProperty(globalThis, 'document');
   }
 });
+
+test('history prepends restore the visible old event without moving focus; latest view is left alone', async () => {
+  const { HistoryFlow } = await import('../src/client/taskView.js');
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const scrolls: number[] = [];
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { scrollBy: (_x: number, y: number) => scrolls.push(y) } });
+  let top = -400, eventTop = -20;
+  const old = { dataset: { historyId: 'old' }, getBoundingClientRect: () => ({ top: eventTop, bottom: eventTop + 100 }) };
+  const above = { dataset: { historyId: 'above' }, getBoundingClientRect: () => ({ top: -300, bottom: -100 }) };
+  const view = new HistoryFlow({ children: null });
+  view.element.current = { getBoundingClientRect: () => ({ top }), querySelectorAll: () => [above, old] } as unknown as HTMLDivElement;
+  try {
+    const anchor = view.getSnapshotBeforeUpdate();
+    assert.deepEqual(anchor, { id: 'old', top: -20 });
+    eventTop += 200;
+    view.componentDidUpdate({}, {}, anchor);
+    assert.deepEqual(scrolls, [200]);
+    top = 100;
+    assert.equal(view.getSnapshotBeforeUpdate(), null, 'no anchoring when already reading the newest event');
+    view.componentDidUpdate({}, {}, null);
+    assert.deepEqual(scrolls, [200]);
+  } finally {
+    if (original) Object.defineProperty(globalThis, 'window', original);
+    else Reflect.deleteProperty(globalThis, 'window');
+  }
+});
