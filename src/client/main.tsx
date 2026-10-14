@@ -455,7 +455,7 @@ function App() {
         if (change.type === 'task.archived') setNotice('Карточка скрыта. Результат остановки и история доступны в архиве.');
         if (change.type === 'task.restored') setNotice('Карточка возвращена на доску. Исполнение автоматически не возобновляется.');
       });
-      events.onerror = () => setConnection('Связь потеряна. Переподключаемся; сохранённые данные остаются на backend. Если backend перезапущен, откройте новый URL из терминала.');
+      events.onerror = () => setConnection('Live-обновления недоступны. Переподключаемся. Это само по себе не означает остановку задачи. Обновите страницу, чтобы получить актуальное состояние');
     })().catch(error => { if (!disposed) { setError(error.message); setConnection('Подключение не выполнено'); } });
     return () => { disposed = true; events?.close(); };
   }, []);

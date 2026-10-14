@@ -125,6 +125,97 @@ test('SSE reconnect replays missed events, snapshots and live changes', async t 
   assert.ok(!reconnect.includes('"type":"run.output"'));
 });
 
+for (const reconnect of [false, true]) test(`SSE large snapshot and live update${reconnect ? ' with replay over 500 events' : ''}`, { timeout: 5000 }, async t => {
+  const { app, headers, store, project } = await fixture(t);
+  const description = 'SSE ' + 'x'.repeat(99_996);
+  const task = store.createTask(project.id, description, 1);
+  const editable = store.createTask(project.id, 'Edit trigger', 1);
+  if (reconnect) for (let i = 0; i < 1100; i++) store.event('test.replay', task.id, { i });
+  const initialCursor = store.snapshot().cursor;
+  const expectedIds: number[] = [];
+  if (reconnect) {
+    let cursor = 1;
+    while (cursor < initialCursor) {
+      const batch = store.events(cursor);
+      expectedIds.push(...batch.map(event => event.id));
+      cursor = batch.at(-1)!.id;
+    }
+    assert.ok(expectedIds.length > 500);
+  }
+  let highWaterMark = 0;
+  app.server.on('request', (_request, response) => { highWaterMark = response.writableHighWaterMark; });
+  await app.listen({ port: 0, host: '127.0.0.1' });
+  const address = app.server.address(); assert.ok(address && typeof address !== 'string');
+  const frames = await new Promise<{ id: number; event: string; data: any }[]>((resolve, reject) => {
+    const frames: { id: number; event: string; data: any }[] = [];
+    const request = get(`http://127.0.0.1:${address.port}/api/events`, {
+      headers: reconnect ? { ...headers, 'last-event-id': '1' } : headers,
+    }, response => {
+      assert.equal(response.statusCode, 200);
+      let buffer = '', snapshots = 0;
+      response.on('error', reject);
+      response.on('data', chunk => {
+        buffer += chunk;
+        let boundary: number;
+        while ((boundary = buffer.indexOf('\n\n')) !== -1) {
+          const frame = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2);
+          const match = frame.match(/^id: (\d+)\nevent: (\w+)\ndata: (.+)$/s);
+          if (!match) continue;
+          const parsed = { id: Number(match[1]), event: match[2], data: JSON.parse(match[3]) };
+          frames.push(parsed);
+          if (parsed.event !== 'snapshot') continue;
+          if (++snapshots === 1) {
+            void app.inject({ method: 'PATCH', url: `/api/projects/${project.id}/tasks/${editable.id}`, headers,
+              payload: { request_id: randomUUID(), state_version: 1, description: 'live edit' },
+            }).then(result => { assert.equal(result.statusCode, 200); }).catch(reject);
+          } else { resolve(frames); request.destroy(); }
+        }
+      });
+    });
+    t.after(() => request.destroy());
+    request.on('error', reject);
+    request.setTimeout(2000, () => { request.destroy(); reject(new Error('SSE timeout')); });
+  });
+  const snapshots = frames.filter(frame => frame.event === 'snapshot');
+  assert.equal(snapshots.length, 2);
+  assert.ok(Buffer.byteLength(JSON.stringify(snapshots[0].data)) > highWaterMark);
+  for (const snapshot of snapshots) assert.equal(snapshot.data.tasks.find((value: Task) => value.id === task.id).description, description);
+  const firstSnapshot = frames.indexOf(snapshots[0]);
+  assert.deepEqual(frames.slice(0, firstSnapshot).map(frame => frame.id), expectedIds);
+  assert.equal(snapshots[0].id, initialCursor);
+  assert.equal(snapshots[1].data.tasks.find((value: Task) => value.id === editable.id).description, 'live edit');
+  assert.ok(frames.some(frame => frame.event === 'change' && frame.data.type === 'task.edited'));
+  assert.deepEqual(frames.map(frame => frame.id), frames.map(frame => frame.id).toSorted((a, b) => a - b));
+});
+
+test('SSE server shutdown closes a client waiting for drain', { timeout: 3000 }, async t => {
+  const { app, headers } = await fixture(t);
+  let writes = 0;
+  let blockedResponse: import('node:http').ServerResponse | undefined;
+  app.server.on('request', (request, response) => {
+    if (request.url !== '/api/events') return;
+    blockedResponse = response;
+    t.mock.method(response, 'write', () => { writes++; response.flushHeaders(); return false; });
+  });
+  await app.listen({ port: 0, host: '127.0.0.1' });
+  const address = app.server.address(); assert.ok(address && typeof address !== 'string');
+  await new Promise<void>((resolve, reject) => {
+    const request = get(`http://127.0.0.1:${address.port}/api/events`, { headers }, response => {
+      response.on('error', () => {}); response.resume(); resolve();
+    });
+    t.after(() => request.destroy());
+    request.on('error', reject);
+  });
+  assert.ok(blockedResponse);
+  assert.equal(writes, 1);
+  await app.close();
+  assert.equal(blockedResponse.destroyed, true);
+  assert.equal(blockedResponse.listenerCount('drain'), 0);
+  blockedResponse.emit('drain');
+  await setImmediate();
+  assert.equal(writes, 1, 'closed sender never resumes against a closed Store');
+});
+
 
 test('saved card receives an asynchronous title and request replay does not generate twice', async t => {
   let calls = 0;
