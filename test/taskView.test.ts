@@ -248,3 +248,19 @@ test('new UI/UX tab and historical separate UI/UX tabs expose the corresponding 
     assert.equal(conversation.props.report(card.props.runs.find(run => run.role === role)).props.run.id, role);
   }
 });
+
+test('review tabs show skipped roles with reasons rather than successful PASS', () => {
+  const card = taskCard();
+  Object.assign(card.props.runs[0], { review_plan: { checks: [
+    { role: 'review-code', required: false, reason: 'CSS only' },
+    { role: 'review-security', required: true, reuse_run_id: 'old-pass', reason: 'Trust boundary unchanged' },
+    { role: 'review-ui-ux', required: true, reason: 'Recheck layout finding' },
+  ] } });
+  const nodes = elements(card.render().tree);
+  const code = nodes.find(node => node.props.id === 'task-tab-review-code');
+  assert.match(code.props['aria-label'], /Не требуется/); assert.equal(code.props.title, 'CSS only');
+  assert.ok(!code.props.className.includes('success'));
+  const security = nodes.find(node => node.props.id === 'task-tab-review-security');
+  assert.match(security.props['aria-label'], /Предыдущий PASS применим/);
+  assert.equal(security.props.title, 'Trust boundary unchanged');
+});

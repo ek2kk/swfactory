@@ -59,15 +59,8 @@ for (const mode of ['skip', 'auto', 'spec'] as SpecMode[]) test(`${mode}: versio
   const build = store.runs().at(-1)!;
   assert.equal(build.spec_run_id, mode === 'spec' ? initial.id : null);
   assert.throws(() => store.queueApprove(project.id, task.id, current().state_version));
-  for (let i = 0; i < 3; i++) await perform(store.queueReview(project.id, task.id, current().state_version));
-  if (mode === 'skip') {
-    assert.equal(current().stage, 'needs-human');
-    await perform(store.queueRepair(project.id, task.id, current().state_version));
-    assert.equal(store.runs().at(-1)?.repair_attempt, 1);
-    for (let i = 0; i < 3; i++) await perform(store.queueReview(project.id, task.id, current().state_version));
-    assert.equal(classifications, 0); assert.equal(specifications, 0);
-  }
-  await perform(store.queueApprove(project.id, task.id, current().state_version));
+  await perform(store.queueReview(project.id, task.id, current().state_version));
+  assert.equal(reviews, 0);
   const approved = store.publicationRun(project.id, task.id);
   assert.equal(current().title, 'Greeting');
   assert.equal(current().title_state, 'completed');
@@ -176,7 +169,7 @@ for (const mode of ['skip', 'auto'] as const) for (const titleState of ['pending
   await runner.close();
   assert.equal(current().title, 'Update README greeting');
   assert.equal(current().title_state, 'completed');
-  assert.equal(current().stage, 'review');
+  assert.equal(current().stage, 'approve');
   if (titleState === 'running') assert.equal(interrupted, true);
   assert.equal(store.runs().filter(r => r.role === 'spec').length, 0);
 });

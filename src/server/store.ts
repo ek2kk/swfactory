@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync, chmodSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { defaultModels, reviewsFor, type SpecMode, type SpecDecision, type ApproveResult, type ReviewResult, type BuildResult, type HumanRequest, type SpecResult, type Settings, type AgentRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision, type ExecutionPause } from '../shared.js';
+import { defaultModels, reviewsFor, requiredReviews, type ReviewPlan, type SpecMode, type SpecDecision, type ApproveResult, type ReviewResult, type BuildResult, type HumanRequest, type SpecResult, type Settings, type AgentRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision, type ExecutionPause } from '../shared.js';
 
 function parseTask(task: Task): Task {
   return { ...task, spec_decision: typeof task.spec_decision === 'string' ? JSON.parse(task.spec_decision) : task.spec_decision };
@@ -37,7 +37,7 @@ export class Store {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       const version = this.db.pragma('user_version', { simple: true });
-      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13 && version !== 14 && version !== 15 && version !== 16 && version !== 17) throw new Error('Версия базы новее приложения. Обновите приложение.');
+      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13 && version !== 14 && version !== 15 && version !== 16 && version !== 17 && version !== 18) throw new Error('Версия базы новее приложения. Обновите приложение.');
       this.db.transaction(() => {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS projects (
@@ -137,7 +137,8 @@ export class Store {
           }
           this.db.exec("UPDATE tasks SET archive_source = 'manual' WHERE archived = 1 AND archive_source IS NULL");
         }
-        this.db.pragma('user_version = 17');
+        this.db.exec('CREATE TABLE IF NOT EXISTS review_plans (build_id TEXT PRIMARY KEY REFERENCES runs(id), plan TEXT NOT NULL)');
+        this.db.pragma('user_version = 18');
         // No OS proof survives restart. Never infer termination from SQLite run status.
         if (Number(version) < 13) {
           this.db.exec(`UPDATE tasks SET stop_unverified = 1
@@ -454,7 +455,19 @@ export class Store {
     return (this.db.prepare(`SELECT runs.*, substr(run_output.text, 1, 600) AS output_preview, length(run_output.text) AS output_length,
       run_output.updated_at AS output_at, run_output.version AS output_version
       FROM runs LEFT JOIN run_output ON run_output.run_id = runs.id ORDER BY runs.rowid`).all() as (Omit<AgentRun, 'config' | 'diagnostic'> & { config: string; diagnostic: string })[])
-      .map(row => ({ ...row, config: JSON.parse(row.config), diagnostic: JSON.parse(row.diagnostic) }));
+      .map(row => {
+        const plan = this.reviewPlan(row.role === 'build' ? row.id : row.round_id);
+        return { ...row, config: JSON.parse(row.config), diagnostic: JSON.parse(row.diagnostic), ...(plan ? { review_plan: plan } : {}) };
+      });
+  }
+  reviewPlan(id: string | null): ReviewPlan | undefined {
+    const row = this.db.prepare('SELECT plan FROM review_plans WHERE build_id = ?').get(id) as { plan: string } | undefined;
+    return row ? JSON.parse(row.plan) : undefined;
+  }
+  saveReviewPlan(run: AgentRun, plan: ReviewPlan) {
+    this.db.prepare('INSERT INTO review_plans VALUES (?, ?)').run(run.id, JSON.stringify(plan));
+    run.review_plan = plan;
+    this.event('review.plan', run.task_id, { run_id: run.id, plan });
   }
   specRun(projectId: string, taskId: string, id: string) {
     this.task(projectId, taskId);
@@ -521,7 +534,13 @@ export class Store {
         || !(previous.role === 'build' ? previous.outcome === 'READY' : ['PASS', 'CHANGES'].includes(previous.outcome ?? ''))) {
         throw new Problem(409, 'Нужна актуальная реализация или завершённый reviewer.');
       }
-      const reviewRoles = reviewsFor(previous.config);
+      const reviewRoles = requiredReviews(previous);
+      if (!reviewRoles.length) {
+        previous.round_id = previous.id;
+        this.db.prepare("UPDATE runs SET round_id = ? WHERE id = ?").run(previous.id, previous.id);
+        this.db.prepare("UPDATE tasks SET stage = 'approve' WHERE id = ?").run(taskId);
+        return this.queueApprove(projectId, taskId, version);
+      }
       const index = previous.role === 'build' ? 0 : reviewRoles.indexOf(previous.role as typeof reviewRoles[number]) + 1;
       if (index >= reviewRoles.length) throw new Problem(409, 'Раунд Review уже завершён.');
       const run: AgentRun = { ...previous, output_preview: null, output_at: null, output_version: null, output_length: null, diagnostic: {}, started_at: null, finished_at: null, id: randomUUID(), parent_run_id: previous.id,
@@ -576,7 +595,7 @@ export class Store {
       const task = this.task(projectId, taskId);
       const previous = this.runs().filter(r => r.task_id === taskId).at(-1);
       if (task.state_version !== version || task.stage !== 'approve' || task.run_state !== 'idle'
-        || !previous || previous.role !== reviewsFor(previous.config).at(-1) || !this.reviewPasses(previous)) throw new Problem(409, 'Нужны все актуальные PASS.');
+        || !previous || previous.role !== (requiredReviews(previous).at(-1) ?? 'build') || !this.reviewPasses(previous)) throw new Problem(409, 'Нужны все актуальные PASS.');
       const run: AgentRun = { ...previous, output_preview: null, output_at: null, output_version: null, output_length: null, diagnostic: {}, started_at: null, finished_at: null, id: randomUUID(), parent_run_id: previous.id, role: 'approve', status: 'queued', outcome: null, error: null, report: 0 };
       this.db.prepare(`INSERT INTO runs (id, task_id, project_id, description_revision, config, project_version,
         status, branch, worktree, base_sha, outcome, error, report, parent_run_id, role, head_sha, source_hash, spec_run_id, round_id, stale, repair_round_id, repair_attempt)
@@ -608,6 +627,7 @@ export class Store {
       }
       const run: AgentRun = { ...previous, output_preview: null, output_at: null, output_version: null, output_length: null, diagnostic: {}, started_at: null, finished_at: null, id: randomUUID(), parent_run_id: previous.id, role: 'build', round_id: null,
         repair_round_id: previous.round_id, repair_attempt: 0, status: 'queued', outcome: null, error: null, report: 0 };
+      delete run.review_plan;
       this.db.prepare(`INSERT INTO runs (id, task_id, project_id, description_revision, config, project_version,
         status, branch, worktree, base_sha, outcome, error, report, parent_run_id, role, head_sha, source_hash, spec_run_id, round_id, stale, repair_round_id, repair_attempt)
         VALUES (@id, @task_id, @project_id, @description_revision, @config, @project_version,
@@ -621,23 +641,28 @@ export class Store {
   }
   reviewRound(run: AgentRun) {
     const runs = this.runs();
-    return reviewsFor(run.config).map(role => runs.filter(r => r.task_id === run.task_id && r.round_id === run.round_id && r.role === role).at(-1));
+    const plan = this.reviewPlan(run.round_id);
+    return plan ? plan.checks.filter(c => c.required).map(c => c.reuse_run_id
+      ? runs.find(r => r.id === c.reuse_run_id && r.task_id === run.task_id && r.role === c.role)
+      : runs.filter(r => r.task_id === run.task_id && r.round_id === run.round_id && r.role === c.role).at(-1))
+      : reviewsFor(run.config).map(role => runs.filter(r => r.task_id === run.task_id && r.round_id === run.round_id && r.role === role).at(-1));
   }
   queueRepair(projectId: string, taskId: string, version: number, manual = false) {
     return this.db.transaction(() => {
       const task = this.task(projectId, taskId);
       const previous = this.runs().filter(r => r.task_id === taskId).at(-1);
       if (task.state_version !== version || task.stage !== 'needs-human' || task.run_state !== 'interrupted'
-        || !previous || previous.role !== reviewsFor(previous.config).at(-1) || previous.description_revision !== task.revision
+        || !previous || previous.role !== (requiredReviews(previous).at(-1) ?? 'build') || previous.description_revision !== task.revision
         || (!manual && previous.repair_attempt >= 2)) throw new Problem(409, 'Нужен завершённый раунд с замечаниями и доступный бюджет доработок.');
       const round = this.reviewRound(previous);
       if (!round.every(r => r && r.status === 'completed' && !r.stale && ['PASS', 'CHANGES'].includes(r.outcome ?? '')
-        && r.head_sha === previous.head_sha && r.source_hash === previous.source_hash && r.spec_run_id === previous.spec_run_id
+        && (r.head_sha === previous.head_sha && r.source_hash === previous.source_hash || this.reviewPlan(previous.round_id)?.checks.some(c => c.reuse_run_id === r.id)) && r.spec_run_id === previous.spec_run_id
         && r.base_sha === previous.base_sha && r.description_revision === task.revision)
         || !round.some(r => r?.outcome === 'CHANGES')) throw new Problem(409, 'Нет полного актуального раунда с замечаниями.');
       const run: AgentRun = { ...previous, output_preview: null, output_at: null, output_version: null, output_length: null, diagnostic: {}, started_at: null, finished_at: null, id: randomUUID(), parent_run_id: previous.id, role: 'build',
         round_id: null, repair_round_id: previous.round_id, repair_attempt: manual ? 0 : previous.repair_attempt,
         status: 'queued', outcome: null, error: null, report: 0 };
+      delete run.review_plan;
       this.db.prepare(`INSERT INTO runs (id, task_id, project_id, description_revision, config, project_version,
         status, branch, worktree, base_sha, outcome, error, report, parent_run_id, role, head_sha, source_hash, spec_run_id, round_id, stale, repair_round_id, repair_attempt)
         VALUES (@id, @task_id, @project_id, @description_revision, @config, @project_version,
@@ -650,13 +675,25 @@ export class Store {
   }
   reviewPasses(run: AgentRun) {
     const runs = this.runs();
-    return reviewsFor(run.config).every(role => {
-      const result = runs.filter(r => r.task_id === run.task_id && r.round_id === run.round_id && r.role === role).at(-1);
+    const plan = this.reviewPlan(run.round_id);
+    if (plan) {
+      const build = runs.find(r => r.id === plan.build_id && r.task_id === run.task_id && r.role === 'build');
+      if (!build || build.status !== 'completed' || build.outcome !== 'READY' || build.stale
+        || plan.head_sha !== run.head_sha || plan.source_hash !== run.source_hash || plan.revision !== run.description_revision
+        || build.head_sha !== run.head_sha || build.source_hash !== run.source_hash || build.base_sha !== run.base_sha
+        || build.spec_run_id !== run.spec_run_id || build.description_revision !== run.description_revision
+        || build.project_version !== run.project_version || JSON.stringify(build.config) !== JSON.stringify(run.config)) return false;
+    }
+    return (plan ? plan.checks.filter(c => c.required) : reviewsFor(run.config).map(role => ({ role, reuse_run_id: undefined }))).every(check => {
+      const result = check.reuse_run_id ? runs.find(r => r.id === check.reuse_run_id && r.task_id === run.task_id && r.role === check.role)
+        : runs.filter(r => r.task_id === run.task_id && r.round_id === run.round_id && r.role === check.role).at(-1);
       return result?.status === 'completed' && result.outcome === 'PASS' && !result.stale
         && result.description_revision === run.description_revision && result.spec_run_id === run.spec_run_id
-        && result.base_sha === run.base_sha && result.head_sha === run.head_sha && result.source_hash === run.source_hash;
+        && result.project_version === run.project_version && JSON.stringify(result.config) === JSON.stringify(run.config)
+        && result.base_sha === run.base_sha && (!!check.reuse_run_id || (result.head_sha === run.head_sha && result.source_hash === run.source_hash));
     });
   }
+
   invalidateReviews(run: AgentRun) {
     if (this.blocked(run.task_id)) return;
     this.db.transaction(() => {
@@ -739,6 +776,7 @@ export class Store {
       this.event('human.answered', taskId, { human_request_id: requestId, run_id: previous.id });
       this.db.prepare('UPDATE tasks SET state_version = state_version + 1 WHERE id = ?').run(taskId);
       const run: AgentRun = { ...previous, output_preview: null, output_at: null, output_version: null, output_length: null, diagnostic: {}, started_at: null, finished_at: null, id: randomUUID(), parent_run_id: previous.id, status: 'queued', outcome: null, error: null, report: 0 };
+      if (run.role === 'build') delete run.review_plan;
       this.db.prepare(`INSERT INTO runs (id, task_id, project_id, description_revision, config, project_version,
       status, branch, worktree, base_sha, outcome, error, report, parent_run_id, role, head_sha, source_hash, spec_run_id, round_id, stale, repair_round_id, repair_attempt) VALUES (@id, @task_id, @project_id, @description_revision, @config, @project_version,
         @status, @branch, @worktree, @base_sha, @outcome, @error, @report, @parent_run_id, @role, @head_sha, @source_hash, @spec_run_id, @round_id, @stale, @repair_round_id, @repair_attempt)`).run({ ...run, config: JSON.stringify(run.config) });

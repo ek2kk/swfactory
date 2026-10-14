@@ -13,7 +13,7 @@ import type { BuildResult, SpecResult, ReviewResult } from '../src/shared.js';
 
 const spec: SpecResult = { title: 'Hello', outcome: 'READY', summary: 'Implement hello', requirements: ['Say hello'], acceptance_criteria: ['README says hello'], assumptions: [], out_of_scope: [], questions: [] };
 const ready: BuildResult = { outcome: 'READY', summary: 'Implemented', changed_paths: ['README.md'], actions: ['Edited README'], checks: ['Read README: hello'], questions: [] };
-async function fixture(t: { after: (fn: () => void) => void }, completedRepairs = 2, content = 'hello', description = 'Say hello', specification = spec) {
+async function fixture(t: { after: (fn: () => void) => void }, completedRepairs = 2, content = 'hello', description = 'Say hello', specification = spec, planned = false) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'factory-review-'))), checkout = join(root, 'repo'), directory = join(root, 'data');
   mkdirSync(checkout);
   const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -34,6 +34,8 @@ async function fixture(t: { after: (fn: () => void) => void }, completedRepairs 
   const build = queue();
   const builder = controller(async input => { writeFileSync(join(input.cwd, 'README.md'), content); return ready; });
   builder.enqueue(build); await builder.close();
+  // These fixtures exercise legacy rounds without a saved selection plan.
+  if (!planned) store.db.prepare('DELETE FROM review_plans WHERE build_id = ?').run(build.id);
   store.db.prepare('UPDATE runs SET repair_attempt = ? WHERE id = ?').run(completedRepairs, build.id);
   const reviewQueue = () => store.queueReview(project.id, task.id, store.task(project.id, task.id).state_version);
   const reviewer = (execute: ExecuteReview) => new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, async input => visualResult(await execute(input), input.reviewRole), approved);
@@ -439,7 +441,7 @@ for (const issueNumber of [42, null, undefined]) test(`GitHub PR body preserves 
       assert.equal(bodyPath, join(directory, 'artifacts', approval.id, 'pull-request.md'));
       pr.body = readFileSync(bodyPath, 'utf8');
       const paragraphs = [`<!-- swfactory-task:${task.id} -->`, ...(issueNumber == null ? [] : ['Closes #42']),
-        source.description, '## Summary', ready.summary, '## Reviews',
+        source.description, '## Summary', ready.summary, '## Review plan', JSON.stringify(approval.review_plan ?? 'Legacy: all roles required', null, 2), '## Reviews',
         ...reviews.map(r => `${r.role}: PASS\n${pass.summary}`), '## Approval', (await approved()).summary,
         `Approved head: ${approval.head_sha}`, 'CI: not checked. Missing, pending or failed CI is not PASS. Merge remains a human action.'];
       assert.equal(pr.body, paragraphs.join('\n\n'));
@@ -648,4 +650,15 @@ for (const changes of [false, true]) test(`legacy frozen configs survive restart
       assert.deepEqual(repair.config, legacy);
     } else assert.equal(restored.publicationRun(project.id, task.id).role, 'approve');
   } finally { restored.close(); }
+});
+
+
+test('planned text-only Build completes Approve without running reviewers', async t => {
+  const { store, project, task, queue, controller } = await fixture(t, 0, 'hello', 'Say hello', spec, true);
+  const next = queue();
+  assert.equal(next.role, 'approve');
+  const runner = controller(async () => { throw new Error('No reviewer needed'); });
+  runner.enqueue(next); await runner.close();
+  assert.equal(store.runs().at(-1)?.outcome, 'APPROVE');
+  assert.equal(store.publicationRun(project.id, task.id).id, next.id);
 });

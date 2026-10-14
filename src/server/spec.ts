@@ -1,9 +1,10 @@
+import { makeReviewPlan } from './reviewPlan.js';
 import { ProcessScope, checkExecution, executionSignal } from './processes.js';
 import { classifySpec, validateDecision } from './specDecision.js';
 import { Chat } from './chat.js';
 import { mkdirSync, realpathSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { reviewsFor, type ReviewRole, type AgentRun, type RunDiagnostic } from '../shared.js';
+import { requiredReviews, type ReviewRole, type AgentRun, type RunDiagnostic } from '../shared.js';
 import { Store, Problem } from './store.js';
 import { preflight, verifyRepository, fetchBase, run as git, type Run } from './git.js';
 import { executeApprove, validateApprove, type ExecuteApprove, executeSpec, validateSpec, executeBuild, validateBuild, executeReview, validateReview, type ExecuteReview, type ExecuteBuild, type ExecuteSpec } from './codex.js';
@@ -245,11 +246,11 @@ export class SpecController {
       }
       const context = this.store.humanRequests().filter(r => r.task_id === task.id && r.revision === task.revision && r.status === 'answered');
       const feedback = run.repair_round_id ? this.store.reviewRound({ ...run, round_id: run.repair_round_id }).map(review => {
-        if (!review) throw new Problem(422, 'Отсутствует reviewer для доработки.');
+        if (!review) return null;
         const path = join(this.directory, 'artifacts', review.id, 'result.json');
         if (realpathSync(path) !== path) throw new Problem(422, 'Небезопасный путь Review.');
         return { role: review.role, result: validateReview(JSON.parse(readFileSync(path, 'utf8')).result, review.role as ReviewRole) };
-      }) : [];
+      }).filter(Boolean) : [];
       const directory = artifactDirectory(this.directory, run.id);
       let prompt = `You are the Build role. Implement the task in this worktree using the versioned requirements below and applicable AGENTS.md instructions.
 Run relevant checks and report their actual results. For UI changes, a short smoke check of changed behavior is appropriate; leave independent Code, Security and UI/UX acceptance audits to reviewers. Preserve applicable mandatory repository checks and security safeguards. Return only the requested JSON result.
@@ -276,6 +277,10 @@ ${JSON.stringify(context)}`;
       run.head_sha = result.outcome === 'READY' ? await commitBuild(run, result, this.command)
         : await this.command('git', ['rev-parse', 'HEAD'], run.worktree);
       run.source_hash = await sourceHash(run, this.command);
+      if (result.outcome === 'READY') {
+        const prior = run.repair_round_id ? this.store.reviewRound({ ...run, round_id: run.repair_round_id }).filter((r): r is AgentRun => !!r) : [];
+        this.store.saveReviewPlan(run, await makeReviewPlan(run, this.command, prior, JSON.stringify({ description: task.description, specification })));
+      }
       saveArtifact(directory, 'result.json', JSON.stringify({ schema_version: 1, task_id: task.id, run_id: run.id,
         role: 'build', description_revision: task.revision, base_sha: run.base_sha, head_sha: run.head_sha, result }, null, 2));
       saveArtifact(directory, 'report.md', [result.summary, `Outcome: ${result.outcome}`, `Base: ${run.base_sha}`, `Head: ${run.head_sha}`,
@@ -343,6 +348,10 @@ ${JSON.stringify(context)}`;
       const directory = artifactDirectory(this.directory, run.id);
       const specification = this.requirements(run);
       const context = this.store.humanRequests().filter(r => r.task_id === task.id && r.revision === task.revision && r.status === 'answered');
+      const prior = run.repair_round_id ? this.store.reviewRound({ ...run, round_id: run.repair_round_id }).find(r => r?.role === run.role) : undefined;
+      const priorPath = prior ? join(this.directory, 'artifacts', prior.id, 'result.json') : null;
+      if (priorPath && realpathSync(priorPath) !== priorPath) throw new Problem(422, 'Небезопасный путь предыдущего Review.');
+      const previousReport = priorPath ? JSON.parse(readFileSync(priorPath, 'utf8')).result : null;
       const focus = { 'review-code': 'Diff correctness, edge cases and sufficiency of relevant tests. Evidence: file/line references, reasoning and targeted test results. No mandatory browser acceptance or visual matrix; UI/UX owns visual and user-journey acceptance.',
         'review-security': 'Concrete risks introduced by this change: authorization, trust boundaries, data handling/exposure, injection, secrets and dependencies. Evidence: affected paths, attack conditions and targeted checks. Use Computer Use only for a specific security check that cannot reasonably be performed otherwise. No mandatory visual matrix.',
         'review-ui': 'Visual layout, responsive states, readability and actual rendered interface within changed behavior. UX owns journeys, keyboard, errors and waiting states.',
@@ -361,6 +370,10 @@ Task description:
 ${task.description}
 Requirements source (saved description or Spec):
 ${JSON.stringify(specification)}
+Review plan and incremental diff:
+${JSON.stringify(run.review_plan)}
+Previous report (start with findings and correction diff; expand scope for contract changes, connected risks or insufficient evidence):
+${JSON.stringify(previousReport)}
 Human answers:
 ${JSON.stringify(context)}`;
       prompt += this.chatContext(run);
@@ -381,7 +394,7 @@ ${JSON.stringify(context)}`;
         const paused = ['NEEDS_INPUT', 'BLOCKED'].includes(result.outcome);
         this.store.updateRun(run, paused ? 'needs-human' : 'review', result.outcome === 'NEEDS_INPUT' ? 'waiting' : paused ? 'interrupted' : 'idle', undefined, result);
         if (!paused && this.store.task(run.project_id, run.task_id).revision === run.description_revision) {
-          if (run.role === reviewsFor(run.config).at(-1)) {
+          if (run.role === requiredReviews(run).at(-1)) {
             const pass = this.store.reviewPasses(run);
             this.store.db.prepare("UPDATE tasks SET stage = ?, run_state = ?, state_version = state_version + 1 WHERE id = ?")
               .run(pass ? 'approve' : 'needs-human', pass ? 'idle' : 'interrupted', task.id);
@@ -423,7 +436,7 @@ Consult the changes only as needed to reconcile requirements or unresolved findi
 Read applicable AGENTS.md. Do not modify source, index, branch or commits. Never publish, push or merge.
 APPROVE grants permission ONLY to publish a PR/MR, never merge. ESCALATE must explain risks and affected_paths; NEEDS_INPUT uses structured questions.
 Return only the structured result. Reports/logs belong in ${directory}.
-Context: ${JSON.stringify({ run, description: task.description, specification, reports, human_answers: context })}`;
+Context: ${JSON.stringify({ review_plan: run.review_plan, run, description: task.description, specification, reports, human_answers: context })}`;
       prompt += this.chatContext(run);
       saveArtifact(directory, 'input.json', JSON.stringify({ run, specification, reports, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'approve', 'running'); this.publish();

@@ -50,7 +50,10 @@ export type ApproveResult = {
 export type FailureKind = 'authentication' | 'model_unavailable' | 'rate_limit' | 'protocol_error' | 'missing_artifact' | 'interrupted';
 export type RunDiagnostic = { last_activity_at?: string; stream_chars?: number; stream_updates?: number; can_interrupt?: boolean; interrupt_requested_at?: string; result_saved?: boolean; result_run_id?: string; error_kind?: FailureKind; execution_finished?: boolean; reset_at?: string | null; cli_version?: string; session_id?: string; usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number } };
 export type ExecutionPause = { paused: number; reset_at: string | null; state_version: number };
+export type ReviewPlan = { build_id: string; head_sha: string; source_hash: string; revision: number; diff_base: string; diff: string; requirements: string; checks: { role: ReviewRole; required: boolean; reason: string; reuse_run_id?: string }[] };
+export const requiredReviews = (run: AgentRun): readonly ReviewRole[] => run.review_plan ? run.review_plan.checks.filter(c => c.required && !c.reuse_run_id).map(c => c.role) : reviewsFor(run.config);
 export type AgentRun = {
+  review_plan?: ReviewPlan;
   output_preview?: string | null; output_at?: string | null; output_version?: number | null; output_length?: number | null;
   diagnostic?: RunDiagnostic; started_at?: string | null; finished_at?: string | null;
   repair_round_id: string | null; repair_attempt: number;

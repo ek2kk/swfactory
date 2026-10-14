@@ -188,17 +188,17 @@ for (const scenario of ['answer', 'changed', 'leading-changed', 'restart', 'merg
   }
 });
 
-test('new Spec automatically queues Build atomically and reaches Review without another action', async t => {
+test('new Spec automatically queues Build and skips reviewers for text-only changes', async t => {
   const { store, project, directory, controller } = await fixture(t);
   const task = store.createTask(project.id, 'Automatic pipeline', 2);
   const run = store.queueSpec(project.id, task.id, 1, directory);
   const runner = new SpecController(store, directory, () => {}, command, async () => spec, undefined, async input => {
     writeFileSync(join(input.cwd, 'README.md'), 'hello'); return ready;
-  }, async () => ({ outcome: 'BLOCKED', summary: 'Review tested separately', findings: [], evidence: [], applicable: true, applicability: '', questions: [] }));
+  }, async () => { throw new Error('No review for text'); }, async () => ({ outcome: 'APPROVE', summary: 'Text approved', risks: [], affected_paths: ['README.md'], questions: [] }));
   runner.enqueue(run);
   try {
-    for (let i = 0; i < 1000 && store.task(project.id, task.id).stage !== 'review'; i++) await new Promise(resolve => setTimeout(resolve, 10));
-    assert.equal(store.task(project.id, task.id).stage, 'review');
+    for (let i = 0; i < 1000 && store.task(project.id, task.id).run_state !== 'completed'; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(store.task(project.id, task.id).stage, 'approve');
     assert.equal(store.runs().filter(r => r.task_id === task.id && r.role === 'build').length, 1);
   } finally { await runner.close(); }
 });
