@@ -1,8 +1,14 @@
 import Database from 'better-sqlite3';
+import { redactStructured } from './redaction.js';
 import { mkdirSync, chmodSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { defaultModels, reviewsFor, requiredReviews, type ReviewPlan, type SpecMode, type SpecDecision, type ApproveResult, type ReviewResult, type BuildResult, type HumanRequest, type SpecResult, type Settings, type AgentRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision, type ExecutionPause } from '../shared.js';
+
+function reviewMetadata(plan: ReviewPlan) {
+  const { diff, requirements, ...metadata } = plan;
+  return metadata;
+}
 
 function parseTask(task: Task): Task {
   return { ...task, spec_decision: typeof task.spec_decision === 'string' ? JSON.parse(task.spec_decision) : task.spec_decision };
@@ -138,6 +144,17 @@ export class Store {
           this.db.exec("UPDATE tasks SET archive_source = 'manual' WHERE archived = 1 AND archive_source IS NULL");
         }
         this.db.exec('CREATE TABLE IF NOT EXISTS review_plans (build_id TEXT PRIMARY KEY REFERENCES runs(id), plan TEXT NOT NULL)');
+        // Scrub plans/events written by the initial v18 implementation before exposing history.
+        for (const row of this.db.prepare('SELECT build_id, plan FROM review_plans').all() as { build_id: string; plan: string }[]) {
+          const safe = JSON.stringify(redactStructured(JSON.parse(row.plan)));
+          if (safe !== row.plan) this.db.prepare('UPDATE review_plans SET plan = ? WHERE build_id = ?').run(safe, row.build_id);
+        }
+        for (const row of this.db.prepare("SELECT id, payload FROM events WHERE type = 'review.plan'").all() as { id: number; payload: string }[]) {
+          const payload = redactStructured(JSON.parse(row.payload)) as { plan: ReviewPlan };
+          payload.plan = reviewMetadata(payload.plan) as ReviewPlan;
+          const safe = JSON.stringify(payload);
+          if (safe !== row.payload) this.db.prepare('UPDATE events SET payload = ? WHERE id = ?').run(safe, row.id);
+        }
         this.db.pragma('user_version = 18');
         // No OS proof survives restart. Never infer termination from SQLite run status.
         if (Number(version) < 13) {
@@ -150,6 +167,10 @@ export class Store {
         }
         this.db.prepare("UPDATE tasks SET stop_unverified = 1 WHERE execution_unverified = 1 OR title_state = 'running' OR run_state = 'running'").run();
         this.db.prepare("UPDATE tasks SET deletion_state = 'failed', deletion_error = 'Backend перезапущен во время удаления. Проверьте процессы вручную; остановка не подтверждена.', stop_unverified = 1 WHERE deletion_state = 'stopping'").run();
+        for (const build of this.runs().filter(run => run.role === 'build' && run.review_plan && run.review_plan.policy_version !== 2 && !run.stale)) {
+          this.invalidateReviews(build);
+          this.db.prepare('UPDATE runs SET stale = 1 WHERE id = ?').run(build.id);
+        }
         for (const task of this.db.prepare("SELECT * FROM tasks WHERE title_state IN ('pending','running')").all() as Task[]) {
           this.db.prepare("UPDATE tasks SET title_state = 'interrupted' WHERE id = ?").run(task.id);
           this.event('title.interrupted', task.id, { revision: task.revision });
@@ -457,7 +478,7 @@ export class Store {
       FROM runs LEFT JOIN run_output ON run_output.run_id = runs.id ORDER BY runs.rowid`).all() as (Omit<AgentRun, 'config' | 'diagnostic'> & { config: string; diagnostic: string })[])
       .map(row => {
         const plan = this.reviewPlan(row.role === 'build' ? row.id : row.round_id);
-        return { ...row, config: JSON.parse(row.config), diagnostic: JSON.parse(row.diagnostic), ...(plan ? { review_plan: plan } : {}) };
+        return { ...row, config: JSON.parse(row.config), diagnostic: JSON.parse(row.diagnostic), ...(plan ? { review_plan: reviewMetadata(plan) } : {}) };
       });
   }
   reviewPlan(id: string | null): ReviewPlan | undefined {
@@ -465,9 +486,10 @@ export class Store {
     return row ? JSON.parse(row.plan) : undefined;
   }
   saveReviewPlan(run: AgentRun, plan: ReviewPlan) {
+    plan = redactStructured(plan) as ReviewPlan;
     this.db.prepare('INSERT INTO review_plans VALUES (?, ?)').run(run.id, JSON.stringify(plan));
-    run.review_plan = plan;
-    this.event('review.plan', run.task_id, { run_id: run.id, plan });
+    run.review_plan = reviewMetadata(plan);
+    this.event('review.plan', run.task_id, { run_id: run.id, plan: run.review_plan });
   }
   specRun(projectId: string, taskId: string, id: string) {
     this.task(projectId, taskId);
@@ -677,6 +699,7 @@ export class Store {
     const runs = this.runs();
     const plan = this.reviewPlan(run.round_id);
     if (plan) {
+      if (plan.policy_version !== 2) return false;
       const build = runs.find(r => r.id === plan.build_id && r.task_id === run.task_id && r.role === 'build');
       if (!build || build.status !== 'completed' || build.outcome !== 'READY' || build.stale
         || plan.head_sha !== run.head_sha || plan.source_hash !== run.source_hash || plan.revision !== run.description_revision

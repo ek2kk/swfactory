@@ -8,11 +8,11 @@ import { Store } from '../src/server/store.js';
 import type { AgentRun } from '../src/shared.js';
 
 for (const [paths, diff, expected] of [
-  [['src/server/math.ts'], '+return a + b', { code: true, security: false, ui: false }],
+  [['src/server/math.ts'], '+return a + b', { code: true, security: true, ui: false }],
   [['src/client/style.css'], '+color: red', { code: false, security: false, ui: true }],
   [['src/client/Login.tsx'], '+fetch(url, { token })', { code: true, security: true, ui: true }],
-  [['src/server/api.ts', 'src/client/style.css'], '+response.status = 400', { code: true, security: false, ui: true }],
-  [['src/server/api.ts'], '+response.status = 400', { code: true, security: false, ui: true }],
+  [['src/server/api.ts', 'src/client/style.css'], '+response.status = 400', { code: true, security: true, ui: true }],
+  [['src/server/api.ts'], '+response.status = 400', { code: true, security: true, ui: true }],
   [['unknown.blob'], '+opaque', { code: true, security: true, ui: true }],
   [['README.md'], '+hello', { code: false, security: false, ui: false }],
 ] as const) test(`review impact ${paths.join(',')}`, () => assert.deepEqual(reviewImpact([...paths], diff), expected));
@@ -32,7 +32,9 @@ test('CSS plan survives restart, skips code/security, blocks missing required re
   const f = await fixture(t);
   const plan = await makeReviewPlan(f.build, async (_file, args) => args.includes('-z') ? 'src/client/style.css\0' : '+color: red', []);
   f.store.saveReviewPlan(f.build, plan); f.restart();
-  assert.deepEqual(f.store.specRun(f.project.id, f.task.id, f.build.id).review_plan, plan);
+  assert.deepEqual(f.store.reviewPlan(f.build.id), plan);
+  const { diff, requirements, ...metadata } = plan;
+  assert.deepEqual(f.store.specRun(f.project.id, f.task.id, f.build.id).review_plan, metadata);
   const review = f.store.queueReview(f.project.id, f.task.id, f.store.task(f.project.id, f.task.id).state_version);
   assert.equal(review.role, 'review-ui-ux'); assert.equal(f.store.reviewPasses(review), false);
   review.status = 'completed'; review.outcome = 'PASS'; f.store.updateRun(review, 'approve', 'idle');
@@ -105,4 +107,47 @@ test('partial failed round cannot approve or repair while required evidence is m
   assert.throws(() => f.store.queueRepair(f.project.id, f.task.id, f.store.task(f.project.id, f.task.id).state_version));
   f.store.db.prepare("UPDATE tasks SET stage = 'approve', run_state = 'idle' WHERE id = ?").run(f.task.id);
   assert.throws(() => f.store.queueApprove(f.project.id, f.task.id, f.store.task(f.project.id, f.task.id).state_version));
+});
+
+test('deleted credentials are redacted before persistence and absent from browser plans/events', async t => {
+  const f = await fixture(t);
+  const credential = 'ghp_' + 'x'.repeat(24);
+  const plan = await makeReviewPlan(f.build, async (_file, args) => args.includes('-z') ? 'README.md\0' : `-const credential = "${credential}";`, []);
+  assert.equal(plan.checks.find(c => c.role === 'review-security')?.required, true, 'classification must see the original diff');
+  f.store.saveReviewPlan(f.build, plan);
+  const stored = (f.store.db.prepare('SELECT plan FROM review_plans').get() as { plan: string }).plan;
+  assert.ok(!stored.includes(credential), 'SQLite must not retain credential');
+  assert.ok(!JSON.stringify(f.store.events(0)).includes(credential), 'events must not retain credential');
+  const browserPlan = f.store.snapshot().runs[0].review_plan!;
+  assert.ok(!('diff' in browserPlan)); assert.ok(!('requirements' in browserPlan));
+  const event = JSON.parse(f.store.events(0).find(e => e.type === 'review.plan')!.payload);
+  assert.ok(!('diff' in event.plan)); assert.ok(!('requirements' in event.plan));
+  f.restart(); assert.ok(!JSON.stringify(f.store.snapshot()).includes(credential));
+});
+test('removing an ownership guard reruns Security instead of reusing PASS', async t => {
+  const f = await fixture(t);
+  const prior = ['review-code', 'review-security', 'review-ui-ux'].map(role => ({ ...f.build, id: role, role, round_id: 'old-build', head_sha: 'old-head', outcome: role === 'review-code' ? 'CHANGES' : 'PASS' })) as AgentRun[];
+  const plan = await makeReviewPlan({ ...f.build, repair_round_id: 'old-build' }, async (_file, args) => args.includes('-z') ? 'src/server/handler.ts\0'
+    : args.includes('base') ? '+fetch(url)' : '-if (!isOwner) throw new Error();', prior);
+  const security = plan.checks.find(c => c.role === 'review-security')!;
+  assert.equal(security.required, true); assert.equal(security.reuse_run_id, undefined);
+});
+for (const path of ['vite.config.ts', 'eslint.config.js', 'src/config.ts', 'src/config/runtime.ts']) test(`config ${path} requires all roles`, () => {
+  assert.deepEqual(reviewImpact([path], '+defineConfig({ plugins: [] })'), { code: true, security: true, ui: true });
+});
+test('restart scrubs old raw plan/history and blocks publication using the old selection policy', async t => {
+  const f = await fixture(t);
+  const secret = 'ghp_' + 'z'.repeat(24);
+  const plan = await makeReviewPlan(f.build, async (_file, args) => args.includes('-z') ? 'README.md\0' : '+hello', []);
+  delete plan.policy_version;
+  plan.diff = `-token="${secret}"`;
+  f.store.db.prepare('INSERT INTO review_plans VALUES (?, ?)').run(f.build.id, JSON.stringify(plan));
+  f.store.event('review.plan', f.task.id, { run_id: f.build.id, plan });
+  f.restart();
+  assert.ok(!JSON.stringify(f.store.events(0)).includes(secret));
+  assert.ok(!JSON.stringify(f.store.reviewPlan(f.build.id)).includes(secret));
+  assert.ok(!JSON.stringify(f.store.snapshot()).includes(secret));
+  assert.equal(f.store.specRun(f.project.id, f.task.id, f.build.id).stale, 1);
+  assert.equal(f.store.task(f.project.id, f.task.id).stage, 'needs-human');
+  assert.equal(f.store.reviewPasses({ ...f.build, round_id: f.build.id }), false);
 });

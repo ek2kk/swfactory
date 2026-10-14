@@ -371,7 +371,7 @@ ${task.description}
 Requirements source (saved description or Spec):
 ${JSON.stringify(specification)}
 Review plan and incremental diff:
-${JSON.stringify(run.review_plan)}
+${JSON.stringify(this.store.reviewPlan(run.round_id))}
 Previous report (start with findings and correction diff; expand scope for contract changes, connected risks or insufficient evidence):
 ${JSON.stringify(previousReport)}
 Human answers:
