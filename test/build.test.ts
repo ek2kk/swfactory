@@ -34,13 +34,13 @@ async function fixture(t: { after: (fn: () => void) => void }) {
   return { root, checkout, directory, store, project, task, initial, git, queue, controller };
 }
 
-for (const failure of ['artifact', 'event', 'secret', 'changed', 'missing', 'restart'] as const) test(`Build backend recovery ${failure} reuses result without calling the agent`, async t => {
+for (const failure of ['artifact', 'event', 'changed', 'missing', 'restart'] as const) test(`Build backend recovery ${failure} reuses result without calling the agent`, async t => {
   const { store, directory, project, task, git, queue, controller } = await fixture(t);
   const run = queue();
   const runner = controller(async input => {
-    writeFileSync(join(input.cwd, 'README.md'), failure === 'secret' ? 'ghp_' + 'a'.repeat(36) : 'hello');
+    writeFileSync(join(input.cwd, 'README.md'), 'hello');
     if (failure === 'event') store.db.exec("CREATE TRIGGER fail_completion BEFORE INSERT ON events WHEN NEW.type = 'build.completed' BEGIN SELECT RAISE(ABORT, 'disk failed'); END");
-    else if (failure !== 'secret') writeFileSync(join(input.directory, 'report.md.tmp'), 'partial');
+    else writeFileSync(join(input.directory, 'report.md.tmp'), 'partial');
     return ready;
   });
   runner.enqueue(run); await runner.close();
@@ -58,7 +58,7 @@ for (const failure of ['artifact', 'event', 'secret', 'changed', 'missing', 'res
   assert.equal(retry.diagnostic?.result_run_id, run.id);
   const continuation = new SpecController(active, directory, () => {}, command, undefined, undefined, async () => { assert.fail('agent must not run again'); });
   continuation.enqueue(retry); await continuation.close();
-  const blocked = ['secret', 'changed', 'missing'].includes(failure);
+  const blocked = ['changed', 'missing'].includes(failure);
   const saved = active.specRun(project.id, task.id, retry.id);
   assert.equal(saved.status, blocked ? 'failed' : 'completed', saved.error ?? '');
   assert.equal(active.task(project.id, task.id).stage, blocked ? 'needs-human' : 'review');
@@ -72,7 +72,7 @@ test('Build schema rejects incomplete, extra, inconsistent and duplicate fields'
     { ...ready, checks: [] }, { ...ready, summary: ' ' }, { ...ready, outcome: 'NEEDS_INPUT' }, { ...ready, outcome: 'PASS' }]) assert.throws(() => validateBuild(bad));
 });
 
-for (const scenario of ['edit', 'committed', 'committed-plus-edit', 'token-expressions', 'committed-token-expressions', 'literal-path', 'delete'] as const) test(`Build READY ${scenario}: exact commit, clean tree, immutable context and durable SHA`, async t => {
+for (const scenario of ['edit', 'committed', 'committed-plus-edit', 'token-expressions', 'committed-token-expressions', 'literal-path', 'delete', 'secret', 'staged-secret', 'hidden-committed-secret', 'secret-content'] as const) test(`Build READY ${scenario}: exact commit, clean tree, immutable context and durable SHA`, async t => {
   const { store, project, task, initial, checkout, directory, git, queue, controller } = await fixture(t);
   const run = queue();
   assert.throws(queue, /Spec/);
@@ -91,6 +91,17 @@ for (const scenario of ['edit', 'committed', 'committed-plus-edit', 'token-expre
     if (scenario.startsWith('committed')) { git(input.cwd, 'add', '--', 'README.md'); git(input.cwd, 'commit', '-m', 'builder'); }
     if (scenario === 'committed-plus-edit') writeFileSync(join(input.cwd, 'README.md'), 'hello again');
     if (scenario === 'delete') rmSync(join(input.cwd, 'README.md'));
+    if (scenario === 'secret' || scenario === 'staged-secret') {
+      writeFileSync(join(input.cwd, '.env'), 'TOKEN=private-value');
+      if (scenario === 'staged-secret') git(input.cwd, 'add', '--', '.env');
+      return { ...ready, changed_paths: ['README.md', '.env'] };
+    }
+    if (scenario === 'secret-content') writeFileSync(join(input.cwd, 'README.md'), 'ghp_' + 'a'.repeat(36));
+    if (scenario === 'hidden-committed-secret') {
+      writeFileSync(join(input.cwd, '.env'), 'TOKEN=private-value'); git(input.cwd, 'add', '--', '.env'); git(input.cwd, 'commit', '-m', 'secret');
+      git(input.cwd, 'rm', '--', '.env'); git(input.cwd, 'commit', '-m', 'remove');
+      return { ...ready, changed_paths: ['README.md', '.env'] };
+    }
     if (scenario === 'literal-path') { writeFileSync(join(input.cwd, ':literal name'), 'hello'); return { ...ready, changed_paths: ['README.md', ':literal name'] }; }
     return ready;
   });
@@ -100,31 +111,22 @@ for (const scenario of ['edit', 'committed', 'committed-plus-edit', 'token-expre
   assert.equal(store.task(project.id, task.id).stage, 'review');
   assert.equal(saved.base_sha, initial.base_sha); assert.equal(saved.head_sha, git(run.worktree, 'rev-parse', 'HEAD'));
   assert.equal(git(run.worktree, 'status', '--porcelain'), '');
-  assert.equal(git(run.worktree, 'rev-list', '--count', `${run.base_sha}..HEAD`), scenario === 'committed-plus-edit' ? '2' : '1');
+  if (scenario === 'secret-content') assert.equal(readFileSync(join(run.worktree, 'README.md'), 'utf8'), 'ghp_' + 'a'.repeat(36));
+  if (scenario === 'secret' || scenario === 'staged-secret') assert.equal(readFileSync(join(run.worktree, '.env'), 'utf8'), 'TOKEN=private-value');
+  assert.equal(git(run.worktree, 'rev-list', '--count', `${run.base_sha}..HEAD`), scenario === 'hidden-committed-secret' ? '3' : scenario === 'committed-plus-edit' ? '2' : '1');
   assert.equal(readFileSync(join(checkout, 'README.md'), 'utf8'), 'initial'); assert.equal(readFileSync(join(checkout, 'user-work'), 'utf8'), 'untouched');
   assert.match(readFileSync(join(directory, 'artifacts', run.id, 'report.md'), 'utf8'), /Read README/);
   store.close(); const restarted = new Store(directory);
   assert.equal(restarted.specRun(project.id, task.id, run.id).head_sha, saved.head_sha); restarted.close();
 });
 
-for (const scenario of ['unexpected', 'secret', 'secret-content', 'symlink', 'staged-secret', 'hidden-committed-secret', 'branch', 'hidden-index', 'reverted-commits', 'merge', 'no-change', 'blocked', 'invalid', 'event-failure', 'artifact-failure'] as const) test(`Build ${scenario} never reaches Review and preserves evidence`, async t => {
+for (const scenario of ['unexpected', 'symlink', 'branch', 'hidden-index', 'reverted-commits', 'merge', 'no-change', 'blocked', 'invalid', 'event-failure', 'artifact-failure'] as const) test(`Build ${scenario} never reaches Review and preserves evidence`, async t => {
   const { store, project, task, queue, controller, git } = await fixture(t);
   const run = queue();
   const runner = controller(async input => {
     if (scenario !== 'no-change') writeFileSync(join(input.cwd, 'README.md'), 'hello');
     if (scenario === 'unexpected') writeFileSync(join(input.cwd, 'surprise'), 'keep');
-    if (scenario === 'secret' || scenario === 'staged-secret') {
-      writeFileSync(join(input.cwd, '.env'), 'TOKEN=private-value');
-      if (scenario === 'staged-secret') git(input.cwd, 'add', '--', '.env');
-      return { ...ready, changed_paths: ['README.md', '.env'] };
-    }
-    if (scenario === 'secret-content') writeFileSync(join(input.cwd, 'README.md'), 'ghp_' + 'a'.repeat(36));
     if (scenario === 'symlink') { symlinkSync('/etc/passwd', join(input.cwd, 'link')); return { ...ready, changed_paths: ['README.md', 'link'] }; }
-    if (scenario === 'hidden-committed-secret') {
-      writeFileSync(join(input.cwd, '.env'), 'TOKEN=private-value'); git(input.cwd, 'add', '--', '.env'); git(input.cwd, 'commit', '-m', 'secret');
-      git(input.cwd, 'rm', '--', '.env'); git(input.cwd, 'commit', '-m', 'remove');
-      return { ...ready, changed_paths: ['README.md', '.env'] };
-    }
     if (scenario === 'hidden-index') git(input.cwd, 'update-index', '--assume-unchanged', 'README.md');
     if (scenario === 'reverted-commits') {
       git(input.cwd, 'add', '--', 'README.md'); git(input.cwd, 'commit', '-m', 'edit');
@@ -149,7 +151,6 @@ for (const scenario of ['unexpected', 'secret', 'secret-content', 'symlink', 'st
   assert.equal(store.task(project.id, task.id).stage, 'needs-human'); assert.equal(store.task(project.id, task.id).run_state, 'interrupted');
   assert.equal(saved.outcome, scenario === 'blocked' ? 'BLOCKED' : null);
   if (scenario !== 'no-change') assert.ok(readFileSync(join(run.worktree, 'README.md'), 'utf8'));
-  if (scenario === 'secret') assert.equal(git(run.worktree, 'diff', '--cached', '--name-only'), '');
 });
 
 for (const scenario of ['answer', 'changed', 'leading-changed', 'restart', 'merge', 'rebase'] as const) test(`Build question ${scenario}: preserves partial edits, answers and role`, async t => {
@@ -237,6 +238,8 @@ test('sourceHash includes the content of the first NUL-separated path with leadi
 });
 
 for (const [label, path, content] of [
+  ['private-key', 'id_rsa', '-----BEGIN RSA PRIVATE KEY-----\nfake-key\n-----END RSA PRIVATE KEY-----'],
+  ['token-signature', 'token.txt', 'ghp_' + 'a'.repeat(36)],
   ['leading-space', ' leading.txt', 'hello'],
   ['600-KiB', 'large.txt', 'a'.repeat(600 * 1024)],
   ['2-MiB', 'large.txt', 'a'.repeat(2 * 1024 * 1024)],

@@ -40,12 +40,11 @@ test('long running stages show streamed progress, last activity and a disabled p
   assert.ok(!html.includes('1000')); assert.ok(!html.includes('4500')); assert.ok(!html.includes('фрагментов'));
 });
 
-test('readable structured results retain fields and redact secrets before presentation', () => {
+test('readable structured results retain fields and configuration values before presentation', () => {
   const result = formatOutput(JSON.stringify({ outcome: 'NEEDS_INPUT', summary: 'token="very secret value"',
     findings: ['Issue'], evidence: [], applicable: false, applicability: 'Needs clarification',
     questions: [{ text: 'Which?', context: 'Here', impact: 'Important', required: true, options: ['A', 'B'] }] }));
-  for (const text of ['Результат: NEEDS_INPUT', 'Итог:', '[REDACTED]', 'Замечания: • Issue', 'Применимость: Нет', 'Вопрос: Which?', 'Обязательный: Да', '• A']) assert.ok(result.includes(text), text);
-  assert.ok(!result.includes('very secret value'));
+  for (const text of ['Результат: NEEDS_INPUT', 'Итог:', 'very secret value', 'Замечания: • Issue', 'Применимость: Нет', 'Вопрос: Which?', 'Обязательный: Да', '• A']) assert.ok(result.includes(text), text);
   assert.ok(!result.includes('"summary"'));
   assert.equal(formatOutput('Looking at the code'), 'Looking at the code');
 });
@@ -61,7 +60,7 @@ test('recognized Spec, Build and Approve results still use readable fields', () 
   }
 });
 
-test('unrecognized JSON retains every field in the full saved message after redaction', t => {
+test('unrecognized JSON retains every field in the full saved message without redaction', t => {
   const { store, run } = fixture(t);
   const review = { outcome: 'PASS', summary: 'Checked', findings: [], evidence: ['Test'], applicable: true, applicability: '', questions: [] };
   for (const value of [
@@ -71,10 +70,8 @@ test('unrecognized JSON retains every field in the full saved message after reda
     { summary: 'Configuration', config: { port: 8080, token: 'private-value' } },
     [8080, { summary: 'Configuration' }], 8080, null,
   ]) {
-    const expected = value && !Array.isArray(value) && typeof value === 'object' && 'config' in value
-      ? { ...value, config: { port: 8080, token: '[REDACTED]' } } : value;
     store.recordOutput(run, formatOutput(JSON.stringify(value)));
-    assert.deepEqual(JSON.parse(store.output(run.id)!.text), expected);
+    assert.deepEqual(JSON.parse(store.output(run.id)!.text), value);
   }
 });
 
@@ -90,8 +87,8 @@ test('latest output replaces messages, survives restart, stays bounded in snapsh
   assert.equal(latest.output_preview?.length, 600);
   assert.ok(latest.output_at);
   assert.ok(store.output(run.id)!.text.length > 100_000);
-  assert.ok(!JSON.stringify(store.snapshot()).includes('hidden-value'));
-  assert.ok(!store.output(run.id)!.text.includes('hidden-value'));
+  assert.ok(JSON.stringify(store.snapshot()).includes('hidden-value'));
+  assert.ok(store.output(run.id)!.text.includes('hidden-value'));
   assert.deepEqual(store.events(cursor).map(e => JSON.parse(e.payload)), [{ run_id: run.id }]);
   const html = renderToStaticMarkup(createElement(AgentOutput, { run: latest, load: async () => store.output(run.id)! }));
   assert.ok(!html.includes('<script>'));

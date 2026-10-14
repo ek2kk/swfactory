@@ -118,14 +118,14 @@ test('partial failed round can repair after restart but cannot approve with miss
   assert.throws(() => f.store.queueRepair(f.project.id, f.task.id, version));
 });
 
-test('deleted credentials are redacted before persistence and absent from browser plans/events', async t => {
+test('review plan diff is persisted unmodified and excluded from browser metadata', async t => {
   const f = await fixture(t);
   const credential = 'ghp_' + 'x'.repeat(24);
   const plan = await makeReviewPlan(f.build, async (_file, args) => args.includes('-z') ? 'README.md\0' : `-const credential = "${credential}";`, []);
   assert.equal(plan.checks.find(c => c.role === 'review-security')?.required, true, 'classification must see the original diff');
   f.store.saveReviewPlan(f.build, plan);
   const stored = (f.store.db.prepare('SELECT plan FROM review_plans').get() as { plan: string }).plan;
-  assert.ok(!stored.includes(credential), 'SQLite must not retain credential');
+  assert.ok(stored.includes(credential), 'SQLite must retain the original diff');
   assert.ok(!JSON.stringify(f.store.events(0)).includes(credential), 'events must not retain credential');
   const browserPlan = f.store.snapshot().runs[0].review_plan!;
   assert.ok(!('diff' in browserPlan)); assert.ok(!('requirements' in browserPlan));
@@ -144,7 +144,7 @@ test('removing an ownership guard reruns Security instead of reusing PASS', asyn
 for (const path of ['vite.config.ts', 'eslint.config.js', 'src/config.ts', 'src/config/runtime.ts']) test(`config ${path} requires all roles`, () => {
   assert.deepEqual(reviewImpact([path], '+defineConfig({ plugins: [] })'), { code: true, security: true, ui: true });
 });
-test('restart scrubs old raw plan/history and blocks publication using the old selection policy', async t => {
+test('restart preserves raw plan, trims event metadata and blocks the old selection policy', async t => {
   const f = await fixture(t);
   const secret = 'ghp_' + 'z'.repeat(24);
   const plan = await makeReviewPlan(f.build, async (_file, args) => args.includes('-z') ? 'README.md\0' : '+hello', []);
@@ -154,7 +154,7 @@ test('restart scrubs old raw plan/history and blocks publication using the old s
   f.store.event('review.plan', f.task.id, { run_id: f.build.id, plan });
   f.restart();
   assert.ok(!JSON.stringify(f.store.events(0)).includes(secret));
-  assert.ok(!JSON.stringify(f.store.reviewPlan(f.build.id)).includes(secret));
+  assert.ok(JSON.stringify(f.store.reviewPlan(f.build.id)).includes(secret));
   assert.ok(!JSON.stringify(f.store.snapshot()).includes(secret));
   assert.equal(f.store.specRun(f.project.id, f.task.id, f.build.id).stale, 1);
   assert.equal(f.store.task(f.project.id, f.task.id).stage, 'needs-human');

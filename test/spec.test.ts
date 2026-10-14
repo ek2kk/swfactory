@@ -71,8 +71,7 @@ test('READY uses fetched remote SHA, immutable config, separate worktree, durabl
     assert.equal(readFileSync(join(input.cwd, 'README.md'), 'utf8'), 'initial');
     input.output?.('Проверяю требования: token="hidden-value"');
     assert.equal(store.specRun(project.id, run.task_id, run.id).status, 'running');
-    assert.match(store.output(run.id)!.text, /\[REDACTED\]/);
-    assert.ok(!store.output(run.id)!.text.includes('hidden-value'));
+    assert.match(store.output(run.id)!.text, /hidden-value/);
     input.output?.(JSON.stringify(ready));
     assert.match(store.output(run.id)!.text, /Критерии приёмки/);
     return ready;
@@ -467,13 +466,13 @@ for (const timed of [false, true]) test(`confirmed rate limit pauses all project
   assert.equal(store.specRun(project.id, run.task_id, run.id).diagnostic?.error_kind, 'rate_limit');
 });
 
-test('quoted config example in Spec stays valid and Build consumes the redacted artifact', { timeout: 10000 }, async t => {
+test('quoted config example in Spec stays valid and Build consumes the original artifact', { timeout: 10000 }, async t => {
   const { store, directory, project, queue } = fixture(t);
   let built = false;
   const runner = new SpecController(store, directory, () => {}, command,
     async () => ({ ...ready, summary: 'Use token="example" in the config' }), undefined,
     async input => {
-      assert.ok(input.prompt.includes('[REDACTED]')); assert.ok(!input.prompt.includes('example'));
+      assert.ok(input.prompt.includes('example')); assert.ok(!input.prompt.includes('[REDACTED]'));
       built = true; return { outcome: 'BLOCKED', summary: 'Regression stops after reading Spec', changed_paths: [], actions: [], checks: [], questions: [] };
     });
   const run = queue(); runner.enqueue(run);

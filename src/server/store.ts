@@ -1,5 +1,4 @@
 import Database from 'better-sqlite3';
-import { redactStructured } from './redaction.js';
 import { mkdirSync, chmodSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -144,13 +143,9 @@ export class Store {
           this.db.exec("UPDATE tasks SET archive_source = 'manual' WHERE archived = 1 AND archive_source IS NULL");
         }
         this.db.exec('CREATE TABLE IF NOT EXISTS review_plans (build_id TEXT PRIMARY KEY REFERENCES runs(id), plan TEXT NOT NULL)');
-        // Scrub plans/events written by the initial v18 implementation before exposing history.
-        for (const row of this.db.prepare('SELECT build_id, plan FROM review_plans').all() as { build_id: string; plan: string }[]) {
-          const safe = JSON.stringify(redactStructured(JSON.parse(row.plan)));
-          if (safe !== row.plan) this.db.prepare('UPDATE review_plans SET plan = ? WHERE build_id = ?').run(safe, row.build_id);
-        }
+        // Historical review events expose only plan metadata, as new events do.
         for (const row of this.db.prepare("SELECT id, payload FROM events WHERE type = 'review.plan'").all() as { id: number; payload: string }[]) {
-          const payload = redactStructured(JSON.parse(row.payload)) as { plan: ReviewPlan };
+          const payload = JSON.parse(row.payload) as { plan: ReviewPlan };
           payload.plan = reviewMetadata(payload.plan) as ReviewPlan;
           const safe = JSON.stringify(payload);
           if (safe !== row.payload) this.db.prepare('UPDATE events SET payload = ? WHERE id = ?').run(safe, row.id);
@@ -486,7 +481,6 @@ export class Store {
     return row ? JSON.parse(row.plan) : undefined;
   }
   saveReviewPlan(run: AgentRun, plan: ReviewPlan) {
-    plan = redactStructured(plan) as ReviewPlan;
     this.db.prepare('INSERT INTO review_plans VALUES (?, ?)').run(run.id, JSON.stringify(plan));
     run.review_plan = reviewMetadata(plan);
     this.event('review.plan', run.task_id, { run_id: run.id, plan: run.review_plan });

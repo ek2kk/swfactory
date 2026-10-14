@@ -295,12 +295,13 @@ test('new UI/UX tab and historical separate UI/UX tabs expose the corresponding 
 
 test('review tabs show skipped roles with reasons rather than successful PASS', () => {
   const card = taskCard();
-  Object.assign(card.props.runs[0], { review_plan: { revision: 1, checks: [
+  const build = card.props.runs[0];
+  card.props.runs.unshift({ ...build, id: 'old-pass', role: 'review-security', outcome: 'PASS' });
+  Object.assign(build, { review_plan: { build_id: build.id, revision: card.props.task.revision, checks: [
     { role: 'review-code', required: false, reason: 'CSS only' },
     { role: 'review-security', required: true, reuse_run_id: 'old-pass', reason: 'Trust boundary unchanged' },
     { role: 'review-ui-ux', required: true, reason: 'Recheck layout finding' },
   ] } });
-  card.props.runs.unshift({ ...card.props.runs[0], id: 'old-pass', role: 'review-security', outcome: 'PASS' });
   const nodes = elements(card.render().tree);
   const code = nodes.find(node => node.props.id === 'task-tab-review-code');
   assert.match(code.props['aria-label'], /Не требуется/); assert.equal(code.props.title, 'CSS only');

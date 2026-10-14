@@ -12,7 +12,7 @@ import { publishGithub } from './publication.js';
 import { sourceHash, commitBuild } from './build.js';
 import { Titles, generateTitle, parseTitle } from './title.js';
 import { formatOutput } from './output.js';
-import { CodexFailure, redact } from './diagnostics.js';
+import { CodexFailure } from './diagnostics.js';
 import { Scheduler } from './scheduler.js';
 import { artifactDirectory, saveArtifact } from './artifacts.js';
 
@@ -421,7 +421,7 @@ ${JSON.stringify(context)}`;
             this.store.db.prepare("UPDATE tasks SET stage = ?, run_state = ?, state_version = state_version + 1 WHERE id = ?")
               .run(pass ? 'approve' : 'needs-human', pass ? 'idle' : 'interrupted', task.id);
             this.store.event('review.completed', task.id, { run_id: run.id, round_id: run.round_id, outcome: pass ? 'PASS' : 'CHANGES', reason: pass ? 'Все PASS; ожидается Approve'
-              : redact(`${run.role} требует доработок: ${result.summary}. ${result.findings.join('; ')}${run.repair_attempt >= 2 ? ' Две доработки исчерпаны; нужен человек.' : ''}`) });
+              : `${run.role} требует доработок: ${result.summary}. ${result.findings.join('; ')}${run.repair_attempt >= 2 ? ' Две доработки исчерпаны; нужен человек.' : ''}` });
             if (pass && !this.closing) next = this.store.queueApprove(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
             if (!pass && run.repair_attempt < 2 && !this.closing) next = this.store.queueRepair(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
           } else if (!this.closing) next = this.store.queueReview(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
