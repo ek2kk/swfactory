@@ -56,7 +56,11 @@ test('both palettes keep text, links, disabled controls and focus readable', asy
       }
       assert.ok(contrast('focus', background) >= 3, `${theme}: focus on ${background}`);
     }
-    for (const [text, background] of [['primary-text', 'primary'], ['error-text', 'error-background'], ['muted', 'disabled-background']]) {
+    for (const background of ['success-background', 'running-background', 'attention-background', 'disabled-background']) {
+      assert.ok(contrast('focus', background) >= 3, `${theme}: focus on ${background}`);
+      assert.ok(contrast('primary', background) >= 3, `${theme}: selection on ${background}`);
+    }
+    for (const [text, background] of [['primary-text', 'primary'], ['error-text', 'error-background'], ['muted', 'disabled-background'], ['text', 'disabled-background'], ['success-text', 'success-background'], ['running-text', 'running-background'], ['attention-text', 'attention-background']]) {
       assert.ok(contrast(text, background) >= 4.5, `${theme}: ${text} on ${background}`);
     }
   }

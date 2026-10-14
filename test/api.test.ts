@@ -554,3 +554,26 @@ test('interrupt endpoint binds current run/version, rejects publication and repl
   assert.equal(interrupt.mock.callCount(), 1);
   assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...payload, request_id: randomUUID(), state_version: store.task(project.id, task.id).state_version } })).statusCode, 409);
 });
+
+test('task event history is scoped, paginated and preserves saved order for reload', async t => {
+  const { app, store, headers, project } = await fixture(t);
+  const task = store.createTask(project.id, 'History', 1);
+  const other = store.createTask(project.id, 'Other', 1);
+  for (let i = 0; i < 505; i++) {
+    store.event('run.interrupt-requested', task.id, { run_id: String(i) });
+    store.event('human.answered', other.id, { run_id: 'other' });
+  }
+  const url = `/api/projects/${project.id}/tasks/${task.id}/events`;
+  const first = (await app.inject({ url: `${url}?after=0`, headers })).json();
+  assert.equal(first.events.length, 500); assert.equal(first.more, true);
+  assert.ok(first.events.every((event: { task_id: string }) => event.task_id === task.id));
+  const next = (await app.inject({ url: `${url}?after=${first.next_id}`, headers })).json();
+  assert.equal(next.more, false); assert.equal(next.events.length, 6);
+  const ids = [...first.events, ...next.events].map(event => event.id);
+  assert.equal(new Set(ids).size, 506);
+  assert.deepEqual([...ids].sort((a, b) => a - b), ids);
+  assert.deepEqual((await app.inject({ url: `${url}?after=0`, headers })).json(), first);
+  assert.equal((await app.inject({ url: `${url}?after=-1`, headers })).statusCode, 400);
+  assert.equal((await app.inject({ url: `${url}?after=0`, headers: { host: headers.host } })).statusCode, 401);
+  assert.equal((await app.inject({ url: `/api/projects/${randomUUID()}/tasks/${task.id}/events?after=0`, headers })).statusCode, 404);
+});

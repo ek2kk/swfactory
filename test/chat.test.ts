@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
@@ -9,6 +9,84 @@ import { Chat } from '../src/server/chat.js';
 import { DeliveryError } from '../src/server/interactive.js';
 import { readTranscript, transcriptEntry } from '../src/server/transcript.js';
 import { artifactDirectory, saveArtifact } from '../src/server/artifacts.js';
+import { runInNewContext } from 'node:vm';
+import { transformSync } from 'esbuild';
+import * as jsx from 'react/jsx-runtime';
+import * as stageHistory from '../src/client/stageHistory.js';
+import type { AgentRun, TranscriptEntry } from '../src/shared.js';
+
+function conversationPolling(status: AgentRun['status'], pages: { entries: TranscriptEntry[]; next_offset: number; more: boolean }[]) {
+  const values: any[] = [], timers = new Map<number, () => void>(), calls: string[] = [];
+  let index = 0, timerId = 0, effect!: () => () => void, cleanup: (() => void) | undefined;
+  const modules: Record<string, unknown> = {
+    'react/jsx-runtime': jsx,
+    'react': {
+      useState(initial: unknown) {
+        const slot = index++;
+        if (!(slot in values)) values[slot] = initial;
+        return [values[slot], (value: any) => { values[slot] = typeof value === 'function' ? value(values[slot]) : value; }];
+      },
+      useRef(current: unknown) { return values[index++] ??= { current }; },
+      useEffect(callback: () => () => void) { effect = callback; },
+    },
+    './taskView.js': {}, './stageHistory.js': stageHistory,
+  };
+  const module = { exports: {} as any };
+  runInNewContext(transformSync(readFileSync(new URL('../src/client/chat.tsx', import.meta.url), 'utf8'), { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code, {
+    module,
+    require(name: string) { assert.ok(Object.hasOwn(modules, name), name); return modules[name]; },
+    setTimeout(callback: () => void) { const id = ++timerId; timers.set(id, callback); return id; },
+    clearTimeout(id: number) { timers.delete(id); },
+  });
+  function render(nextStatus = status, active = true) {
+    cleanup?.(); index = 0;
+    module.exports.RunConversation({ runs: [{ id: 'run', role: 'spec', status: nextStatus, description_revision: 1 }], role: 'spec', revision: 1,
+      path: '/task', messages: [], requests: [], active, api: async (path: string) => {
+        if (path.includes('/transcript')) {
+          calls.push(path);
+          const page = pages.shift(); assert.ok(page, 'no unexpected transcript requests'); return page;
+        }
+        return { events: [], next_id: 0, more: false };
+      } });
+    cleanup = effect();
+  }
+  return { calls, values, render, close: () => cleanup?.(), async tick() {
+    const next = timers.entries().next().value; assert.ok(next, 'poll scheduled');
+    timers.delete(next[0]); next[1](); await setImmediate();
+  } };
+}
+
+test('completed transcript drains every page once and stays drained across polling and tab changes', async t => {
+  const entry = (id: string): TranscriptEntry => ({ id, kind: 'agent', title: '', text: id, at: '' });
+  const poll = conversationPolling('completed', [
+    { entries: [entry('first')], next_offset: 10, more: true },
+    { entries: [entry('last')], next_offset: 20, more: false },
+  ]);
+  t.after(poll.close);
+  poll.render(); await setImmediate(); await poll.tick();
+  assert.deepEqual(poll.calls, ['/task/runs/run/transcript?offset=0', '/task/runs/run/transcript?offset=10']);
+  await poll.tick(); await poll.tick();
+  poll.render('completed', false); poll.render(); await setImmediate(); await poll.tick();
+  assert.equal(poll.calls.length, 2, 'finished history is never polled again');
+  assert.equal(poll.values[0].run.length, 2, 'all pages remain readable');
+});
+
+test('running transcript keeps polling and drains the final pages after completion', async t => {
+  const final: TranscriptEntry = { id: 'final', kind: 'agent', title: '', text: 'Final message', at: '' };
+  const poll = conversationPolling('running', [
+    { entries: [], next_offset: 10, more: false },
+    { entries: [], next_offset: 10, more: false },
+    { entries: [final], next_offset: 20, more: true },
+    { entries: [final], next_offset: 30, more: false },
+  ]);
+  t.after(poll.close);
+  poll.render(); await setImmediate(); await poll.tick();
+  assert.equal(poll.calls.length, 2, 'more=false does not stop a running transcript');
+  poll.render('completed'); await setImmediate(); await poll.tick(); await poll.tick();
+  assert.deepEqual(poll.calls, [0, 10, 10, 20].map(offset => `/task/runs/run/transcript?offset=${offset}`));
+  assert.equal(poll.values[0].run.length, 1, 'final message is loaded once without duplicates');
+  assert.equal(poll.values[0].run[0].text, final.text);
+});
 
 function fixture(t: { after: (fn: () => void) => void }) {
   const directory = mkdtempSync(join(tmpdir(), 'factory-chat-'));
@@ -85,4 +163,20 @@ test('transcript handles legacy and app-server events, long UTF-8 lines, partial
   assert.equal(transcriptEntry({ type: 'item.completed', item: { type: 'agent_message', text: 'Old' } }, 'id')?.text, 'Old');
   assert.equal(transcriptEntry({ method: 'item/agentMessage/delta', params: { delta: 'partial secret' } }, 'id'), null);
   assert.equal(transcriptEntry({ method: 'item/started', params: { item: { type: 'commandExecution', command: 'npm test' } } }, 'id')?.status, 'in_progress');
+});
+
+test('Composer offers only guidance and requirements keep their separate application status', async t => {
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { Composer, Message } = await import('../src/client/chat.js');
+  const { task, run, chat, add } = fixture(t);
+  const composer = renderToStaticMarkup(createElement(Composer, { task, path: '/task', api: async () => { throw new Error('unused'); }, refresh: async () => {} }));
+  assert.match(composer, /Сообщение агенту/);
+  assert.ok(!composer.includes('<select')); assert.ok(!composer.includes('Тип сообщения'));
+  add('Change', 'requirements');
+  const message = renderToStaticMarkup(createElement(Message, { message: chat.messages(run.task_id)[0] }));
+  assert.match(message, /Изменение требований/);
+  assert.match(message, /Ожидает применения после текущего этапа/);
+  assert.match(message, /Версия требований: 1/);
+  assert.ok(!message.includes('Ожидает доставки'));
 });

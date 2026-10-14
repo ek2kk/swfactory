@@ -199,6 +199,14 @@ export async function createApp(options: {
     store.task(request.params.projectId, request.params.taskId);
     return controller.chat.messages(request.params.taskId);
   });
+  app.get<{ Params: { projectId: string; taskId: string }; Querystring: { after: string } }>('/api/projects/:projectId/tasks/:taskId/events', {
+    schema: { params: taskParams, querystring: object({ after: { type: 'string', pattern: '^[0-9]{1,15}$' } }) },
+  }, async request => {
+    store.rawTask(request.params.projectId, request.params.taskId);
+    const events = store.db.prepare('SELECT * FROM events WHERE task_id = ? AND id > ? ORDER BY id LIMIT 500')
+      .all(request.params.taskId, Number(request.query.after)) as import('../shared.js').SavedEvent[];
+    return { events, next_id: events.at(-1)?.id ?? Number(request.query.after), more: events.length === 500 };
+  });
   app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number; text: string; kind: 'guidance' | 'requirements' } }>('/api/projects/:projectId/tasks/:taskId/messages', {
     schema: { params: taskParams, body: object({ request_id: uuid, state_version: version, text: { ...text, pattern: '\\S' }, kind: { enum: ['guidance', 'requirements'] } }) },
   }, async request => {

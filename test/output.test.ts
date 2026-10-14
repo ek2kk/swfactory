@@ -25,8 +25,9 @@ function fixture(t: { after: (fn: () => void) => void }) {
 test('run conversation displays backend failure outside collapsed reports', t => {
   const { run } = fixture(t);
   run.status = 'failed'; run.error = 'Backend could not save the result';
-  const html = renderToStaticMarkup(createElement(RunConversation, { run, path: '/task', api: async () => { throw new Error('not rendered'); }, messages: [] }));
+  const html = renderToStaticMarkup(createElement(RunConversation, { runs: [run], role: run.role, revision: 2, requests: [], path: '/task', api: async () => { throw new Error('not rendered'); }, messages: [] }));
   assert.match(html, /role="alert"[^>]*>Backend could not save the result/);
+  assert.match(html, /Неактуально · Версия требований: 1/);
 });
 
 test('long running stages show streamed progress, last activity and a disabled pending interrupt', t => {
@@ -34,8 +35,9 @@ test('long running stages show streamed progress, last activity and a disabled p
   run.started_at = new Date(Date.now() - 660_000).toISOString();
   run.diagnostic = { last_activity_at: new Date().toISOString(), stream_updates: 1000, stream_chars: 4500, interrupt_requested_at: new Date().toISOString() };
   const html = renderToStaticMarkup(createElement(RunProgress, { run, onInterrupt: () => {} }));
-  for (const text of ['1000', '4500', 'Последняя активность', 'Данные продолжают поступать', 'Прерываем этап']) assert.ok(html.includes(text), text);
+  for (const text of ['Последняя активность', 'Данные продолжают поступать', 'Прерываем этап']) assert.ok(html.includes(text), text);
   assert.match(html, /button[^>]+disabled/);
+  assert.ok(!html.includes('1000')); assert.ok(!html.includes('4500')); assert.ok(!html.includes('фрагментов'));
 });
 
 test('readable structured results retain fields and redact secrets before presentation', () => {
@@ -91,10 +93,12 @@ test('latest output replaces messages, survives restart, stays bounded in snapsh
   assert.ok(!JSON.stringify(store.snapshot()).includes('hidden-value'));
   assert.ok(!store.output(run.id)!.text.includes('hidden-value'));
   assert.deepEqual(store.events(cursor).map(e => JSON.parse(e.payload)), [{ run_id: run.id }]);
-  const html = renderToStaticMarkup(createElement(AgentOutput, { run: latest, stage: 'spec', load: async () => store.output(run.id)! }));
+  const html = renderToStaticMarkup(createElement(AgentOutput, { run: latest, load: async () => store.output(run.id)! }));
   assert.ok(!html.includes('<script>'));
   assert.ok(html.includes('&lt;script&gt;'));
-  assert.ok(html.includes('Роль: spec'));
+  assert.ok(!html.includes('Роль: spec'));
+  assert.ok(html.includes('Развернуть'));
+  assert.equal(latest.output_length, Array.from(store.output(run.id)!.text).length);
   run.status = 'failed'; run.base_sha = 'base'; run.source_hash = 'hash'; run.diagnostic = { execution_finished: true };
   store.updateRun(run, 'needs-human', 'interrupted');
   const retry = store.retryRun(project.id, task.id, store.task(project.id, task.id).state_version);
@@ -121,9 +125,9 @@ test('the next role starts with empty output in its immediate response and snaps
 
 test('waiting UI explains absent harness output without implying a hang', t => {
   const { run } = fixture(t);
-  const html = renderToStaticMarkup(createElement(AgentOutput, { run, stage: 'spec', load: async () => ({ text: '' }) }));
+  const html = renderToStaticMarkup(createElement(AgentOutput, { run, load: async () => ({ text: '' }) }));
   assert.match(html, /Ожидаем первое сообщение/);
-  assert.match(html, /CLI может не отдавать текст/);
+  assert.ok(!html.includes('CLI'));
 });
 
 test('CLI delivers sequential messages before turn completion and ignores reasoning/tool events', async t => {
@@ -158,4 +162,22 @@ setTimeout(() => process.exit(1), 3000).unref();
   } }, cli);
   assert.deepEqual(result, ready);
   assert.deepEqual(messages, ['First', 'Second', JSON.stringify(ready)]);
+});
+
+test('latest output expands only above 600 characters and preserves multiline short text', t => {
+  const { store, run } = fixture(t);
+  for (const length of [599, 600, 601]) {
+    const text = ('Строка\n' + 'Ж'.repeat(length)).slice(0, length);
+    store.recordOutput(run, text);
+    const saved = store.runs()[0];
+    const html = renderToStaticMarkup(createElement(AgentOutput, { run: saved, load: async () => ({ text }) }));
+    assert.equal(html.includes('Развернуть'), length > 600);
+    assert.equal(saved.output_length, length);
+    assert.ok(html.includes(text.slice(0, 600)));
+    assert.ok(!html.includes('Полный текст последнего сообщения'));
+  }
+  store.recordOutput(run, '😀'.repeat(600));
+  const unicode = store.runs()[0];
+  assert.equal(unicode.output_length, 600);
+  assert.ok(!renderToStaticMarkup(createElement(AgentOutput, { run: unicode, load: async () => ({ text: '' }) })).includes('Развернуть'));
 });

@@ -1,6 +1,117 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TaskView } from '../src/client/taskView.js';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import { transformSync } from 'esbuild';
+import * as jsx from 'react/jsx-runtime';
+import * as shared from '../src/shared.js';
+import * as stageHistory from '../src/client/stageHistory.js';
+
+function taskCard() {
+  const values: any[] = [];
+  let index = 0, effects: (() => void)[] = [], draft: any;
+  const source = readFileSync(new URL('../src/client/main.tsx', import.meta.url), 'utf8');
+  const module = { exports: {} as any };
+  const modules: Record<string, unknown> = {
+    'react/jsx-runtime': jsx,
+    react: {
+      useState(initial: unknown) {
+        const slot = index++;
+        if (!(slot in values)) values[slot] = initial;
+        return [values[slot], (value: unknown) => { values[slot] = value; }];
+      },
+      useRef(current: unknown) { return values[index++] ??= { current }; },
+      useEffect(callback: () => void) { effects.push(callback); },
+    },
+    '../shared.js': shared, './stageHistory.js': stageHistory,
+    './theme.js': { applyTheme() {}, readTheme() {} },
+    './style.css': {}, './models.js': {}, './api.js': {}, 'react-dom/client': {},
+    './taskView.js': {}, './chat.js': { Composer() {}, Message() {}, RunConversation() {} },
+    './output.js': { AgentOutput() {}, RunProgress() {} },
+  };
+  runInNewContext(transformSync(source.replace(/createRoot\(document[^\n]+/, 'export { TaskCard };'), { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code, {
+    module, require(name: string) { assert.ok(Object.hasOwn(modules, name), name); return modules[name]; },
+  });
+  const props = {
+    task: { id: 'task', project_id: 'project', description: 'Original requirements', stage: 'build', run_state: 'idle', state_version: 1, revision: 1 },
+    project: { host: 'github.com', repository: 'owner/repo', checkout: '/test' },
+    runs: [{ id: 'run', role: 'build', status: 'completed', outcome: 'READY', description_revision: 1 }],
+    questions: [], active: false, cursor: 0, refresh: async () => {}, notify() {},
+    setDraft(value: unknown) { draft = value; },
+  };
+  return { props, render() {
+    index = 0; effects = [];
+    const tree = module.exports.TaskCard({ ...props, draft });
+    return { tree, commit: () => effects.forEach(effect => effect()) };
+  }, get draft() { return draft; } };
+}
+
+function elements(node: any): any[] {
+  if (Array.isArray(node)) return node.flatMap(elements);
+  if (!node?.props) return [];
+  return [node, ...elements(node.props.children)];
+}
+
+test('opening requirements focuses its textarea once in idle, queued and running states', () => {
+  for (const runState of ['idle', 'queued', 'running']) {
+    const card = taskCard();
+    card.props.task.run_state = runState;
+    let focused = 0;
+    let view = card.render(); view.commit();
+    elements(view.tree).find(element => element.type === 'button' && element.props.children === 'Изменить требования').props.onClick();
+    view = card.render();
+    const textarea = elements(view.tree).find(element => element.type === 'textarea');
+    assert.equal(textarea.props['aria-label'], runState === 'idle' ? 'Описание' : 'Уточнения требований');
+    assert.ok(textarea.props.ref, 'the opening effect needs the mounted textarea');
+    textarea.props.ref.current = { focus() { focused++; } };
+    view.commit();
+    assert.equal(focused, 1, `${runState}: opening focuses the form`);
+    textarea.props.onChange({ target: { value: 'Draft requirements' } });
+    view = card.render(); view.commit();
+    assert.equal(focused, 1, `${runState}: editing must not steal focus`);
+    card.props.task.state_version++;
+    view = card.render(); view.commit();
+    assert.equal(focused, 1, `${runState}: snapshot updates must not steal focus`);
+  }
+});
+
+test('requirements cancellation restores focus to its opener and keeps the draft', () => {
+  const card = taskCard();
+  let focused = 0;
+  const button = { focus() { focused++; } };
+  const opener = (tree: unknown) => elements(tree).find(element => element.type === 'button' && element.props.children === 'Изменить требования');
+  let view = card.render();
+  opener(view.tree).props.ref.current = button; view.commit();
+  assert.equal(focused, 0, 'mounting the card must not take focus');
+  opener(view.tree).props.onClick();
+  view = card.render(); view.commit();
+  elements(view.tree).find(element => element.type === 'textarea').props.onChange({ target: { value: 'Unsaved requirements' } });
+  view = card.render(); view.commit();
+  elements(view.tree).find(element => element.type === 'button' && element.props.children === 'Отмена').props.onClick();
+  view = card.render(); opener(view.tree).props.ref.current = button; view.commit();
+  assert.equal(focused, 1);
+  assert.equal(card.draft.description, 'Unsaved requirements');
+  view = card.render(); view.commit();
+  assert.equal(focused, 1, 'ordinary updates must not take focus');
+  opener(view.tree).props.onClick();
+  view = card.render(); view.commit();
+  assert.equal(elements(view.tree).find(element => element.type === 'textarea').props.value, 'Unsaved requirements');
+});
+
+test('overview omits reports while stage history retains access to them', () => {
+  const card = taskCard();
+  const { tree } = card.render();
+  const overview = elements(tree).find(element => element.props.id === 'task-panel-overview');
+  assert.ok(overview);
+  assert.equal(elements(overview).filter(element => element.type?.name === 'RunReport').length, 0);
+  const stage = elements(tree).find(element => element.props.id === 'task-panel-build');
+  const conversation = elements(stage).find(element => element.type?.name === 'RunConversation');
+  assert.ok(conversation);
+  const report = conversation.props.report(card.props.runs[0]);
+  assert.equal(report.type.name, 'RunReport');
+  assert.equal(report.props.run.id, 'run');
+});
 
 test('task presentation transfers focus on archive and unblock only from the replaced card', () => {
   const original = Object.getOwnPropertyDescriptor(globalThis, 'document');
@@ -74,5 +185,42 @@ test('manual archive of a restored blocked card focuses its summary when the dia
   } finally {
     if (original) Object.defineProperty(globalThis, 'document', original);
     else Reflect.deleteProperty(globalThis, 'document');
+  }
+});
+
+test('history prepends preserve a visible event even when the start of the flow is on screen', async () => {
+  const { HistoryFlow } = await import('../src/client/taskView.js');
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const scrolls: number[] = [];
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { innerHeight: 800, scrollBy: (_x: number, y: number) => scrolls.push(y) } });
+  let top = -400, eventTop = -20;
+  const old = { dataset: { historyId: 'old' }, getBoundingClientRect: () => ({ top: eventTop, bottom: eventTop + 100 }) };
+  const above = { dataset: { historyId: 'above' }, getBoundingClientRect: () => ({ top: -300, bottom: -100 }) };
+  const view = new HistoryFlow({ children: null });
+  view.element.current = { getBoundingClientRect: () => ({ top }), querySelectorAll: () => [above, old] } as unknown as HTMLDivElement;
+  try {
+    const anchor = view.getSnapshotBeforeUpdate();
+    assert.deepEqual(anchor, { id: 'old', top: -20 });
+    eventTop += 200;
+    view.componentDidUpdate({}, {}, anchor);
+    assert.deepEqual(scrolls, [200]);
+    top = 100; eventTop = 100;
+    const visibleStart = view.getSnapshotBeforeUpdate();
+    assert.deepEqual(visibleStart, { id: 'old', top: 100 });
+    eventTop += 600;
+    view.componentDidUpdate({}, {}, visibleStart);
+    assert.deepEqual(scrolls, [200, 600], 'a tall new message must not push the old fragment out of view');
+    eventTop = 900;
+    assert.equal(view.getSnapshotBeforeUpdate(), null, 'offscreen history does not move the page');
+    eventTop = -100;
+    assert.equal(view.getSnapshotBeforeUpdate(), null, 'events completely above the viewport are not anchors');
+    eventTop = 0;
+    old.getBoundingClientRect = () => ({ top: 0, bottom: 0 });
+    assert.equal(view.getSnapshotBeforeUpdate(), null, 'hidden history does not move the page');
+    view.componentDidUpdate({}, {}, null);
+    assert.deepEqual(scrolls, [200, 600]);
+  } finally {
+    if (original) Object.defineProperty(globalThis, 'window', original);
+    else Reflect.deleteProperty(globalThis, 'window');
   }
 });

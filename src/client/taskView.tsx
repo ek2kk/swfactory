@@ -1,6 +1,6 @@
 import { Component, createRef, type ReactNode } from 'react';
 
-export type DescriptionDraft = { description: string; version: number };
+export type DescriptionDraft = { description: string; version: number; kind?: 'requirements' };
 type Props = { blocked: boolean; hidden: boolean; children: ReactNode };
 
 export class TaskView extends Component<Props, object, HTMLElement | null> {
@@ -26,4 +26,24 @@ export class TaskView extends Component<Props, object, HTMLElement | null> {
   render() {
     return <div ref={this.container} hidden={this.props.hidden} onFocusCapture={event => { this.focused = event.target as HTMLElement; }}>{this.props.children}</div>;
   }
+}
+
+// Preserve the visible event before React prepends new pages or messages.
+export class HistoryFlow extends Component<{ children: ReactNode }, object, { id: string; top: number } | null> {
+  readonly element = createRef<HTMLDivElement>();
+  getSnapshotBeforeUpdate() {
+    if (!this.element.current) return null;
+    const anchor = [...this.element.current.querySelectorAll<HTMLElement>('[data-history-id]')]
+      .find(element => {
+        const { top, bottom } = element.getBoundingClientRect();
+        return bottom > 0 && top < window.innerHeight;
+      });
+    return anchor ? { id: anchor.dataset.historyId!, top: anchor.getBoundingClientRect().top } : null;
+  }
+  componentDidUpdate(_props: unknown, _state: unknown, anchor: { id: string; top: number } | null) {
+    if (!anchor) return;
+    const element = [...this.element.current!.querySelectorAll<HTMLElement>('[data-history-id]')].find(element => element.dataset.historyId === anchor.id);
+    if (element) window.scrollBy(0, element.getBoundingClientRect().top - anchor.top);
+  }
+  render() { return <div ref={this.element} className="history-flow">{this.props.children}</div>; }
 }
