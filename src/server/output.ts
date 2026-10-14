@@ -2,7 +2,7 @@ import { redactStructured } from './diagnostics.js';
 import { validateSpec, validateBuild, validateReview, validateApprove } from './codex.js';
 
 const labels: Record<string, string> = {
-  title: 'Заголовок', outcome: 'Результат', summary: 'Итог', requirements: 'Требования',
+  ui: 'UI', ux: 'UX', title: 'Заголовок', outcome: 'Результат', summary: 'Итог', requirements: 'Требования',
   acceptance_criteria: 'Критерии приёмки', assumptions: 'Допущения', out_of_scope: 'Вне scope',
   changed_paths: 'Изменённые файлы', actions: 'Действия', checks: 'Проверки', findings: 'Замечания',
   evidence: 'Подтверждения', applicable: 'Применимость', applicability: 'Обоснование применимости',
@@ -14,7 +14,7 @@ export function formatOutput(text: string): string {
   const safe = redactStructured(text) as string;
   let value: unknown;
   try { value = JSON.parse(safe); } catch { return safe; }
-  const recognized = [validateSpec, validateBuild, validateReview, validateApprove].some(validate => {
+  const recognized = [validateSpec, validateBuild, validateReview, (value: unknown) => validateReview(value, 'review-ui-ux'), validateApprove].some(validate => {
     try { validate(value); return true; } catch { return false; }
   });
   if (!recognized) return safe;
