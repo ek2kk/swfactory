@@ -116,3 +116,17 @@ input::placeholder,textarea::placeholder{color:var(--muted);opacity:1}
 .stage-tab.status-running{background:var(--running-background);color:var(--running-text)}
 .stage-tab.status-attention{background:var(--attention-background);color:var(--attention-text)}
 .task-tabs [aria-selected=true]{box-shadow:inset 0 -3px var(--primary);border-color:var(--primary)}
+
+.task-markdown{min-width:0;max-width:100%;font-size:14px;line-height:1.6;overflow-wrap:anywhere}
+.task-markdown>:first-child{margin-top:0}.task-markdown>:last-child{margin-bottom:0}
+.task-markdown :is(h1,h2,h3,h4,h5,h6){line-height:1.3;letter-spacing:normal;margin:1.2em 0 .6em}
+.task-markdown h1{font-size:1.7em}.task-markdown h2{font-size:1.45em}.task-markdown h3{font-size:1.2em}.task-markdown :is(h4,h5,h6){font-size:1em}
+.task-markdown :is(p,ul,ol,blockquote,pre,.markdown-table){margin:.8em 0}
+.task-markdown :is(ul,ol){padding-left:1.6em}.task-markdown li+li{margin-top:.25em}.task-markdown li>:is(ul,ol){margin:.25em 0}
+.task-markdown blockquote{margin-left:0;padding-left:1em;border-left:3px solid var(--control-border);color:var(--muted)}
+.task-markdown code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9em;background:var(--background);border-radius:4px;padding:.15em .3em}
+.task-markdown pre{white-space:pre;overflow-wrap:normal;overflow-x:auto;max-width:100%;padding:12px;background:var(--background);border:1px solid var(--border);border-radius:7px}
+.task-markdown pre code{padding:0;background:transparent}
+.task-markdown .markdown-table{max-width:100%;overflow-x:auto}
+.task-markdown table{border-collapse:collapse;min-width:100%;overflow-wrap:normal}.task-markdown :is(th,td){border:1px solid var(--border);padding:6px 10px;text-align:left}.task-markdown th{background:var(--background)}
+.task-markdown .task-list-item{list-style:none}.task-markdown input[type=checkbox]{display:inline-block;width:auto;margin:0 .4em 0 0;padding:0;vertical-align:middle;accent-color:var(--primary)}

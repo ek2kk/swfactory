@@ -7,6 +7,7 @@ import { transformSync } from 'esbuild';
 import * as jsx from 'react/jsx-runtime';
 import * as shared from '../src/shared.js';
 import * as stageHistory from '../src/client/stageHistory.js';
+import { TaskMarkdown } from '../src/client/TaskMarkdown.js';
 
 test('requirements form preserves both drafts on cancel, reopen and conflicts, and clears only after saving', async () => {
   const appState: any[] = [], cardState: any[] = [];
@@ -28,6 +29,7 @@ test('requirements form preserves both drafts on cancel, reopen and conflicts, a
     './api.js': { api: async (...args: any[]) => { calls.push(args); if (fail) throw new Error('Conflict'); return snapshot; } },
     './theme.js': { readTheme: () => 'system', applyTheme: () => {} },
     '../shared.js': shared, './stageHistory.js': stageHistory,
+    './TaskMarkdown.js': { TaskMarkdown },
     './models.js': {}, './chat.js': {}, './output.js': {}, './taskView.js': {}, './style.css': {},
   };
   const source = readFileSync(new URL('../src/client/main.tsx', import.meta.url), 'utf8');
@@ -134,6 +136,7 @@ test('App reports unavailable live updates and restores active status and curren
     './api.js': { api: async () => structuredClone(initial) },
     './theme.js': { readTheme: () => 'system', applyTheme: () => {} },
     '../shared.js': shared, './stageHistory.js': stageHistory,
+    './TaskMarkdown.js': { TaskMarkdown },
     './models.js': {}, './chat.js': {}, './output.js': {}, './taskView.js': {}, './style.css': {},
   };
   // Run the real App with hook/module doubles; no browser or extra runtime dependency.
@@ -195,6 +198,7 @@ test('GitHub refresh controls follow project snapshots, prevent double clicks an
     './api.js': { api: (...args: unknown[]) => { calls.push(args); return request; } },
     './theme.js': { readTheme: () => 'system', applyTheme: () => {} },
     '../shared.js': shared, './stageHistory.js': stageHistory,
+    './TaskMarkdown.js': { TaskMarkdown },
     './models.js': {}, './chat.js': {}, './output.js': {}, './taskView.js': {}, './style.css': {},
   };
   const source = readFileSync(new URL('../src/client/main.tsx', import.meta.url), 'utf8');

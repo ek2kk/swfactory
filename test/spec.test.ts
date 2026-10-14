@@ -28,8 +28,8 @@ function fixture(t: { after: (fn: () => void) => void }) {
   const project = store.addProject({ checkout, common_dir: join(checkout, '.git'), remote: 'origin', remote_url: remote,
     hosting: 'github', host: 'github.com', repository: 'test/repo', target_branch: 'main' });
   t.after(() => { if (store.db.open) store.close(); rmSync(root, { recursive: true, force: true }); });
-  const queue = () => {
-    const task = store.createTask(project.id, 'Добавить hello', store.project(project.id).state_version);
+  const queue = (description = 'Добавить hello') => {
+    const task = store.createTask(project.id, description, store.project(project.id).state_version);
     const run = store.mutate(randomUUID(), randomUUID(), () => store.queueSpec(project.id, task.id, task.state_version, directory));
     return run as ReturnType<Store['queueSpec']>;
   };
@@ -59,11 +59,14 @@ test('READY uses fetched remote SHA, immutable config, separate worktree, durabl
   const local = git('rev-parse', 'HEAD');
   const config = { ...store.settings(project.id), instructions: 'Use existing patterns', reasoning_efforts: { spec: 'high' } };
   store.mutate('settings', 'settings', () => store.saveSettings(project.id, config, 1));
-  const run = queue();
+  const description = '  # Добавить hello\r\n\r\n- [x] Exact source  \r\n\r\n```txt\r\n<raw> & code\r\n```\r\n';
+  const run = queue(description);
   store.mutate('settings2', 'settings2', () => store.saveSettings(project.id, { ...config, models: { ...config.models, spec: 'different' }, reasoning_efforts: { spec: 'low' } }, 2));
   const runner = controller(async input => {
     assert.equal(input.model, config.models.spec); assert.equal(input.reasoningEffort, 'high'); assert.match(input.prompt, /Use existing patterns/);
     assert.match(input.prompt, /AGENTS.md/); assert.match(input.prompt, /Добавить hello/);
+    assert.equal(input.prompt.split('Task description:\n')[1], description);
+    assert.equal(JSON.parse(readFileSync(join(input.directory, 'input.json'), 'utf8')).description, description);
     assert.equal(existsSync(join(input.cwd, 'local-only')), false);
     assert.equal(readFileSync(join(input.cwd, 'README.md'), 'utf8'), 'initial');
     input.output?.('Проверяю требования: token="hidden-value"');

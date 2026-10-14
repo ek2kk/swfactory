@@ -27,7 +27,7 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }, generate
 test('description, immutable revisions, replay, ownership, stale state and allowed transition', async t => {
   const { app, store, headers, project } = await fixture(t);
   const url = `/api/projects/${project.id}/tasks`;
-  const payload = { request_id: randomUUID(), state_version: 1, description: '  <script>alert(1)</script>\nТочное описание  ' };
+  const payload = { request_id: randomUUID(), state_version: 1, description: '  # Точное описание\r\n\r\n- [x] Готово  \r\n\r\n<script>alert(1)</script>\r\n' };
   const created = await app.inject({ method: 'POST', url, headers, payload });
   assert.equal(created.statusCode, 200);
   const task = created.json<Task>();
@@ -36,10 +36,14 @@ test('description, immutable revisions, replay, ownership, stale state and allow
   assert.deepEqual((await app.inject({ method: 'POST', url, headers, payload })).json(), task);
   assert.equal(store.snapshot().tasks.length, 1);
   assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...payload, description: 'different' } })).statusCode, 409);
-  const edit = { request_id: randomUUID(), state_version: 1, description: '  редакция 2\n' };
+  const edit = { request_id: randomUUID(), state_version: 1, description: '  ## Редакция 2\n\n```ts\n  const x = "<raw>";  \n```\n\n| API | State |\n| --- | --- |\n| GET | ready |\n' };
   const edited = await app.inject({ method: 'PATCH', url: `${url}/${task.id}`, headers, payload: edit });
   assert.equal(edited.statusCode, 200);
   assert.equal(edited.json<Task>().revision, 2);
+  assert.equal(edited.json<Task>().description, edit.description);
+  assert.equal(store.task(project.id, task.id).description, edit.description);
+  const snapshot = (await app.inject({ url: '/api/snapshot', headers })).json();
+  assert.equal(snapshot.tasks.find((value: Task) => value.id === task.id).description, edit.description);
   assert.equal((await app.inject({ method: 'PATCH', url: `${url}/${task.id}`, headers, payload: { ...edit, request_id: randomUUID() } })).statusCode, 409);
   assert.equal((await app.inject({ method: 'PATCH', url: `/api/projects/${randomUUID()}/tasks/${task.id}`, headers, payload: edit })).statusCode, 409);
   assert.equal((await app.inject({ method: 'PATCH', url: `/api/projects/${randomUUID()}/tasks/${task.id}`, headers, payload: { ...edit, request_id: randomUUID() } })).statusCode, 404);
