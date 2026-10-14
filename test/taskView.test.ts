@@ -264,3 +264,18 @@ test('review tabs show skipped roles with reasons rather than successful PASS', 
   assert.match(security.props['aria-label'], /Предыдущий PASS применим/);
   assert.equal(security.props.title, 'Trust boundary unchanged');
 });
+
+test('partial CHANGES names blocking reviewer and exposes report and manual repair; other stops do not', () => {
+  const card = taskCard();
+  Object.assign(card.props.task, { stage: 'needs-human', run_state: 'interrupted' });
+  const run = card.props.runs[0];
+  Object.assign(run, { role: 'review-code', outcome: 'CHANGES', repair_attempt: 2, report: 1, stale: 0 });
+  const nodes = elements(card.render().tree);
+  assert.ok(nodes.some(n => n.type === 'p' && JSON.stringify(n.props.children).includes('Review · Code')));
+  assert.ok(nodes.some(n => n.type?.name === 'RunReport' && n.props.run === run));
+  assert.ok(nodes.some(n => n.type === 'button' && n.props.children === 'Доработать: новый цикл (до двух доработок)'));
+  for (const outcome of ['NEEDS_INPUT', 'BLOCKED', null]) {
+    Object.assign(run, { outcome });
+    assert.ok(!elements(card.render().tree).some(n => n.type === 'button' && n.props.children === 'Доработать: новый цикл (до двух доработок)'));
+  }
+});
