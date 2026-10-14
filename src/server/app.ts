@@ -4,6 +4,7 @@ import Fastify from 'fastify';
 import staticFiles from '@fastify/static';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { ServerResponse } from 'node:http';
+import { subscribe } from './sse.js';
 import { Store, Problem } from './store.js';
 import { generateTitle } from './title.js';
 import { inspectProject } from './git.js';
@@ -41,27 +42,15 @@ export async function createApp(options: {
   const app = Fastify({ logger: false, bodyLimit: 128 * 1024, ajv: { customOptions: { removeAdditional: false, coerceTypes: false } } });
   const token = randomBytes(32).toString('hex');
   const session = randomBytes(32).toString('hex');
-  const clients = new Map<ServerResponse, number>();
+  const clients = new Map<ServerResponse, ReturnType<typeof subscribe>>();
+  let closing = false;
   const origin = new URL(options.origin);
   const cookieName = `swfactory_${origin.port}`;
-  function sendUpdate(client: ServerResponse, cursor: number) {
-    const snapshot = { ...store.snapshot(), issue_errors: issues.errors, execution_error: controller.error ?? controller.chat.error, title_error: titles.error };
-    while (cursor < snapshot.cursor) {
-      const events = store.events(cursor);
-      if (!events.length) break;
-      for (const event of events) {
-        if (!client.write(`id: ${event.id}\nevent: change\ndata: ${JSON.stringify(event)}\n\n`)) { client.destroy(); return; }
-        cursor = event.id;
-      }
-    }
-    if (!client.write(`id: ${snapshot.cursor}\nevent: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`)) { client.destroy(); return; }
-    return snapshot.cursor;
+  function snapshot() {
+    return { ...store.snapshot(), issue_errors: [...issues.errors], execution_error: controller.error ?? controller.chat.error, title_error: titles.error };
   }
   function publish() {
-    for (const [client, cursor] of clients) {
-      const sent = sendUpdate(client, cursor);
-      if (sent !== undefined) clients.set(client, sent);
-    }
+    for (const client of clients.values()) client.update();
   }
   const controller = new SpecController(store, directory, publish, options.command, options.execute, options.generateTitle, options.executeBuild, options.executeReview, options.executeApprove);
   const titles = controller.titles;
@@ -92,7 +81,7 @@ export async function createApp(options: {
   });
   app.get('/api/snapshot', async () => {
     await controller.refreshReviewState();
-    return { ...store.snapshot(), issue_errors: issues.errors, execution_error: controller.error ?? controller.chat.error, title_error: titles.error };
+    return snapshot();
   });
   let choosingFolder = false;
   app.post('/api/projects/choose-folder', async (_request, reply) => {
@@ -421,25 +410,27 @@ export async function createApp(options: {
   });
   app.get('/api/events', async (request, reply) => {
     await controller.refreshReviewState();
+    if (closing) return reply.code(503).send({ message: 'Backend останавливается.' });
     const lastId = request.headers['last-event-id'];
     if (lastId !== undefined && (typeof lastId !== 'string' || !/^\d{1,15}$/.test(lastId))) throw new Problem(400, 'Некорректный курсор событий.');
-    const snapshot = { ...store.snapshot(), issue_errors: issues.errors, execution_error: controller.error ?? controller.chat.error, title_error: titles.error };
-    const cursor = Number(lastId ?? snapshot.cursor);
-    if (cursor > snapshot.cursor) throw new Problem(400, 'Курсор событий новее базы.');
+    const latest = store.snapshot().cursor;
+    const cursor = Number(lastId ?? latest);
+    if (cursor > latest) throw new Problem(400, 'Курсор событий новее базы.');
     reply.hijack();
     const client = reply.raw;
     for (const [name, value] of Object.entries(reply.getHeaders())) {
       if (value !== undefined) client.setHeader(name, value);
     }
     client.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
-    // Replay and snapshot are synchronous: no mutation can fall between them and subscription.
-    const sent = sendUpdate(client, cursor);
-    if (sent === undefined) return;
-    clients.set(client, sent);
-    const heartbeat = setInterval(() => { if (!client.write(': heartbeat\n\n')) client.destroy(); }, 15_000);
-    client.on('close', () => { clearInterval(heartbeat); clients.delete(client); });
+    const subscription = subscribe(client, cursor, store, snapshot, () => clients.delete(client));
+    clients.set(client, subscription);
+    subscription.update();
   });
-  app.addHook('preClose', async () => { for (const client of clients.keys()) client.end(); await issues.close(); });
+  app.addHook('preClose', async () => {
+    closing = true;
+    for (const client of clients.values()) client.close();
+    await issues.close();
+  });
   app.addHook('onClose', async () => { await issues.close(); await controller.close(); store.close(); });
   try {
     if (options.staticRoot) await app.register(staticFiles, { root: options.staticRoot, index: 'index.html', dotfiles: 'deny' });
