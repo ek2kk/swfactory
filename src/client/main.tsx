@@ -378,6 +378,23 @@ function ModelSettings({ project, refresh }: { project: Project; refresh: () => 
   </details>;
 }
 
+function IssueRefresh({ project, syncing }: { project: Project; syncing: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const requesting = useRef(false);
+  return <>
+    <button className="secondary" disabled={syncing || busy} onClick={async () => {
+      if (syncing || requesting.current) return;
+      requesting.current = true; setBusy(true); setError('');
+      try { await api(`/projects/${project.id}/issues/refresh`, 'POST'); }
+      catch (error) { setError((error as Error).message); }
+      finally { requesting.current = false; setBusy(false); }
+    }}>Обновить задачи из GitHub</button>{' '}
+    <span role="status">{syncing || busy ? 'Обновляем…' : ''}</span>
+    {error && <p role="alert" className="error">GitHub Issues · {project.host}/{project.repository}: {error}</p>}
+  </>;
+}
+
 function App() {
   const [theme, setTheme] = useState(readTheme);
   const readTaskId = () => new URLSearchParams(location.search).get('task') ?? '';
@@ -528,7 +545,11 @@ function App() {
         </form>
       </section>
     </div>
-    {!!snapshot.projects.length && <details className="projects"><summary>Подключённые проекты ({snapshot.projects.length})</summary>{snapshot.projects.map(p => <div key={p.id}><strong>{p.host}/{p.repository}</strong><p>{p.checkout}</p><p>{p.hosting} · {p.remote} → {p.remote_url} · target: {p.target_branch}</p></div>)}</details>}
+    {!!snapshot.projects.length && <details className="projects"><summary>Подключённые проекты ({snapshot.projects.length})</summary>{snapshot.projects.map(p => <div key={p.id}>
+      <strong>{p.host}/{p.repository}</strong>{' '}
+      {p.hosting === 'github' && <IssueRefresh project={p} syncing={!!snapshot.issue_syncing?.includes(p.id)} />}
+      <p>{p.checkout}</p><p>{p.hosting} · {p.remote} → {p.remote_url} · target: {p.target_branch}</p>
+    </div>)}</details>}
     <section className="projects" aria-label="Настройки моделей">{snapshot.projects.map(project => <ModelSettings key={project.id} project={project} refresh={refresh} />)}</section>
     <section aria-label="Архив" className="projects"><h2>Архив ({archived.length})</h2>{archived.map(task => <ArchivedTask key={task.id} task={task} refresh={refresh} notify={setNotice} draft={drafts[task.id]} openTask={openTask} />)}{!archived.length && <p>Архив пуст.</p>}</section>
     <div className="board-heading"><h2>Доска <span>{visibleTasks.length}</span></h2><label>Проект <select value={filter} onChange={event => setFilter(event.target.value)}><option value="">Все проекты</option>{snapshot.projects.map(p => <option key={p.id} value={p.id}>{p.host}/{p.repository} · {p.checkout}</option>)}</select></label></div>

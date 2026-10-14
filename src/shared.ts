@@ -16,7 +16,7 @@ export type Task = {
 };
 export type Revision = { task_id: string; revision: number; description: string; created_at: string };
 export type SavedEvent = { id: number; type: string; task_id: string | null; payload: string; created_at: string };
-export type Snapshot = { issue_errors?: { project_id: string; message: string }[]; archived_tasks?: Task[]; execution_pause?: ExecutionPause; projects: Project[]; tasks: Task[]; runs: AgentRun[]; human_requests: HumanRequest[]; execution_error?: string | null; title_error?: string | null; cursor: number };
+export type Snapshot = { issue_syncing?: string[]; issue_errors?: { project_id: string; message: string }[]; archived_tasks?: Task[]; execution_pause?: ExecutionPause; projects: Project[]; tasks: Task[]; runs: AgentRun[]; human_requests: HumanRequest[]; execution_error?: string | null; title_error?: string | null; cursor: number };
 
 export const roles = ['spec', 'build', 'review-code', 'review-security', 'review-ui', 'review-ux', 'approve'] as const;
 export type Models = Record<typeof roles[number], string>;

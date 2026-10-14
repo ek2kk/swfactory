@@ -1,9 +1,9 @@
 import { execFile } from 'node:child_process';
 import type { Project, Snapshot } from '../shared.js';
-import { Store, type GithubIssue } from './store.js';
+import { Store, Problem, type GithubIssue } from './store.js';
 
 export type IssueCommand = (args: string[], signal: AbortSignal) => Promise<string>;
-type ImportLoop = { job: Promise<void>; timer?: ReturnType<typeof setTimeout> };
+type ImportLoop = { job: Promise<void>; active: boolean; timer?: ReturnType<typeof setTimeout> };
 class ImportFailure extends Error {}
 
 export const githubIssueCommand: IssueCommand = (args, signal) => new Promise((resolve, reject) => {
@@ -49,6 +49,7 @@ export class GithubIssues {
   errors: NonNullable<Snapshot['issue_errors']> = [];
   private controller = new AbortController();
   private loops = new Map<string, ImportLoop>();
+  get syncing() { return [...this.loops].filter(([, loop]) => loop.active).map(([id]) => id); }
   constructor(private store: Store, private publish: () => void, private command: IssueCommand = githubIssueCommand,
     private stop: (taskId: string) => Promise<void> = async () => {}) {}
   start() {
@@ -57,9 +58,20 @@ export class GithubIssues {
   }
   connect(project: Project) {
     if (project.hosting !== 'github' || this.controller.signal.aborted || this.loops.has(project.id)) return;
-    const loop: ImportLoop = { job: Promise.resolve() };
+    const loop: ImportLoop = { job: Promise.resolve(), active: false };
     this.loops.set(project.id, loop);
     this.poll(project, loop);
+  }
+  refresh(projectId: string) {
+    const project = this.store.project(projectId);
+    if (project.hosting !== 'github') throw new Problem(422, 'Обновление задач поддерживает только GitHub.');
+    if (this.controller.signal.aborted) throw new Problem(503, 'Backend останавливается.');
+    let loop = this.loops.get(projectId);
+    if (!loop) {
+      loop = { job: Promise.resolve(), active: false };
+      this.loops.set(projectId, loop);
+    }
+    return this.poll(project, loop);
   }
   async settled() { await Promise.all([...this.loops.values()].map(loop => loop.job)); }
   async close() {
@@ -68,10 +80,16 @@ export class GithubIssues {
     await this.settled();
   }
   private poll(project: Project, loop: ImportLoop) {
-    if (this.controller.signal.aborted) return;
+    if (this.controller.signal.aborted || loop.active) return loop.job;
+    clearTimeout(loop.timer);
+    loop.active = true;
     loop.job = this.load(project).catch(error => this.fail(project, error)).finally(() => {
+      loop.active = false;
       if (!this.controller.signal.aborted) loop.timer = setTimeout(() => this.poll(project, loop), 60_000);
+      this.publish();
     });
+    this.publish();
+    return loop.job;
   }
   private fail(project: Project, error: unknown) {
     if (this.controller.signal.aborted) return;

@@ -37,6 +37,122 @@ function deferred() {
   return { promise, resolve };
 }
 
+test('manual refresh bypasses cooldown with the same pagination, filters, local edits and archive rules', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { store, project } = fixture(t);
+  const edited = seed(store, project), closing = seed(store, project, 105), restoring = seed(store, project, 106);
+  store.editTask(project.id, edited.id, 'Local edit', 1);
+  let manual = false, pages = 0;
+  const importer = new GithubIssues(store, () => {}, async args => {
+    const endpoint = args.at(-1)!;
+    if (endpoint.includes('?')) {
+      assert.ok(endpoint.includes('state=open&labels=ready-for-agent&per_page=100&page='));
+      pages++;
+      if (!manual) return '[]';
+      return JSON.stringify(endpoint.endsWith('page=1') ? Array.from({ length: 100 }, (_, i) => issue(i + 1))
+        : [issue(101), issue(102, { labels: [] }), issue(103, { state: 'closed' }),
+          issue(104, { pull_request: {}, html_url: 'https://github.com/owner/repo/pull/104' })]);
+    }
+    const number = Number(endpoint.split('/').at(-1));
+    return JSON.stringify(issue(number, number === 105 && manual ? { state: 'closed' }
+      : number === 106 && !manual ? { labels: [] } : {}));
+  });
+  try {
+    importer.start(); await importer.settled();
+    assert.equal(store.rawTask(project.id, restoring.id).archived, 1);
+    manual = true;
+    const job = importer.refresh(project.id);
+    assert.equal(pages, 2, 'manual request starts immediately before cooldown');
+    assert.deepEqual(importer.syncing, [project.id]);
+    await job;
+    assert.equal(pages, 3);
+    assert.deepEqual(importer.syncing, []);
+    const snapshot = store.snapshot();
+    assert.equal(snapshot.tasks.length, 102);
+    assert.ok(!snapshot.tasks.some(task => [102, 103, 104, 105].includes(task.issue_number!)));
+    assert.equal(store.rawTask(project.id, edited.id).description, 'Local edit');
+    assert.equal(store.rawTask(project.id, closing.id).archive_source, 'github-filter');
+    assert.equal(store.rawTask(project.id, restoring.id).archived, 0);
+    assert.equal(store.runs().length, 0);
+  } finally { await importer.close(); }
+});
+
+test('manual and automatic requests share one active pass, cancel old timers and preserve independent cooldowns', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { store, project } = fixture(t);
+  const second = store.addProject({ ...projectInput, common_dir: '/second/.git', repository: 'owner/second' });
+  let gate = deferred(), slow = 0, fast = 0;
+  const importer = new GithubIssues(store, () => {}, async args => {
+    if (args.at(-1)!.startsWith(`repos/${second.repository}/`)) { fast++; return '[]'; }
+    slow++; await gate.promise; return '[]';
+  });
+  try {
+    importer.start();
+    const automatic = importer.refresh(project.id);
+    assert.equal(importer.refresh(project.id), automatic);
+    await nextTurn();
+    t.mock.timers.tick(180_000); await nextTurn();
+    assert.equal(slow, 1); assert.equal(fast, 2);
+    assert.deepEqual(importer.syncing, [project.id]);
+    gate.resolve(); await importer.settled();
+    t.mock.timers.tick(20_000);
+    gate = deferred();
+    const manual = importer.refresh(project.id);
+    assert.equal(importer.refresh(project.id), manual);
+    assert.equal(slow, 2);
+    t.mock.timers.tick(40_000); await nextTurn();
+    assert.equal(slow, 2, 'previous automatic deadline does not start a pass');
+    t.mock.timers.tick(180_000); await nextTurn();
+    assert.equal(slow, 2, 'no queued retries while a manual pass is active');
+    gate.resolve(); await importer.settled();
+    t.mock.timers.tick(59_999); assert.equal(slow, 2);
+    t.mock.timers.tick(1); await importer.settled();
+    assert.equal(slow, 3, 'exactly one automatic pass 60 seconds after completion');
+    t.mock.timers.tick(59_999); assert.equal(slow, 3);
+    t.mock.timers.tick(1); await importer.settled(); assert.equal(slow, 4);
+  } finally { gate.resolve(); await importer.close(); }
+});
+
+test('failed manual passes retain partial imports and errors until full success, and resume cooldown', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { store, project } = fixture(t);
+  seed(store, project);
+  let phase = 'startup', lists = 0;
+  const states: { syncing: string[]; errors: number }[] = [];
+  const importer = new GithubIssues(store, () => { states.push({ syncing: importer.syncing, errors: importer.errors.length }); }, async args => {
+    const endpoint = args.at(-1)!;
+    if (endpoint.includes('?')) {
+      lists++;
+      if (phase === 'partial') {
+        if (endpoint.endsWith('page=2')) throw new Error('token=secret');
+        return JSON.stringify(Array.from({ length: 100 }, (_, i) => issue(i + 1)));
+      }
+      return '[]';
+    }
+    if (phase === 'detail-failure' && endpoint.endsWith('/1')) throw new Error('token=secret');
+    return JSON.stringify(issue(Number(endpoint.split('/').at(-1))));
+  });
+  try {
+    importer.start(); await importer.settled();
+    phase = 'partial'; await importer.refresh(project.id);
+    assert.equal(store.snapshot().tasks.length, 100);
+    assert.equal(importer.errors.length, 1);
+    assert.deepEqual(states.at(-1), { syncing: [], errors: 1 });
+    assert.ok(!JSON.stringify(importer.errors).includes('secret'));
+    phase = 'detail-failure'; await importer.refresh(project.id);
+    assert.equal(importer.errors.length, 1);
+    assert.deepEqual(importer.syncing, []);
+    const before = lists;
+    phase = 'success';
+    t.mock.timers.tick(59_999); assert.equal(lists, before);
+    t.mock.timers.tick(1); await importer.settled();
+    assert.equal(lists, before + 1);
+    assert.deepEqual(states.at(-1), { syncing: [], errors: 0 });
+    await importer.refresh(project.id);
+    assert.deepEqual(importer.syncing, [], 'empty unchanged pass also completes');
+  } finally { await importer.close(); }
+});
+
 test('periodic import observes the cooldown, new and newly labelled issues, and unchanged revisions', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const { store, project } = fixture(t);
@@ -53,7 +169,7 @@ test('periodic import observes the cooldown, new and newly labelled issues, and 
     t.mock.timers.tick(59_999); assert.equal(lists, 1);
     t.mock.timers.tick(1); await importer.settled();
     assert.equal(lists, 2); assert.deepEqual(store.snapshot(), before);
-    assert.equal(store.revisions(project.id, task.id).length, 1); assert.equal(publications, 1);
+    assert.equal(store.revisions(project.id, task.id).length, 1); assert.equal(publications, 5);
     remote = [issue(1), issue(2), issue(3)];
     t.mock.timers.tick(60_000); await importer.settled();
     assert.equal(lists, 3);
@@ -62,7 +178,7 @@ test('periodic import observes the cooldown, new and newly labelled issues, and 
     assert.deepEqual(store.runs(), []);
     const imported = store.snapshot();
     t.mock.timers.tick(60_000); await importer.settled();
-    assert.deepEqual(store.snapshot(), imported); assert.equal(publications, 2);
+    assert.deepEqual(store.snapshot(), imported); assert.equal(publications, 10);
   } finally { await importer.close(); }
 });
 
@@ -403,6 +519,94 @@ test('closing during cooldown cancels timers and never launches another import',
   await result.app.close(); assert.equal(result.store.db.open, false);
   t.mock.timers.tick(180_000); result.issues.start(); result.issues.connect(project);
   await result.issues.settled(); assert.equal(calls, 1);
+});
+
+test('manual API validates access and project, and two SSE tabs receive busy, results and retry errors', { timeout: 10000 }, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const directory = mkdtempSync(join(tmpdir(), 'factory-manual-issues-sse-'));
+  const saved = new Store(directory), project = saved.addProject(projectInput);
+  const lab = saved.addProject({ ...projectInput, common_dir: '/lab/.git', hosting: 'gitlab' });
+  saved.close();
+  let phase = 'startup', lists = 0, gate = deferred();
+  const result = await createApp({ directory, origin, issueCommand: async args => {
+    const endpoint = args.at(-1)!;
+    if (!endpoint.includes('?')) return JSON.stringify(issue(77));
+    lists++;
+    if (phase === 'startup') return '[]';
+    await gate.promise;
+    if (phase === 'error') throw new Error('token=secret');
+    return JSON.stringify(phase === 'empty' ? [] : [issue(77)]);
+  } });
+  t.after(async () => { gate.resolve(); await result.app.close(); rmSync(directory, { recursive: true, force: true }); });
+  await result.issues.settled();
+  const session = await result.app.inject({ method: 'POST', url: '/api/session', headers: { host: '127.0.0.1:4317', origin }, payload: { token: result.token } });
+  const headers = { host: '127.0.0.1:4317', origin, cookie: String(session.headers['set-cookie']).split(';')[0] };
+  const url = `/api/projects/${project.id}/issues/refresh`;
+  for (const [requestHeaders, status] of [
+    [{ host: headers.host, origin }, 401],
+    [{ ...headers, origin: 'http://evil.test' }, 403],
+    [{ host: headers.host, cookie: headers.cookie }, 403],
+  ] as const) assert.equal((await result.app.inject({ method: 'POST', url, headers: requestHeaders })).statusCode, status);
+  for (const [id, status] of [['invalid', 400], ['00000000-0000-0000-0000-000000000000', 404], [lab.id, 422]] as const) {
+    assert.equal((await result.app.inject({ method: 'POST', url: `/api/projects/${id}/issues/refresh`, headers })).statusCode, status);
+  }
+  assert.equal(lists, 1, 'rejected requests never call GitHub');
+  await result.app.listen({ host: '127.0.0.1', port: 0 });
+  const address = result.app.server.address(); assert.ok(address && typeof address !== 'string');
+  const subscribe = () => {
+    let snapshot: Snapshot | undefined, buffer = '';
+    const pending: { predicate: (value: Snapshot) => boolean; resolve: (value: Snapshot) => void }[] = [];
+    const request = get(`http://127.0.0.1:${address.port}/api/events`, { headers }, response => {
+      assert.equal(response.statusCode, 200);
+      response.on('data', chunk => {
+        buffer += chunk;
+        let end: number;
+        while ((end = buffer.indexOf('\n\n')) >= 0) {
+          const entry = buffer.slice(0, end); buffer = buffer.slice(end + 2);
+          if (!entry.includes('event: snapshot')) continue;
+          snapshot = JSON.parse(entry.match(/data: ([^\n]+)/)![1]);
+          for (let i = pending.length - 1; i >= 0; i--) if (pending[i].predicate(snapshot!)) pending.splice(i, 1)[0].resolve(snapshot!);
+        }
+      });
+    });
+    t.after(() => request.destroy());
+    return (predicate: (value: Snapshot) => boolean) => snapshot && predicate(snapshot)
+      ? Promise.resolve(snapshot) : new Promise<Snapshot>(resolve => pending.push({ predicate, resolve }));
+  };
+  const clients = [subscribe(), subscribe()];
+  await Promise.all(clients.map(next => next(value => value.issue_syncing?.length === 0)));
+  phase = 'manual';
+  const send = () => result.app.inject({ method: 'POST', url, headers });
+  const responses = await Promise.all([send(), send()]);
+  assert.ok(responses.every(response => response.statusCode === 200));
+  assert.equal(lists, 2);
+  await Promise.all(clients.map(next => next(value => !!value.issue_syncing?.includes(project.id))));
+  const active = (await result.app.inject({ url: '/api/snapshot', headers })).json<Snapshot>();
+  assert.deepEqual(active.issue_syncing, [project.id]);
+  t.mock.timers.tick(60_000); assert.equal(lists, 2);
+  assert.equal((await send()).statusCode, 200); assert.equal(lists, 2);
+  gate.resolve(); await result.issues.settled();
+  await Promise.all(clients.map(next => next(value => value.issue_syncing?.length === 0 && value.tasks.some(task => task.issue_number === 77))));
+  phase = 'error'; gate = deferred();
+  await send();
+  await Promise.all(clients.map(next => next(value => !!value.issue_syncing?.includes(project.id))));
+  gate.resolve(); await result.issues.settled();
+  const failures = await Promise.all(clients.map(next => next(value => value.issue_syncing?.length === 0 && !!value.issue_errors?.length)));
+  for (const value of failures) {
+    assert.equal(value.issue_errors![0].project_id, project.id);
+    assert.ok(!JSON.stringify(value.issue_errors).includes('secret'));
+    assert.equal(value.tasks.length, 1);
+  }
+  phase = 'empty'; gate = deferred();
+  await send();
+  await Promise.all(clients.map(next => next(value => !!value.issue_syncing?.includes(project.id))));
+  gate.resolve(); await result.issues.settled();
+  const retries = await Promise.all(clients.map(next => next(value => value.issue_syncing?.length === 0 && value.issue_errors?.length === 0)));
+  assert.ok(retries.every(value => value.cursor === failures[0].cursor), 'unchanged passes publish status without a new database event');
+  const before = lists;
+  t.mock.timers.tick(59_999); assert.equal(lists, before);
+  t.mock.timers.tick(1); await result.issues.settled(); assert.equal(lists, before + 1);
+  await Promise.all(clients.map(next => next(value => value.issue_syncing?.length === 0)));
 });
 
 test('import creation, updates, archives and safe errors reach an open SSE board', { timeout: 10000 }, async t => {
