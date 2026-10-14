@@ -7,7 +7,7 @@ import './style.css';
 import { Composer, Message, RunConversation } from './chat.js';
 import { AgentOutput, RunProgress } from './output.js';
 import { applyTheme, readTheme, type Theme } from './theme.js';
-import { stageRoles, stageNames, stageStatus } from './stageHistory.js';
+import { stageRoles, stageNames, stageTabStatus } from './stageHistory.js';
 import { TaskView, type DescriptionDraft } from './taskView.js';
 
 applyTheme(readTheme());
@@ -216,9 +216,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
       <div className="stage-tabs">{taskRoles.map(role => {
         const status = role === 'spec' && decision?.required === false
           ? { state: 'idle', icon: '−', label: decision.mode === 'skip' ? 'Пропущена пользователем' : 'Не требуется' }
-          : latest?.description_revision === task.revision && latest.review_plan?.checks.some(c => c.role === role && (!c.required || c.reuse_run_id))
-            ? { state: 'idle', icon: '○', label: latest.review_plan.checks.find(c => c.role === role)!.reuse_run_id ? 'Предыдущий PASS применим' : 'Не требуется' }
-            : stageStatus(runs.filter(run => run.role === role), task.revision, questions);
+          : stageTabStatus(role, runs, task.revision, questions);
         return <button key={role} id={`${task.id}-tab-${role}`} role="tab" aria-selected={tab === role} aria-label={`${stageNames[role]}: ${status.label}`} title={latest?.review_plan?.checks.find(c => c.role === role)?.reason ?? status.label} aria-controls={`${task.id}-panel-${role}`} tabIndex={tab === role ? 0 : -1} className={`stage-tab status-${status.state}`} onClick={() => setTab(role)}><span aria-hidden="true">{status.icon}</span> {stageNames[role]}</button>;
       })}</div>
     </div>

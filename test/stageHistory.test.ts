@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { stageRoles, stageNames, stageStatus, stageTimeline } from '../src/client/stageHistory.js';
+import { stageRoles, stageNames, stageStatus, stageTabStatus, stageTimeline } from '../src/client/stageHistory.js';
 import { defaultModels, roles, type AgentRun, type ChatMessage, type HumanRequest, type SavedEvent, type TranscriptEntry } from '../src/shared.js';
 
 const run = (id: string, changes: Partial<AgentRun> = {}): AgentRun => ({
@@ -13,6 +13,52 @@ const event = (id: number, type: string, payload: object, at = '2026-10-14T10:00
   id, type, payload: JSON.stringify(payload), task_id: 'task', created_at: at,
 });
 const entry = (id: string, at: string, kind: TranscriptEntry['kind'] = 'agent'): TranscriptEntry => ({ id, at, kind, title: kind, text: id });
+
+test('review tabs select the current Build round before Review and after reload', () => {
+  const old = run('old-security', { role: 'review-security', outcome: 'PASS', round_id: 'old-build' });
+  const build = run('new-build', { role: 'build', review_plan: {
+    build_id: 'new-build', revision: 1, head_sha: 'head', source_hash: 'source', diff_base: 'base',
+    checks: [{ role: 'review-security', required: true, reason: 'Code changed' }],
+  } });
+  const history = [old, build];
+  assert.equal(stageTabStatus('review-security', history, 1, []).label, 'Ещё не запускался');
+  assert.equal(stageTabStatus('review-security', structuredClone(history), 1, []).state, 'idle');
+  assert.equal(stageTabStatus('review-security', [{ ...old, round_id: null }, { ...build, review_plan: undefined }], 1, []).state, 'idle');
+  assert.equal(stageTabStatus('review-security', [old, run('spec')], 1, []).state, 'idle');
+  assert.equal(stageTabStatus('build', history, 1, []).state, 'success');
+  for (const status of ['queued', 'running', 'completed'] as const) {
+    const current = run('current-security', { ...build, id: 'current-security', role: 'review-security', round_id: build.id,
+      status, outcome: status === 'completed' ? 'PASS' : null });
+    const runs = [...history, current];
+    assert.equal(stageTabStatus('review-security', runs, 1, []).state, status === 'completed' ? 'success' : status);
+    assert.equal(stageTabStatus('review-security', [...history, { ...current, stale: 1 }], 1, []).state, 'stale');
+    assert.equal(stageTabStatus('review-security', runs, 2, []).state, 'stale');
+  }
+  const code = run('current-code', { role: 'review-code', outcome: 'PASS', round_id: build.id, review_plan: build.review_plan });
+  assert.equal(stageTabStatus('review-security', [...history, code], 1, []).state, 'idle');
+});
+
+test('review tabs honor only explicit fresh reuse evidence and optional checks', () => {
+  const pass = run('pass', { role: 'review-security', outcome: 'PASS', round_id: 'old-build' });
+  const build = run('build', { role: 'build', review_plan: {
+    build_id: 'build', revision: 1, head_sha: 'head', source_hash: 'source', diff_base: 'base',
+    checks: [{ role: 'review-security', required: true, reason: 'Unchanged', reuse_run_id: pass.id }],
+  } });
+  const status = (runs: AgentRun[], revision = 1, requests: HumanRequest[] = []) => stageTabStatus('review-security', runs, revision, requests);
+  assert.equal(status([pass, build]).label, 'Предыдущий PASS применим');
+  assert.equal(status([pass, run('other', { role: 'review-security', outcome: 'CHANGES' }), build]).label, 'Предыдущий PASS применим');
+  assert.equal(status([build]).state, 'idle');
+  assert.equal(status([{ ...pass, stale: 1 }, build]).state, 'stale');
+  assert.equal(status([{ ...pass, description_revision: 0 }, build]).state, 'stale');
+  assert.equal(status([{ ...pass, outcome: 'CHANGES' }, build]).state, 'attention');
+  assert.equal(status([pass, build], 1, [{ run_id: pass.id, status: 'pending' } as HumanRequest]).state, 'attention');
+  assert.equal(status([pass, { ...build, stale: 1 }]).state, 'idle');
+  assert.equal(status([pass, build], 2).state, 'idle');
+  assert.equal(status([pass, { ...build, review_plan: { ...build.review_plan!, revision: 0 } }]).state, 'idle');
+  const optional = { ...build, review_plan: { ...build.review_plan!, checks: [{ role: 'review-security' as const, required: false, reason: 'Not applicable' }] } };
+  assert.equal(status([pass, optional]).label, 'Не требуется');
+  assert.equal(status([pass, { ...optional, stale: 1 }]).label, 'Ещё не запускался');
+});
 
 test('stage status uses latest attempt, actual successful outcome, requirements version and pending human request', () => {
   assert.equal(stageStatus([], 1, []).state, 'idle');

@@ -14,6 +14,21 @@ const states = {
   attention: { label: 'Нужно вмешательство', icon: '!' },
   stale: { label: 'Неактуальный результат', icon: '↺' },
 };
+export function stageTabStatus(role: AgentRun['role'], runs: AgentRun[], revision: number, requests: HumanRequest[]) {
+  const history = runs.filter(run => run.role === role);
+  if (!role.startsWith('review-')) return stageStatus(history, revision, requests);
+  const latest = runs.at(-1);
+  const plan = latest?.review_plan;
+  const check = latest && !latest.stale && latest.description_revision === revision && plan?.revision === revision
+    ? plan.checks.find(check => check.role === role) : undefined;
+  if (check?.reuse_run_id) {
+    const status = stageStatus(history.filter(run => run.id === check.reuse_run_id), revision, requests);
+    return status.state === 'success' ? { state: 'idle', icon: '○', label: 'Предыдущий PASS применим' } : status;
+  }
+  if (check && !check.required) return { state: 'idle', icon: '○', label: 'Не требуется' };
+  const round = latest?.round_id ?? (latest?.role === 'build' ? latest.id : plan?.build_id);
+  return stageStatus(history.filter(run => !!round && run.round_id === round), revision, requests);
+}
 export function stageStatus(runs: AgentRun[], revision: number, requests: HumanRequest[]) {
   const run = runs.at(-1);
   let state: keyof typeof states = 'idle';
