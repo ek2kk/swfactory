@@ -179,7 +179,7 @@ for (const variant of ['spec-v2', 'title-v2'] as const) test(`migration from ${v
     assert.equal(saved.title_state, 'completed');
     assert.equal(store.revisions(p.id, task.id).length, 1);
     assert.equal(store.db.pragma('user_version', { simple: true }), 16);
-    assert.equal(Object.keys(store.settings(p.id).models).length, 7);
+    assert.equal(Object.keys(store.settings(p.id).models).length, 6);
     if (runId) {
       assert.equal(store.specRun(p.id, task.id, runId).outcome, 'READY');
       assert.equal(store.settings(p.id).instructions, 'Keep instructions');

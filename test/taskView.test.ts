@@ -36,7 +36,7 @@ function taskCard() {
   const props = {
     task: { id: 'task', project_id: 'project', description: 'Original requirements', stage: 'build', run_state: 'idle', state_version: 1, revision: 1 },
     project: { host: 'github.com', repository: 'owner/repo', checkout: '/test' },
-    runs: [{ id: 'run', role: 'build', status: 'completed', outcome: 'READY', description_revision: 1 }],
+    runs: [{ id: 'run', config: { models: { ...shared.defaultModels }, instructions: '' }, role: 'build', status: 'completed', outcome: 'READY', description_revision: 1 }],
     questions: [], active: false, cursor: 0, refresh: async () => {}, notify() {},
     setDraft(value: unknown) { draft = value; },
   };
@@ -222,5 +222,29 @@ test('history prepends preserve a visible event even when the start of the flow 
   } finally {
     if (original) Object.defineProperty(globalThis, 'window', original);
     else Reflect.deleteProperty(globalThis, 'window');
+  }
+});
+
+
+test('new UI/UX tab and historical separate UI/UX tabs expose the corresponding reports', () => {
+  const card = taskCard();
+  const original = card.props.runs[0];
+  card.props.runs = [{ ...original, id: 'combined', role: 'review-ui-ux', outcome: 'PASS' }];
+  let tree = card.render().tree;
+  assert.ok(elements(tree).some(element => element.props.id === 'task-tab-review-ui-ux'));
+  assert.ok(!elements(tree).some(element => element.props.id === 'task-tab-review-ui'));
+  const legacy = { models: { ...shared.defaultModels, 'review-ui': 'old-ui', 'review-ux': 'old-ux' }, instructions: '' };
+  delete legacy.models['review-ui-ux'];
+  card.props.runs = ['review-ui', 'review-ux'].map(role => ({ ...original, config: legacy, id: role, role, outcome: 'PASS' }));
+  tree = card.render().tree;
+  assert.ok(!elements(tree).some(element => element.props.id === 'task-tab-review-ui-ux'));
+  for (const role of ['review-ui', 'review-ux']) {
+    const tab = elements(tree).find(element => element.props.id === `task-tab-${role}`);
+    assert.ok(tab); tab.props.onClick();
+    const panel = elements(card.render().tree).find(element => element.props.id === `task-panel-${role}`);
+    assert.equal(panel.props.hidden, false);
+    const conversation = elements(panel).find(element => element.type?.name === 'RunConversation');
+    assert.equal(conversation.props.role, role);
+    assert.equal(conversation.props.report(card.props.runs.find(run => run.role === role)).props.run.id, role);
   }
 });

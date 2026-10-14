@@ -238,7 +238,7 @@ test('model settings, frozen config, start replay/version/ownership and report a
   const { app, store, headers, project } = await fixture(t);
   const settingsUrl = `/api/projects/${project.id}/settings`;
   const defaults = (await app.inject({ url: settingsUrl, headers })).json();
-  assert.equal(Object.keys(defaults.models).length, 7);
+  assert.equal(Object.keys(defaults.models).length, 6);
   const config = { models: { ...defaults.models, spec: 'exact-model' }, instructions: 'Project instructions' };
   const settings = { ...config, state_version: 1, request_id: randomUUID() };
   assert.equal((await app.inject({ method: 'PUT', url: settingsUrl, headers, payload: settings })).statusCode, 200);
@@ -345,10 +345,10 @@ test('Repair action validates complete round, ownership, schema, version and rep
   const build = store.queueBuild(project.id, task.id, store.task(project.id, task.id).state_version);
   build.status = 'completed'; build.outcome = 'READY'; build.head_sha = 'head'; build.source_hash = 'hash';
   store.updateRun(build, 'review', 'idle');
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 3; i++) {
     const review = store.queueReview(project.id, task.id, store.task(project.id, task.id).state_version);
     review.status = 'completed'; review.outcome = 'CHANGES';
-    store.updateRun(review, i === 3 ? 'needs-human' : 'review', i === 3 ? 'interrupted' : 'idle');
+    store.updateRun(review, i === 2 ? 'needs-human' : 'review', i === 2 ? 'interrupted' : 'idle');
   }
   const version = store.task(project.id, task.id).state_version;
   const payload = { request_id: randomUUID(), state_version: version };
@@ -382,10 +382,10 @@ test('Concurrent decision replay queues the persisted repair exactly once', asyn
   const build = store.queueBuild(project.id, task.id, store.task(project.id, task.id).state_version);
   build.status = 'completed'; build.outcome = 'READY'; build.head_sha = 'head'; build.source_hash = 'hash';
   store.updateRun(build, 'review', 'idle');
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 3; i++) {
     const review = store.queueReview(project.id, task.id, store.task(project.id, task.id).state_version);
     review.status = 'completed'; review.outcome = 'PASS';
-    store.updateRun(review, i === 3 ? 'approve' : 'review', 'idle');
+    store.updateRun(review, i === 2 ? 'approve' : 'review', 'idle');
   }
   const approve = store.queueApprove(project.id, task.id, store.task(project.id, task.id).state_version);
   approve.status = 'completed'; approve.outcome = 'ESCALATE';

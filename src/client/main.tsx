@@ -2,12 +2,12 @@ import { ModelPicker, ReasoningPicker } from './models.js';
 import { api } from './api.js';
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { stages, type Project, type Task, type Snapshot, type Revision, roles, type Settings, type AgentRun, type HumanRequest, type ChatMessage } from '../shared.js';
+import { stages, type Project, type Task, type Snapshot, type Revision, roles, allRoles, reviewsFor, type Settings, type AgentRun, type HumanRequest, type ChatMessage } from '../shared.js';
 import './style.css';
 import { Composer, Message, RunConversation } from './chat.js';
 import { AgentOutput, RunProgress } from './output.js';
 import { applyTheme, readTheme, type Theme } from './theme.js';
-import { stageNames, stageStatus } from './stageHistory.js';
+import { stageRoles, stageNames, stageStatus } from './stageHistory.js';
 import { TaskView, type DescriptionDraft } from './taskView.js';
 
 applyTheme(readTheme());
@@ -142,6 +142,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
   const [revisions, setRevisions] = useState<Revision[] | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const latest = runs.at(-1);
+  const taskRoles = stageRoles(runs);
   const [tab, setTab] = useState<string>('overview');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatError, setChatError] = useState('');
@@ -209,7 +210,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
       event.preventDefault(); tabs[next].click(); tabs[next].focus();
     }}>
       <div className="overview-control"><button id={`${task.id}-tab-overview`} role="tab" aria-selected={tab === 'overview'} aria-controls={`${task.id}-panel-overview`} tabIndex={tab === 'overview' ? 0 : -1} className="secondary" onClick={() => setTab('overview')}>Обзор{questions.some(q => q.status === 'pending') ? ' · нужен ответ' : ''}</button></div>
-      <div className="stage-tabs">{roles.map(role => {
+      <div className="stage-tabs">{taskRoles.map(role => {
         const status = stageStatus(runs.filter(run => run.role === role), task.revision, questions);
         return <button key={role} id={`${task.id}-tab-${role}`} role="tab" aria-selected={tab === role} aria-label={`${stageNames[role]}: ${status.label}`} title={status.label} aria-controls={`${task.id}-panel-${role}`} tabIndex={tab === role ? 0 : -1} className={`stage-tab status-${status.state}`} onClick={() => setTab(role)}><span aria-hidden="true">{status.icon}</span> {stageNames[role]}</button>;
       })}</div>
@@ -232,7 +233,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
       try { await api(`${taskPath(task)}/${task.stage === 'approve' ? 'approve' : task.stage === 'review' ? 'review' : task.stage === 'build' ? 'build' : 'start'}`, 'POST', { state_version: task.state_version }); await refresh(); }
       catch (error) { setError((error as Error).message); } finally { setBusy(false); }
     }}>{busy ? 'Ставим в очередь…' : task.stage === 'approve' ? 'Запустить Approve' : task.stage === 'review' ? 'Продолжить Review' : task.stage === 'build' ? 'Запустить Build' : 'Приступить к реализации'}</button>}
-    {!editing && task.stage === 'needs-human' && task.run_state === 'interrupted' && runs.at(-1)?.role === 'review-ux'
+    {!editing && task.stage === 'needs-human' && task.run_state === 'interrupted' && latest && latest.role === reviewsFor(latest.config).at(-1)
       && runs.at(-1)?.status === 'completed' && !runs.at(-1)?.stale && ['PASS', 'CHANGES'].includes(runs.at(-1)?.outcome ?? '') && <>
       <p>Раунд завершён с замечаниями. Выполнено доработок: {runs.at(-1)?.repair_attempt}/2. Отчёты и оставшиеся findings — на вкладках этапов.</p>
       <button disabled={busy} onClick={async () => {
@@ -254,7 +255,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
     </details>
     {messages.map(message => <Message key={message.id} message={message} />)}
     </div>
-    {roles.map(role => <div key={role} role="tabpanel" id={`${task.id}-panel-${role}`} aria-labelledby={`${task.id}-tab-${role}`} hidden={tab !== role} tabIndex={0}>
+    {taskRoles.map(role => <div key={role} role="tabpanel" id={`${task.id}-panel-${role}`} aria-labelledby={`${task.id}-tab-${role}`} hidden={tab !== role} tabIndex={0}>
       {runs.some(run => run.role === role) ? <RunConversation runs={runs} role={role} revision={task.revision} path={taskPath(task)} api={api} messages={messages} requests={questions} active={active && tab === role} report={run => <RunReport task={task} run={run} />} /> : <p className="empty">Этот этап ещё не запускался.</p>}
     </div>)}
     {tab !== 'overview' && messages.filter(message => !message.run_id).map(message => <Message key={message.id} message={message} />)}
@@ -349,7 +350,7 @@ function RunReport({ task, run }: { task: Task; run: AgentRun }) {
     <summary>{run.report ? 'Отчёт' : 'Диагностика'} · {run.outcome ?? run.status}{run.stale || run.description_revision !== task.revision ? ' · Неактуален' : ''}{run.finished_at && ` · ${new Date(run.finished_at).toLocaleString('ru')}`}</summary>
     <p className="meta">Версия требований: {run.description_revision} · Модель: {run.config.models[run.role]}</p>
     <p className="meta">Доработки: {run.repair_attempt}/2 · {run.round_id && `Раунд: ${run.round_id}`} {run.spec_run_id && `Spec: ${run.spec_run_id}`}<br />{run.base_sha && `Base: ${run.base_sha}`}<br />{run.head_sha && `Head: ${run.head_sha}`}<br />Branch: {run.branch}<br />{run.worktree}</p>
-    <p className="meta">Модели запуска: {roles.map(role => `${role}: ${run.config.models[role]} (${run.config.reasoning_efforts?.[role] ?? 'по умолчанию Codex'})`).join(' · ')}</p>
+    <p className="meta">Модели запуска: {allRoles.filter(role => run.config.models[role]).map(role => `${role}: ${run.config.models[role]} (${run.config.reasoning_efforts?.[role] ?? 'по умолчанию Codex'})`).join(' · ')}</p>
     <p className="meta">CLI: {run.diagnostic?.cli_version ?? 'неизвестна'} · Session: {run.diagnostic?.session_id ?? 'не предоставлен'}<br />
       Начало: {run.started_at ?? '—'} · Конец: {run.finished_at ?? '—'} · Duration: {run.started_at && run.finished_at ? `${Date.parse(run.finished_at) - Date.parse(run.started_at)} ms` : '—'}</p>
     {run.diagnostic?.usage && <p>Usage этого запуска: {JSON.stringify(run.diagnostic.usage)}. Это не остаток подписки.</p>}
@@ -392,7 +393,7 @@ function ModelSettings({ project, refresh }: { project: Project; refresh: () => 
       {(catalogError || catalog?.error) && <p role="alert">{catalogError || catalog?.error}</p>}
       <button type="button" className="secondary" disabled={loading} onClick={() => void refreshCatalog()}>Обновить список моделей</button>
       <div className="fields">{roles.map(role => <div key={role}>
-        <ModelPicker role={role} value={config.models[role]} catalog={catalog?.models ?? []} onChange={value => {
+        <ModelPicker role={role} value={config.models[role]!} catalog={catalog?.models ?? []} onChange={value => {
           const reasoning_efforts = { ...config.reasoning_efforts };
           if (value !== config.models[role]) delete reasoning_efforts[role];
           setConfig({ ...config, models: { ...config.models, [role]: value }, reasoning_efforts });

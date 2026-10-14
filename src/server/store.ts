@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync, chmodSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { defaultModels, reviewRoles, type ApproveResult, type ReviewResult, type BuildResult, type HumanRequest, type SpecResult, type Settings, type AgentRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision, type ExecutionPause } from '../shared.js';
+import { defaultModels, reviewsFor, type ApproveResult, type ReviewResult, type BuildResult, type HumanRequest, type SpecResult, type Settings, type AgentRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision, type ExecutionPause } from '../shared.js';
 
 export class Problem extends Error {
   constructor(public statusCode: number, message: string) { super(message); }
@@ -362,10 +362,22 @@ export class Store {
   settings(projectId: string): Settings {
     this.project(projectId);
     const row = this.db.prepare('SELECT config FROM project_settings WHERE project_id = ?').get(projectId) as { config: string } | undefined;
-    return row ? JSON.parse(row.config) : { models: { ...defaultModels }, instructions: '' };
+    const config: Settings = row ? JSON.parse(row.config) : { models: { ...defaultModels }, instructions: '' };
+    if (!config.models['review-ui-ux']) {
+      config.models['review-ui-ux'] = config.models['review-ui'] ?? config.models['review-ux'] ?? defaultModels['review-ui-ux'];
+      const effort = config.reasoning_efforts?.[config.models['review-ui'] ? 'review-ui' : 'review-ux'];
+      if (effort) config.reasoning_efforts = { ...config.reasoning_efforts, 'review-ui-ux': effort };
+    }
+    return config;
   }
   saveSettings(projectId: string, config: Settings, version: number) {
     if (this.project(projectId).state_version !== version) throw new Problem(409, 'Настройки изменились. Загрузите актуальную версию.');
+    const saved = this.settings(projectId);
+    config = { ...config, models: { ...config.models } };
+    for (const role of ['review-ui', 'review-ux'] as const) {
+      if (saved.models[role]) config.models[role] = saved.models[role];
+      if (saved.reasoning_efforts?.[role]) config.reasoning_efforts = { ...config.reasoning_efforts, [role]: saved.reasoning_efforts[role] };
+    }
     this.db.prepare('INSERT INTO project_settings VALUES (?, ?) ON CONFLICT(project_id) DO UPDATE SET config = excluded.config').run(projectId, JSON.stringify(config));
     this.db.prepare('UPDATE projects SET state_version = state_version + 1 WHERE id = ?').run(projectId);
     this.event('project.settings', null, { project_id: projectId });
@@ -495,6 +507,7 @@ export class Store {
         || !(previous.role === 'build' ? previous.outcome === 'READY' : ['PASS', 'CHANGES'].includes(previous.outcome ?? ''))) {
         throw new Problem(409, 'Нужна актуальная реализация или завершённый reviewer.');
       }
+      const reviewRoles = reviewsFor(previous.config);
       const index = previous.role === 'build' ? 0 : reviewRoles.indexOf(previous.role as typeof reviewRoles[number]) + 1;
       if (index >= reviewRoles.length) throw new Problem(409, 'Раунд Review уже завершён.');
       const run: AgentRun = { ...previous, output_preview: null, output_at: null, output_version: null, output_length: null, diagnostic: {}, started_at: null, finished_at: null, id: randomUUID(), parent_run_id: previous.id,
@@ -516,7 +529,7 @@ export class Store {
       || run.description_revision !== task.revision
       || !this.reviewPasses(run) || !(run.outcome === 'APPROVE' || (run.outcome === 'ESCALATE'
         && this.humanRequests().some(r => r.run_id === run.id && r.status === 'answered' && r.answers?.[0] === 'publish')))) {
-      throw new Problem(409, 'Нужны четыре актуальных PASS и разрешение публикации этой версии.');
+      throw new Problem(409, 'Нужны все актуальные PASS и разрешение публикации этой версии.');
     }
     return run;
   }
@@ -549,7 +562,7 @@ export class Store {
       const task = this.task(projectId, taskId);
       const previous = this.runs().filter(r => r.task_id === taskId).at(-1);
       if (task.state_version !== version || task.stage !== 'approve' || task.run_state !== 'idle'
-        || !previous || previous.role !== 'review-ux' || !this.reviewPasses(previous)) throw new Problem(409, 'Нужны четыре актуальных PASS.');
+        || !previous || previous.role !== reviewsFor(previous.config).at(-1) || !this.reviewPasses(previous)) throw new Problem(409, 'Нужны все актуальные PASS.');
       const run: AgentRun = { ...previous, output_preview: null, output_at: null, output_version: null, output_length: null, diagnostic: {}, started_at: null, finished_at: null, id: randomUUID(), parent_run_id: previous.id, role: 'approve', status: 'queued', outcome: null, error: null, report: 0 };
       this.db.prepare(`INSERT INTO runs (id, task_id, project_id, description_revision, config, project_version,
         status, branch, worktree, base_sha, outcome, error, report, parent_run_id, role, head_sha, source_hash, spec_run_id, round_id, stale, repair_round_id, repair_attempt)
@@ -594,14 +607,14 @@ export class Store {
   }
   reviewRound(run: AgentRun) {
     const runs = this.runs();
-    return reviewRoles.map(role => runs.filter(r => r.task_id === run.task_id && r.round_id === run.round_id && r.role === role).at(-1));
+    return reviewsFor(run.config).map(role => runs.filter(r => r.task_id === run.task_id && r.round_id === run.round_id && r.role === role).at(-1));
   }
   queueRepair(projectId: string, taskId: string, version: number, manual = false) {
     return this.db.transaction(() => {
       const task = this.task(projectId, taskId);
       const previous = this.runs().filter(r => r.task_id === taskId).at(-1);
       if (task.state_version !== version || task.stage !== 'needs-human' || task.run_state !== 'interrupted'
-        || !previous || previous.role !== 'review-ux' || previous.description_revision !== task.revision
+        || !previous || previous.role !== reviewsFor(previous.config).at(-1) || previous.description_revision !== task.revision
         || (!manual && previous.repair_attempt >= 2)) throw new Problem(409, 'Нужен завершённый раунд с замечаниями и доступный бюджет доработок.');
       const round = this.reviewRound(previous);
       if (!round.every(r => r && r.status === 'completed' && !r.stale && ['PASS', 'CHANGES'].includes(r.outcome ?? '')
@@ -623,7 +636,7 @@ export class Store {
   }
   reviewPasses(run: AgentRun) {
     const runs = this.runs();
-    return reviewRoles.every(role => {
+    return reviewsFor(run.config).every(role => {
       const result = runs.filter(r => r.task_id === run.task_id && r.round_id === run.round_id && r.role === role).at(-1);
       return result?.status === 'completed' && result.outcome === 'PASS' && !result.stale
         && result.description_revision === run.description_revision && result.spec_run_id === run.spec_run_id

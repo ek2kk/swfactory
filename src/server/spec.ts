@@ -2,7 +2,7 @@ import { ProcessScope, checkExecution, executionSignal } from './processes.js';
 import { Chat } from './chat.js';
 import { mkdirSync, realpathSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { reviewRoles, type ReviewRole, type AgentRun, type RunDiagnostic } from '../shared.js';
+import { reviewsFor, type ReviewRole, type AgentRun, type RunDiagnostic } from '../shared.js';
 import { Store, Problem } from './store.js';
 import { preflight, verifyRepository, fetchBase, run as git, type Run } from './git.js';
 import { executeApprove, validateApprove, type ExecuteApprove, executeSpec, validateSpec, executeBuild, validateBuild, executeReview, validateReview, type ExecuteReview, type ExecuteBuild, type ExecuteSpec } from './codex.js';
@@ -228,7 +228,7 @@ export class SpecController {
       }) : [];
       const directory = artifactDirectory(this.directory, run.id);
       let prompt = `You are the Build role. Implement the task in this worktree using the specification and applicable AGENTS.md instructions.
-Run relevant checks and report their actual results. Return only the requested JSON result.
+Run relevant checks and report their actual results. For UI changes, a short smoke check of changed behavior is appropriate; leave independent Code, Security and UI/UX acceptance audits to reviewers. Preserve applicable mandatory repository checks and security safeguards. Return only the requested JSON result.
 Use READY only when implementation is complete, with exact repository-relative changed_paths covering ALL changes since the original base_sha, actions and checks.
 Use NEEDS_INPUT with structured questions for unresolved choices; BLOCKED for inability to complete. Never wait for interactive input.
 Do not publish, push, merge, or change other checkouts. Do not create commits; the coordinator will commit explicit paths.
@@ -322,14 +322,16 @@ ${JSON.stringify(context)}`;
       if (realpathSync(specPath) !== specPath) throw new Problem(422, 'Небезопасный путь Spec.');
       const specification = validateSpec(JSON.parse(readFileSync(specPath, 'utf8')).result);
       const context = this.store.humanRequests().filter(r => r.task_id === task.id && r.revision === task.revision && r.status === 'answered');
-      const focus = { 'review-code': 'Correctness, edge cases, maintainability and relevant tests.',
-        'review-security': 'Trust boundaries, authorization, injection, secrets and data exposure.',
-        'review-ui': 'Visual layout, responsive states, readability and actual rendered interface.',
-        'review-ux': 'User journeys, keyboard accessibility, errors and waiting states.' }[run.role as ReviewRole];
+      const focus = { 'review-code': 'Diff correctness, edge cases and sufficiency of relevant tests. Evidence: file/line references, reasoning and targeted test results. No mandatory browser acceptance or visual matrix; UI/UX owns visual and user-journey acceptance.',
+        'review-security': 'Concrete risks introduced by this change: authorization, trust boundaries, data handling/exposure, injection, secrets and dependencies. Evidence: affected paths, attack conditions and targeted checks. Use Computer Use only for a specific security check that cannot reasonably be performed otherwise. No mandatory visual matrix.',
+        'review-ui': 'Visual layout, responsive states, readability and actual rendered interface within changed behavior. UX owns journeys, keyboard, errors and waiting states.',
+        'review-ux': 'User journeys, keyboard accessibility, errors and waiting states within changed behavior. UI owns visual layout, responsiveness and readability.',
+        'review-ui-ux': 'In one environment and one shared browser pass, check changed behavior: UI covers appearance, readability and responsive states; UX covers user journeys, keyboard access, errors and waiting states. Return separate ui and ux sections with summary, findings and evidence, and one overall outcome. Copy every section finding verbatim into overall findings. Any material finding in either section requires CHANGES; never hide it behind PASS. Do not delegate a second model call or repeat two full passes.' }[run.role as ReviewRole];
       let prompt = `You are the ${run.role} reviewer in a fresh independent session. Review only the specified base/head change against requirements and Spec. Read applicable AGENTS.md.
 Focus: ${focus}
 Do not modify source, index, branch or commits. Never run Build, publish, push or merge. Reports/logs belong outside source in ${directory}.
-Return PASS only with actual evidence; CHANGES with actionable findings. Perform required rendered UI/UX checks yourself using available browser/computer tools before asking the human. If a required check cannot be completed, report the concrete blocker and checks attempted; return NEEDS_INPUT with actionable manual steps and expected results only when human input or action is needed, otherwise BLOCKED. Distinguish your own tool observations from human-provided evidence for this code version; never claim a browser check you did not perform or fabricate PASS.
+${['review-ui', 'review-ux', 'review-ui-ux'].includes(run.role) ? 'Perform required rendered UI/UX checks yourself using available browser/computer tools before asking the human. Evidence must identify observed scenarios, viewport/states and results within this role.' : ''}
+Preserve applicable mandatory repository instructions and security checks. Return PASS only with actual evidence within your role; CHANGES with actionable findings. If a required check cannot be completed, report the concrete blocker and checks attempted; return NEEDS_INPUT with actionable manual steps and expected results only when human input or action is needed, otherwise BLOCKED. Distinguish your own tool observations from human-provided evidence for this code version; never claim a browser check you did not perform or fabricate PASS.
 Only UI/UX may be not applicable, with a concrete explanation in applicability. Return structured questions for human decisions; never wait for interactive input.
 Task/run context: ${JSON.stringify({ task_id: task.id, run_id: run.id, role: run.role, round_id: run.round_id, description_revision: run.description_revision, spec_revision: run.spec_run_id, base_sha: run.base_sha, head_sha: run.head_sha })}
 Project instructions:
@@ -343,12 +345,14 @@ ${JSON.stringify(context)}`;
       prompt += this.chatContext(run);
       saveArtifact(directory, 'input.json', JSON.stringify({ run, specification, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'review', 'running'); this.publish();
-      const result = await this.agentResult(run, directory, () => this.review({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), interrupt: stop => this.registerInterrupt(run, stop), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models[run.role], reasoningEffort: run.config.reasoning_efforts?.[run.role], prompt }), value => validateReview(value, run.role as ReviewRole));
+      const result = await this.agentResult(run, directory, () => this.review({ reviewRole: run.role as ReviewRole, cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), interrupt: stop => this.registerInterrupt(run, stop), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models[run.role]!, reasoningEffort: run.config.reasoning_efforts?.[run.role], prompt }), value => validateReview(value, run.role as ReviewRole));
       await this.verifyReviewSource(run);
-      saveArtifact(directory, 'result.json', JSON.stringify({ schema_version: 1, task_id: task.id, run_id: run.id, role: run.role,
+      saveArtifact(directory, 'result.json', JSON.stringify({ schema_version: run.role === 'review-ui-ux' ? 2 : 1, task_id: task.id, run_id: run.id, role: run.role,
         round_id: run.round_id, description_revision: run.description_revision, spec_revision: run.spec_run_id,
         base_sha: run.base_sha, head_sha: run.head_sha, result }, null, 2));
-      saveArtifact(directory, 'report.md', [result.summary, `Outcome: ${result.outcome}`, `Applicability: ${result.applicable} — ${result.applicability}`,
+      saveArtifact(directory, 'report.md', [result.summary, ...(result.ui && result.ux ? [
+        `## UI\n${result.ui.summary}\nFindings:\n${result.ui.findings.join('\n')}\nEvidence:\n${result.ui.evidence.join('\n')}`,
+        `## UX\n${result.ux.summary}\nFindings:\n${result.ux.findings.join('\n')}\nEvidence:\n${result.ux.evidence.join('\n')}`] : []), `Outcome: ${result.outcome}`, `Applicability: ${result.applicable} — ${result.applicability}`,
         `Base: ${run.base_sha}`, `Head: ${run.head_sha}`, ...[['Findings', result.findings], ['Evidence', result.evidence], ['Questions', result.questions.map(q => q.text)]].map(([title, items]) => `## ${title}\n${(items as string[]).join('\n') || 'Нет.'}`)].join('\n\n'));
       run.status = 'completed'; run.outcome = result.outcome; run.report = 1;
       let next: AgentRun | undefined;
@@ -356,11 +360,11 @@ ${JSON.stringify(context)}`;
         const paused = ['NEEDS_INPUT', 'BLOCKED'].includes(result.outcome);
         this.store.updateRun(run, paused ? 'needs-human' : 'review', result.outcome === 'NEEDS_INPUT' ? 'waiting' : paused ? 'interrupted' : 'idle', undefined, result);
         if (!paused && this.store.task(run.project_id, run.task_id).revision === run.description_revision) {
-          if (run.role === reviewRoles.at(-1)) {
+          if (run.role === reviewsFor(run.config).at(-1)) {
             const pass = this.store.reviewPasses(run);
             this.store.db.prepare("UPDATE tasks SET stage = ?, run_state = ?, state_version = state_version + 1 WHERE id = ?")
               .run(pass ? 'approve' : 'needs-human', pass ? 'idle' : 'interrupted', task.id);
-            this.store.event('review.completed', task.id, { round_id: run.round_id, outcome: pass ? 'PASS' : 'CHANGES', reason: pass ? 'Четыре PASS; ожидается Approve' : run.repair_attempt >= 2 ? 'Две доработки исчерпаны; нужен человек' : 'Раунд завершён; требуется доработка' });
+            this.store.event('review.completed', task.id, { round_id: run.round_id, outcome: pass ? 'PASS' : 'CHANGES', reason: pass ? 'Все PASS; ожидается Approve' : run.repair_attempt >= 2 ? 'Две доработки исчерпаны; нужен человек' : 'Раунд завершён; требуется доработка' });
             if (pass && !this.closing) next = this.store.queueApprove(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
             if (!pass && run.repair_attempt < 2 && !this.closing) next = this.store.queueRepair(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
           } else if (!this.closing) next = this.store.queueReview(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
@@ -382,7 +386,7 @@ ${JSON.stringify(context)}`;
   private async performApprove(run: AgentRun) {
     try {
       await this.verifyReviewSource(run);
-      if (!this.store.reviewPasses(run)) throw new Problem(409, 'Нужны четыре актуальных PASS.');
+      if (!this.store.reviewPasses(run)) throw new Problem(409, 'Нужны все актуальные PASS.');
       const task = this.store.task(run.project_id, run.task_id);
       const directory = artifactDirectory(this.directory, run.id);
       const read = (id: string) => {
@@ -393,8 +397,8 @@ ${JSON.stringify(context)}`;
       const specification = validateSpec(read(run.spec_run_id!));
       const reports = this.store.reviewRound(run).map(r => ({ role: r!.role, run_id: r!.id, result: validateReview(read(r!.id), r!.role as ReviewRole) }));
       const context = this.store.humanRequests().filter(r => r.task_id === task.id && r.revision === task.revision && r.status === 'answered');
-      let prompt = `You are the Approve role in a fresh independent session. Evaluate current Spec, changes and all four reviews.
-Inspect the complete changes in this worktree between immutable base_sha ${run.base_sha} and head_sha ${run.head_sha}, reading files/diffs in manageable portions as needed.
+      let prompt = `You are the Approve role in a fresh independent session. Reconcile current Spec requirements, mandatory results and unresolved findings from all required reviews. Do not repeat Code, Security or UI/UX audits; use their evidence and report gaps honestly.
+Consult the changes only as needed to reconcile requirements or unresolved findings in this worktree between immutable base_sha ${run.base_sha} and head_sha ${run.head_sha}, without repeating independent acceptance checks.
 Read applicable AGENTS.md. Do not modify source, index, branch or commits. Never publish, push or merge.
 APPROVE grants permission ONLY to publish a PR/MR, never merge. ESCALATE must explain risks and affected_paths; NEEDS_INPUT uses structured questions.
 Return only the structured result. Reports/logs belong in ${directory}.
@@ -451,7 +455,7 @@ Context: ${JSON.stringify({ run, description: task.description, specification, r
       const directory = artifactDirectory(this.directory, run.id);
       const context = this.store.humanRequests().filter(request => request.task_id === task.id && request.revision === task.revision && request.status === 'answered');
       let prompt = `You are the Spec role. Inspect the repository and applicable AGENTS.md instructions in this worktree.
-Do not change source, create commits, publish, merge, or run Build. Return only the requested JSON result.
+Define requirements and testable acceptance criteria only; do not implement or perform full acceptance testing. Do not change source, create commits, publish, merge, or run Build. Return only the requested JSON result.
 Return a concise title (1–120 characters) in the description language, based only on the description.
 Use READY only for a testable specification containing requirements, acceptance criteria, assumptions and out-of-scope.
 For material unresolved product choices return NEEDS_INPUT with structured questions with context, impact, options and required flag; never wait for interactive input.

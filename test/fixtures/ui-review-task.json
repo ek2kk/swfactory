@@ -1,0 +1,13 @@
+{
+  "description": "Make Save responsive at 375px and keyboard accessible",
+  "specification": {
+    "title": "Responsive Save action",
+    "outcome": "READY",
+    "summary": "Keep the Save action usable in the changed form",
+    "requirements": ["Save remains visible on mobile", "Save supports keyboard activation"],
+    "acceptance_criteria": ["At 375px Save is visible without horizontal scrolling", "Tab reaches Save and Enter submits once", "Saving and failure states remain understandable"],
+    "assumptions": ["Existing form validation remains unchanged"],
+    "out_of_scope": ["Audit of unrelated screens"],
+    "questions": []
+  }
+}

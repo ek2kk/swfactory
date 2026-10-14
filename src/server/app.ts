@@ -10,7 +10,7 @@ import { generateTitle } from './title.js';
 import { inspectProject } from './git.js';
 import { chooseProjectFolder } from './folder-dialog.js';
 import { GithubIssues, type IssueCommand } from './issues.js';
-import { roles, type ProjectInput, type Project, type Settings, type AgentRun } from '../shared.js';
+import { roles, allRoles, type ProjectInput, type Project, type Settings, type AgentRun } from '../shared.js';
 import { realpathSync } from 'node:fs';
 import { SpecController } from './spec.js';
 import { readLog, readReport } from './artifacts.js';
@@ -222,8 +222,8 @@ export async function createApp(options: {
   app.put<{ Params: { projectId: string }; Body: Settings & { request_id: string; state_version: number } }>('/api/projects/:projectId/settings', {
     schema: { params: projectParams, body: { ...object({ request_id: uuid, state_version: version,
       instructions: { type: 'string', maxLength: 30000 },
-      models: object(Object.fromEntries(roles.map(role => [role, { type: 'string', minLength: 1, maxLength: 128, pattern: '^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$' }]))),
-      reasoning_efforts: { ...object(Object.fromEntries(roles.map(role => [role, { type: 'string', minLength: 1, maxLength: 64, pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]*$' }]))), required: [] },
+      models: { ...object(Object.fromEntries(allRoles.map(role => [role, { type: 'string', minLength: 1, maxLength: 128, pattern: '^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$' }]))), required: roles },
+      reasoning_efforts: { ...object(Object.fromEntries(allRoles.map(role => [role, { type: 'string', minLength: 1, maxLength: 64, pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]*$' }]))), required: [] },
     }), required: ['request_id', 'state_version', 'instructions', 'models'] } },
   }, async request => {
     const { request_id, state_version, ...config } = request.body;
