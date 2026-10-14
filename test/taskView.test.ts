@@ -53,6 +53,29 @@ function elements(node: any): any[] {
   return [node, ...elements(node.props.children)];
 }
 
+test('opening requirements focuses its textarea once in idle, queued and running states', () => {
+  for (const runState of ['idle', 'queued', 'running']) {
+    const card = taskCard();
+    card.props.task.run_state = runState;
+    let focused = 0;
+    let view = card.render(); view.commit();
+    elements(view.tree).find(element => element.type === 'button' && element.props.children === 'Изменить требования').props.onClick();
+    view = card.render();
+    const textarea = elements(view.tree).find(element => element.type === 'textarea');
+    assert.equal(textarea.props['aria-label'], runState === 'idle' ? 'Описание' : 'Уточнения требований');
+    assert.ok(textarea.props.ref, 'the opening effect needs the mounted textarea');
+    textarea.props.ref.current = { focus() { focused++; } };
+    view.commit();
+    assert.equal(focused, 1, `${runState}: opening focuses the form`);
+    textarea.props.onChange({ target: { value: 'Draft requirements' } });
+    view = card.render(); view.commit();
+    assert.equal(focused, 1, `${runState}: editing must not steal focus`);
+    card.props.task.state_version++;
+    view = card.render(); view.commit();
+    assert.equal(focused, 1, `${runState}: snapshot updates must not steal focus`);
+  }
+});
+
 test('requirements cancellation restores focus to its opener and keeps the draft', () => {
   const card = taskCard();
   let focused = 0;

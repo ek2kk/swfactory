@@ -126,8 +126,10 @@ function ArchivedTask({ task, refresh, notify, expanded = false, draft, openTask
 function TaskCard({ task, project, runs, questions, refresh, active, cursor, notify, draft, setDraft }: { task: Task; project: Project; runs: AgentRun[]; questions: HumanRequest[]; refresh: () => Promise<void>; active: boolean; cursor: number; notify: (text: string) => void; draft?: DescriptionDraft; setDraft: (draft: DescriptionDraft | null) => void }) {
   const [editing, setEditing] = useState(!!draft);
   const requirementsButton = useRef<HTMLButtonElement>(null);
+  const requirementsInput = useRef<HTMLTextAreaElement>(null);
   const wasEditing = useRef(editing);
   useEffect(() => {
+    if (!wasEditing.current && editing) requirementsInput.current?.focus();
     if (wasEditing.current && !editing) requirementsButton.current?.focus();
     wasEditing.current = editing;
   }, [editing]);
@@ -174,7 +176,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
         <button type="button" className="secondary" aria-pressed={draft.kind === 'requirements'} disabled={busy} onClick={() => setDraft({ description: clarification.current, version: draft.version, kind: 'requirements' })}>Добавить уточнения</button>
       </div>
       {draft.kind === 'requirements' && <p className="hint">{['queued', 'running'].includes(task.run_state) ? 'Уточнения ожидают применения после текущего этапа. До применения описание и версия требований остаются прежними.' : 'Уточнения добавятся к существующему описанию.'}</p>}
-      <label>{draft.kind === 'requirements' ? 'Уточнения требований' : 'Описание'}<textarea aria-label={draft.kind === 'requirements' ? 'Уточнения требований' : 'Описание'} required maxLength={draft.kind === 'requirements' ? 4096 : 100000} value={draft.description} onChange={e => { (draft.kind === 'requirements' ? clarification : replacement).current = e.target.value; setDraft({ ...draft, description: e.target.value }); }} /></label>
+      <label>{draft.kind === 'requirements' ? 'Уточнения требований' : 'Описание'}<textarea ref={requirementsInput} aria-label={draft.kind === 'requirements' ? 'Уточнения требований' : 'Описание'} required maxLength={draft.kind === 'requirements' ? 4096 : 100000} value={draft.description} onChange={e => { (draft.kind === 'requirements' ? clarification : replacement).current = e.target.value; setDraft({ ...draft, description: e.target.value }); }} /></label>
       {task.state_version !== draft.version && <p role="status">Карточка изменилась. Ваш черновик сохранён. Проверьте актуальное состояние перед повторным сохранением.</p>}
       <div className="actions"><button disabled={busy || !draft.description.trim() || task.state_version !== draft.version || (!draft.kind && !canReplace)}>{busy ? 'Сохраняем…' : 'Сохранить'}</button>
         <button type="button" className="secondary" disabled={busy} onClick={() => setDraft({ ...draft, version: task.state_version })}>Использовать актуальное состояние</button>
