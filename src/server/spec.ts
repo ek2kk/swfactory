@@ -249,10 +249,30 @@ export class SpecController {
         if (!review) return null;
         const path = join(this.directory, 'artifacts', review.id, 'result.json');
         if (realpathSync(path) !== path) throw new Problem(422, 'Небезопасный путь Review.');
-        return { role: review.role, result: validateReview(JSON.parse(readFileSync(path, 'utf8')).result, review.role as ReviewRole) };
+        const result = validateReview(JSON.parse(readFileSync(path, 'utf8')).result, review.role as ReviewRole);
+        return { role: review.role, run_id: review.id, artifact: path, result: { outcome: result.outcome, summary: result.summary, findings: result.findings, evidence: result.evidence } };
       }).filter(Boolean) : [];
+      let previousBuild;
+      if (run.repair_round_id) {
+        const previous = this.store.specRun(run.project_id, run.task_id, run.repair_round_id);
+        const path = join(this.directory, 'artifacts', previous.id, 'result.json');
+        if (realpathSync(path) !== path) throw new Problem(422, 'Небезопасный путь Build.');
+        const result = validateBuild(JSON.parse(readFileSync(path, 'utf8')).result);
+        previousBuild = { run_id: previous.id, head_sha: previous.head_sha, artifact: path,
+          summary: result.summary, changed_paths: result.changed_paths, actions: result.actions, checks: result.checks };
+      }
       const directory = artifactDirectory(this.directory, run.id);
-      let prompt = `You are the Build role. Implement the task in this worktree using the versioned requirements below and applicable AGENTS.md instructions.
+      const mode = run.repair_round_id ? 'repair' : 'initial';
+      const instructions = mode === 'repair' ? `Repair the existing implementation; do not implement or accept the whole task again. Address the current review findings and human feedback below, preserving already agreed behavior.
+Make the smallest change that closes each finding. No unrequested refactoring, new features or scope expansion. If a correction affects an adjacent contract, state the contract and its impact and check that behavior.
+Use the requirements as constraints and consult full previous artifacts at the supplied paths only as needed. Completed reviews may be a partial fail-fast round: missing reviewers have not run; do not require their PASS reports or treat missing reports as PASS.
+Choose targeted tests/checks for the corrected behavior and connected contracts. Do not automatically rerun the full suite or full visual matrix on each repair. Preserve mandatory project checks; explicitly report any mandatory check that could not run and its blocker, never silently skip it.
+For UI, perform a short check of the corrected scenario when needed to confirm it (for example, keyboard focus return after closing a dialog); for diagnostics, check the failed run with no report. Leave separate full Code, Security and UI/UX audits to reviewers.
+In actions, map each finding to its correction and evidence (referencing actual checks). In checks, state executed checks and results, and what was not checked with reasons. Identify unresolved findings in summary; never claim they are fixed or return READY while a blocking finding remains. Use NEEDS_INPUT for necessary human input, otherwise BLOCKED.
+The repair scope is local, but changed_paths must retain accumulated changes from previous Builds: include every path touched by commits since original base_sha and by current staged, unstaged or untracked changes, even paths reverted later.`
+        : 'Implement the task in this worktree using the versioned requirements below and applicable AGENTS.md instructions.';
+      let prompt = `You are the Build role. Mode: ${mode}. ${instructions}
+Follow applicable AGENTS.md instructions.
 Run relevant checks and report their actual results. For UI changes, a short smoke check of changed behavior is appropriate; leave independent Code, Security and UI/UX acceptance audits to reviewers. Preserve applicable mandatory repository checks and security safeguards. Return only the requested JSON result.
 Use READY only when implementation is complete, with exact repository-relative changed_paths covering ALL changes since the original base_sha, actions and checks.
 Use NEEDS_INPUT with structured questions for blocking ambiguity or unresolved choices, including whether a return to Spec is needed. Skipping Spec never authorizes inventing requirements or skipping mandatory validation; BLOCKED for inability to complete. Never wait for interactive input.
@@ -267,10 +287,12 @@ Requirements source (saved description or Spec):
 ${JSON.stringify(specification)}
 Completed previous reviews — address every finding; missing reviewers have not run:
 ${JSON.stringify(feedback)}
-Previous results and human answers:
+Previous Build summary (full artifact available on demand):
+${JSON.stringify(previousBuild ?? null)}
+Human answers and decisions:
 ${JSON.stringify(context)}`;
       prompt += this.chatContext(run);
-      saveArtifact(directory, 'input.json', JSON.stringify({ run, description: task.description, specification, feedback, prompt }, null, 2));
+      saveArtifact(directory, 'input.json', JSON.stringify({ run, mode, description: task.description, specification, feedback, previousBuild, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'build', 'running'); this.publish();
       const result = await this.agentResult(run, directory, () => this.build({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), interrupt: stop => this.registerInterrupt(run, stop), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.build, reasoningEffort: run.config.reasoning_efforts?.build, prompt }), validateBuild);
       await verifyRepository(project, run.worktree, this.command);

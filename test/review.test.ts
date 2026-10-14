@@ -707,3 +707,53 @@ for (const blocker of ['review-code', 'review-security', 'review-ui-ux']) for (c
     }
   });
 }
+
+for (const localOnly of [false, true]) test(`Build repair targets diagnostics and preserves accumulated paths (localOnly=${localOnly})`, async t => {
+  const { store, project, task, directory, queue, build, git } = await fixture(t, 0);
+  let repairs = 0;
+  const finding = 'Failed run with report=0 hides stderr diagnostics';
+  const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, async input => {
+    repairs++;
+    const saved = JSON.parse(readFileSync(join(input.directory, 'input.json'), 'utf8'));
+    assert.equal(saved.mode, 'repair');
+    assert.equal(saved.previousBuild.run_id, build.id);
+    assert.equal(saved.previousBuild.head_sha, store.specRun(project.id, task.id, build.id).head_sha);
+    assert.deepEqual(saved.previousBuild.changed_paths, ['README.md']);
+    assert.deepEqual(saved.previousBuild.checks, ready.checks);
+    assert.equal(JSON.parse(readFileSync(saved.previousBuild.artifact, 'utf8')).result.summary, ready.summary);
+    assert.equal(saved.feedback.length, 1); // Code stopped the round before Security or UI/UX.
+    assert.equal(saved.feedback[0].result.findings[0], finding);
+    assert.equal(JSON.parse(readFileSync(saved.feedback[0].artifact, 'utf8')).result.outcome, 'CHANGES');
+    for (const rule of [/Mode: repair/, /preserving already agreed behavior/, /smallest change/, /adjacent contract/,
+      /Do not automatically rerun the full suite or full visual matrix/, /mandatory check.*blocker/,
+      /short check of the corrected scenario/, /do not require their PASS reports/,
+      /map each finding to its correction and evidence/, /what was not checked with reasons/,
+      /never claim they are fixed or return READY/, /accumulated changes/, /README says hello/]) assert.match(input.prompt, rule);
+    mkdirSync(join(input.cwd, 'src/client'), { recursive: true });
+    writeFileSync(join(input.cwd, 'src/client/diagnostics.ts'), 'export const showDiagnostics = (report: number) => report >= 0;');
+    return { ...ready, changed_paths: localOnly ? ['src/client/diagnostics.ts'] : ['README.md', 'src/client/diagnostics.ts'],
+      actions: [`${finding} → diagnostics visible → targeted report=0 regression`],
+      checks: ['Targeted report=0 diagnostics regression: passed', 'Full suite and visual matrix not repeated: unrelated to this repair'] };
+  }, async input => visualResult(repairs ? pass : { ...pass, outcome: 'CHANGES', findings: [finding] }, input.reviewRole), approved);
+  runner.enqueue(queue()); await settled(store, task.id); await runner.close();
+  assert.equal(repairs, 1);
+  const repair = store.runs().find(r => r.role === 'build' && r.repair_round_id)!;
+  assert.equal(repair.base_sha, build.base_sha);
+  assert.equal(readFileSync(join(repair.worktree, 'README.md'), 'utf8'), 'hello');
+  assert.equal(readFileSync(join(repair.worktree, 'src/client/diagnostics.ts'), 'utf8').includes('report >= 0'), true);
+  if (localOnly) {
+    assert.equal(repair.status, 'failed');
+    assert.match(repair.error!, /Заявленные пути не совпадают/);
+    assert.equal(git(repair.worktree, 'rev-parse', 'HEAD'), store.specRun(project.id, task.id, build.id).head_sha);
+    assert.equal(store.runs().filter(r => r.round_id === repair.id).length, 0);
+  } else {
+    assert.equal(repair.status, 'completed', repair.error ?? '');
+    assert.equal(git(repair.worktree, 'rev-list', '--count', `${repair.base_sha}..HEAD`), '2');
+    assert.equal(git(repair.worktree, 'status', '--porcelain'), '');
+    const report = readFileSync(join(directory, 'artifacts', repair.id, 'report.md'), 'utf8');
+    assert.match(report, /report=0.*→.*→/);
+    assert.match(report, /Targeted report=0 diagnostics regression: passed/);
+    assert.match(report, /Full suite and visual matrix not repeated/);
+    assert.equal(store.publicationRun(project.id, task.id).role, 'approve');
+  }
+});
