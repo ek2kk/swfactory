@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { Store } from '../src/server/store.js';
 import { SpecController } from '../src/server/spec.js';
+import { publishGithub } from '../src/server/publication.js';
 import { run as command } from '../src/server/git.js';
 import { executeReview, validateReview, type ExecuteBuild, type ExecuteReview } from '../src/server/codex.js';
 import type { BuildResult, SpecResult, ReviewResult } from '../src/shared.js';
@@ -411,8 +412,48 @@ test('Approve starts for supported 2 MiB source even when diff exceeds coordinat
   assert.equal(store.runs().at(-1)!.outcome, 'APPROVE');
 });
 
+for (const issueNumber of [42, null, undefined]) test(`GitHub PR body preserves content with issue_number=${issueNumber}`, async t => {
+  const { store, project, task, directory, queue, controller } = await fixture(t);
+  if (issueNumber != null) store.db.prepare('INSERT INTO github_issues VALUES (?, ?, ?, ?, ?)')
+    .run(project.id, issueNumber, `https://github.com/test/repo/issues/${issueNumber}`, task.id, task.state_version);
+  const reviewer = controller(async () => pass);
+  reviewer.enqueue(queue()); await settled(store, task.id); await reviewer.close();
+  const approval = store.runs().at(-1)!, reviews = store.reviewRound(approval).map(r => { assert.ok(r); return r; });
+  const source = store.task(project.id, task.id);
+  assert.equal(source.issue_number, issueNumber ?? null);
+  if (issueNumber === undefined) delete source.issue_number;
+  source.description = 'Issue #99\n\n```text\nKeep this description\n```';
+  const pr = { number: 12, html_url: 'https://github.com/test/repo/pull/12', state: 'open', merged_at: null,
+    head: { ref: approval.branch, sha: approval.head_sha, repo: { full_name: project.repository } },
+    base: { ref: project.target_branch, repo: { full_name: project.repository } }, body: '' };
+  let creates = 0;
+  const cli: typeof command = async (file, args) => {
+    if (file === 'git') return args[0] === 'remote' ? project.remote_url : '';
+    if (args.includes('--slurp')) return '[[]]';
+    if (args[0] === 'pr') {
+      assert.deepEqual(args.slice(0, 2), ['pr', 'create']); creates++;
+      const bodyPath = args[args.indexOf('--body-file') + 1];
+      assert.equal(bodyPath, join(directory, 'artifacts', approval.id, 'pull-request.md'));
+      pr.body = readFileSync(bodyPath, 'utf8');
+      const paragraphs = [`<!-- swfactory-task:${task.id} -->`, ...(issueNumber == null ? [] : ['Closes #42']),
+        source.description, '## Summary', ready.summary, '## Reviews',
+        ...reviews.map(r => `${r.role}: PASS\n${pass.summary}`), '## Approval', (await approved()).summary,
+        `Approved head: ${approval.head_sha}`, 'CI: not checked. Missing, pending or failed CI is not PASS. Merge remains a human action.'];
+      assert.equal(pr.body, paragraphs.join('\n\n'));
+      assert.doesNotMatch(pr.body, /^Closes #99$/m);
+      return pr.html_url;
+    }
+    return JSON.stringify(pr);
+  };
+  assert.deepEqual(await publishGithub(project, source, approval, reviews, directory, cli, async () => {}),
+    { number: pr.number, url: pr.html_url });
+  assert.equal(creates, 1);
+});
+
 for (const mode of ['success', 'existing', 'existing-changed-during-fetch', 'unknown', 'changed', 'changed-after-push', 'push-url', 'wrong-marker', 'wrong-head', 'save', 'missing-pass'] as const) test(`GitHub publication ${mode}: guarded, confirmed and durable`, async t => {
   const { store, project, task, directory, queue, controller, build } = await fixture(t);
+  if (mode === 'existing') store.db.prepare('INSERT INTO github_issues VALUES (?, ?, ?, ?, ?)')
+    .run(project.id, 42, 'https://github.com/test/repo/issues/42', task.id, task.state_version);
   const reviewer = controller(async () => pass);
   reviewer.enqueue(queue()); await settled(store, task.id); await reviewer.close();
   const approval = store.runs().at(-1)!;
@@ -435,7 +476,7 @@ for (const mode of ['success', 'existing', 'existing-changed-during-fetch', 'unk
       return command(file, args, cwd);
     }
     if (args.includes('--slurp')) return JSON.stringify([['existing', 'existing-changed-during-fetch', 'wrong-marker', 'wrong-head'].includes(mode) ? [pr] : []]);
-    if (args[0] === 'pr') { creates++; if (mode === 'unknown') throw new Error('Connection lost after create'); return pr.html_url; }
+    if (args[0] === 'pr') { assert.deepEqual(args.slice(0, 2), ['pr', 'create']); creates++; if (mode === 'unknown') throw new Error('Connection lost after create'); return pr.html_url; }
     if (mode === 'existing-changed-during-fetch') writeFileSync(join(cwd, 'README.md'), 'changed during PR detail fetch');
     return JSON.stringify(mode === 'wrong-marker' ? { ...pr, body: 'another task' } : mode === 'wrong-head' ? { ...pr, head: { ...pr.head, sha: 'bad' } } : pr);
   };
