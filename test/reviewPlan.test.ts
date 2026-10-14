@@ -98,15 +98,24 @@ test('unavailable diff never skips reviews or reuses a PASS', async t => {
   }, []);
   assert.ok(plan.checks.every(c => c.required && !c.reuse_run_id));
 });
-test('partial failed round cannot approve or repair while required evidence is missing', async t => {
+test('partial failed round can repair after restart but cannot approve with missing evidence', async t => {
   const f = await fixture(t);
   f.store.saveReviewPlan(f.build, await makeReviewPlan(f.build, async (_file, args) => args.includes('-z') ? 'unknown.config\0' : '+opaque', []));
   const first = f.store.queueReview(f.project.id, f.task.id, f.store.task(f.project.id, f.task.id).state_version);
-  first.status = 'completed'; first.outcome = 'CHANGES'; f.store.updateRun(first, 'needs-human', 'interrupted');
+  first.status = 'completed'; first.outcome = 'CHANGES'; f.store.updateRun(first, 'review', 'idle');
   assert.equal(f.store.reviewPasses(first), false);
-  assert.throws(() => f.store.queueRepair(f.project.id, f.task.id, f.store.task(f.project.id, f.task.id).state_version));
+  assert.throws(() => f.store.queueReview(f.project.id, f.task.id, f.store.task(f.project.id, f.task.id).state_version));
+  f.store.db.prepare("UPDATE tasks SET stage = 'needs-human', run_state = 'interrupted' WHERE id = ?").run(f.task.id);
+  f.restart();
+  assert.throws(() => f.store.queueReview(f.project.id, f.task.id, f.store.task(f.project.id, f.task.id).state_version));
   f.store.db.prepare("UPDATE tasks SET stage = 'approve', run_state = 'idle' WHERE id = ?").run(f.task.id);
   assert.throws(() => f.store.queueApprove(f.project.id, f.task.id, f.store.task(f.project.id, f.task.id).state_version));
+  f.store.db.prepare("UPDATE tasks SET stage = 'needs-human', run_state = 'interrupted' WHERE id = ?").run(f.task.id);
+  const version = f.store.task(f.project.id, f.task.id).state_version;
+  const repair = f.store.queueRepair(f.project.id, f.task.id, version);
+  assert.equal(repair.role, 'build');
+  assert.equal(repair.repair_round_id, first.round_id);
+  assert.throws(() => f.store.queueRepair(f.project.id, f.task.id, version));
 });
 
 test('deleted credentials are redacted before persistence and absent from browser plans/events', async t => {
@@ -150,4 +159,15 @@ test('restart scrubs old raw plan/history and blocks publication using the old s
   assert.equal(f.store.specRun(f.project.id, f.task.id, f.build.id).stale, 1);
   assert.equal(f.store.task(f.project.id, f.task.id).stage, 'needs-human');
   assert.equal(f.store.reviewPasses({ ...f.build, round_id: f.build.id }), false);
+});
+
+for (const outcome of ['NEEDS_INPUT', 'BLOCKED', null] as const) test(`partial ${outcome} is not repairable CHANGES`, async t => {
+  const f = await fixture(t);
+  const first = f.store.queueReview(f.project.id, f.task.id, f.store.task(f.project.id, f.task.id).state_version);
+  Object.assign(first, { status: outcome ? 'completed' : 'failed', outcome });
+  f.store.updateRun(first, 'needs-human', 'interrupted', undefined, outcome === 'NEEDS_INPUT' ? {
+    outcome, summary: 'Policy needed', findings: [], evidence: [], applicable: true, applicability: '',
+    questions: [{ text: 'Policy?', context: 'Review', impact: 'Verdict', options: [], required: true }],
+  } : undefined);
+  for (const manual of [false, true]) assert.throws(() => f.store.queueRepair(f.project.id, f.task.id, f.store.task(f.project.id, f.task.id).state_version, manual));
 });

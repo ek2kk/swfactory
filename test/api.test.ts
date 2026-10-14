@@ -333,7 +333,7 @@ test('Review action requires committed Build, schema/ownership/version and repla
   assert.equal(store.runs().filter(run => run.role === 'review-code').length, 1);
 });
 
-test('Repair action validates complete round, ownership, schema, version and replay', async t => {
+for (const count of [1, 3]) test(`Repair action validates ${count} completed reviews, ownership, schema, version and replay`, async t => {
   const { app, store, headers, project } = await fixture(t);
   const task = store.createTask(project.id, 'Repair something', 1);
   const url = `/api/projects/${project.id}/tasks/${task.id}/repair`;
@@ -345,10 +345,10 @@ test('Repair action validates complete round, ownership, schema, version and rep
   const build = store.queueBuild(project.id, task.id, store.task(project.id, task.id).state_version);
   build.status = 'completed'; build.outcome = 'READY'; build.head_sha = 'head'; build.source_hash = 'hash';
   store.updateRun(build, 'review', 'idle');
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < count; i++) {
     const review = store.queueReview(project.id, task.id, store.task(project.id, task.id).state_version);
-    review.status = 'completed'; review.outcome = 'CHANGES';
-    store.updateRun(review, i === 2 ? 'needs-human' : 'review', i === 2 ? 'interrupted' : 'idle');
+    review.status = 'completed'; review.outcome = i === count - 1 ? 'CHANGES' : 'PASS';
+    store.updateRun(review, i === count - 1 ? 'needs-human' : 'review', i === count - 1 ? 'interrupted' : 'idle');
   }
   const version = store.task(project.id, task.id).state_version;
   const payload = { request_id: randomUUID(), state_version: version };

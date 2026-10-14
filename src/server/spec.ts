@@ -12,7 +12,7 @@ import { publishGithub } from './publication.js';
 import { sourceHash, commitBuild } from './build.js';
 import { Titles, generateTitle, parseTitle } from './title.js';
 import { formatOutput } from './output.js';
-import { CodexFailure } from './diagnostics.js';
+import { CodexFailure, redact } from './diagnostics.js';
 import { Scheduler } from './scheduler.js';
 import { artifactDirectory, saveArtifact } from './artifacts.js';
 
@@ -265,7 +265,7 @@ Task description:
 ${task.description}
 Requirements source (saved description or Spec):
 ${JSON.stringify(specification)}
-Full previous review round — address every finding:
+Completed previous reviews — address every finding; missing reviewers have not run:
 ${JSON.stringify(feedback)}
 Previous results and human answers:
 ${JSON.stringify(context)}`;
@@ -361,7 +361,7 @@ ${JSON.stringify(context)}`;
 Focus: ${focus}
 Do not modify source, index, branch or commits. Never run Build, publish, push or merge. Reports/logs belong outside source in ${directory}.
 ${['review-ui', 'review-ux', 'review-ui-ux'].includes(run.role) ? 'Perform required rendered UI/UX checks yourself using available browser/computer tools before asking the human. Evidence must identify observed scenarios, viewport/states and results within this role.' : ''}
-Preserve applicable mandatory repository instructions and security checks. Return PASS only with actual evidence within your role; CHANGES with actionable findings. If a required check cannot be completed, report the concrete blocker and checks attempted; return NEEDS_INPUT with actionable manual steps and expected results only when human input or action is needed, otherwise BLOCKED. Distinguish your own tool observations from human-provided evidence for this code version; never claim a browser check you did not perform or fabricate PASS.
+Collect all material findings within this bounded role pass; do not stop your own review at the first finding. Preserve applicable mandatory repository instructions and security checks. Return PASS only with actual evidence within your role; CHANGES with actionable findings. If a required check cannot be completed, report the concrete blocker and checks attempted; return NEEDS_INPUT with actionable manual steps and expected results only when human input or action is needed, otherwise BLOCKED. Distinguish your own tool observations from human-provided evidence for this code version; never claim a browser check you did not perform or fabricate PASS.
 Only UI/UX may be not applicable, with a concrete explanation in applicability. Return structured questions for human decisions; never wait for interactive input.
 Task/run context: ${JSON.stringify({ task_id: task.id, run_id: run.id, role: run.role, round_id: run.round_id, description_revision: run.description_revision, spec_revision: run.spec_run_id, base_sha: run.base_sha, head_sha: run.head_sha })}
 Project instructions:
@@ -394,11 +394,12 @@ ${JSON.stringify(context)}`;
         const paused = ['NEEDS_INPUT', 'BLOCKED'].includes(result.outcome);
         this.store.updateRun(run, paused ? 'needs-human' : 'review', result.outcome === 'NEEDS_INPUT' ? 'waiting' : paused ? 'interrupted' : 'idle', undefined, result);
         if (!paused && this.store.task(run.project_id, run.task_id).revision === run.description_revision) {
-          if (run.role === requiredReviews(run).at(-1)) {
+          if (result.outcome === 'CHANGES' || run.role === requiredReviews(run).at(-1)) {
             const pass = this.store.reviewPasses(run);
             this.store.db.prepare("UPDATE tasks SET stage = ?, run_state = ?, state_version = state_version + 1 WHERE id = ?")
               .run(pass ? 'approve' : 'needs-human', pass ? 'idle' : 'interrupted', task.id);
-            this.store.event('review.completed', task.id, { round_id: run.round_id, outcome: pass ? 'PASS' : 'CHANGES', reason: pass ? 'Все PASS; ожидается Approve' : run.repair_attempt >= 2 ? 'Две доработки исчерпаны; нужен человек' : 'Раунд завершён; требуется доработка' });
+            this.store.event('review.completed', task.id, { run_id: run.id, round_id: run.round_id, outcome: pass ? 'PASS' : 'CHANGES', reason: pass ? 'Все PASS; ожидается Approve'
+              : redact(`${run.role} требует доработок: ${result.summary}. ${result.findings.join('; ')}${run.repair_attempt >= 2 ? ' Две доработки исчерпаны; нужен человек.' : ''}`) });
             if (pass && !this.closing) next = this.store.queueApprove(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
             if (!pass && run.repair_attempt < 2 && !this.closing) next = this.store.queueRepair(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
           } else if (!this.closing) next = this.store.queueReview(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);

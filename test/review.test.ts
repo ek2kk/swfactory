@@ -95,7 +95,7 @@ test('Review schema: evidence, findings, applicability, question and extra-field
     { ...pass, outcome: 'CHANGES' }, { ...pass, outcome: 'NEEDS_INPUT' }, { ...pass, findings: ['bug'] }]) assert.throws(() => validateReview(result, 'review-ui'));
   assert.throws(() => validateReview({ ...pass, applicable: false, applicability: 'No code' }, 'review-code'));
 });
-for (const changes of [false, true]) test(`Three sequential independent reports; CHANGES=${changes} completes round without Build`, async t => {
+for (const changes of [false, true]) test(`Sequential independent reports stop on CHANGES=${changes} without Build`, async t => {
   const { store, project, task, directory, queue, controller, build } = await fixture(t);
   const seen: string[] = [], directories = new Set<string>();
   let active = 0;
@@ -111,7 +111,7 @@ for (const changes of [false, true]) test(`Three sequential independent reports;
   });
   const first = queue(); assert.throws(queue); runner.enqueue(first);
   const finished = await settled(store, task.id); await runner.close();
-  assert.deepEqual(seen, ['review-code', 'review-security', 'review-ui-ux']); assert.equal(directories.size, 3);
+  assert.deepEqual(seen, changes ? ['review-code'] : ['review-code', 'review-security', 'review-ui-ux']); assert.equal(directories.size, seen.length);
   assert.equal(finished.stage, changes ? 'needs-human' : 'approve');
   const reviews = store.runs().filter(r => r.role.startsWith('review-'));
   for (const r of reviews) {
@@ -121,7 +121,7 @@ for (const changes of [false, true]) test(`Three sequential independent reports;
     assert.equal(envelope.spec_revision, r.spec_run_id); assert.equal(envelope.run_id, r.id);
   }
   assert.equal(store.reviewPasses(reviews.at(-1)!), !changes);
-  store.close(); const restored = new Store(directory); assert.equal(restored.runs().filter(r => r.report && r.role.startsWith('review-')).length, 3); restored.close();
+  store.close(); const restored = new Store(directory); assert.equal(restored.runs().filter(r => r.report && r.role.startsWith('review-')).length, changes ? 1 : 3); restored.close();
 });
 test('Reviewer question pauses next role; answer resumes same role and preserves earlier PASS', async t => {
   const { store, project, task, queue, controller } = await fixture(t);
@@ -234,23 +234,25 @@ for (const scenario of ['changes', 'cli-error', 'question'] as const) for (const
     const before = store.snapshot();
     await runner.refreshReviewState();
     const reviews = store.runs().filter(r => r.role.startsWith('review-'));
-    assert.equal(reviews.length, scenario === 'changes' ? 3 : 2);
+    assert.equal(reviews.length, scenario === 'changes' ? 1 : 2);
     assert.ok(reviews.every(r => r.stale === (drift ? 1 : 0)));
     assert.equal(runner.error, null);
     if (!drift) assert.deepEqual(store.snapshot(), before);
     const refreshed = store.snapshot();
     await runner.refreshReviewState();
     assert.deepEqual(store.snapshot(), refreshed);
-    assert.equal(calls, scenario === 'changes' ? 3 : 2);
+    assert.equal(calls, scenario === 'changes' ? 1 : 2);
   });
 }
 
-for (const passAfterRepair of [false, true]) test(`Repair aggregates every reviewer, caps at two and reviews each version; pass=${passAfterRepair}`, async t => {
+for (const passAfterRepair of [false, true]) test(`Repair uses completed feedback, caps at two and reviews each version; pass=${passAfterRepair}`, async t => {
   const { store, project, task, directory, queue } = await fixture(t, 0);
   let builds = 0, reviews = 0;
   const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, async input => {
     builds++;
-    for (const role of ['review-code', 'review-security', 'review-ui-ux']) assert.ok(input.prompt.includes(`Finding ${role}`));
+    const feedback = JSON.parse(readFileSync(join(input.directory, 'input.json'), 'utf8')).feedback;
+    assert.deepEqual(feedback.map((r: { role: string }) => r.role), ['review-code']);
+    assert.match(input.prompt, /Finding review-code/);
     writeFileSync(join(input.cwd, 'README.md'), `hello repair ${builds}`);
     return ready;
   }, async input => {
@@ -261,7 +263,7 @@ for (const passAfterRepair of [false, true]) test(`Repair aggregates every revie
   runner.enqueue(queue());
   assert.equal((await settled(store, task.id)).stage, passAfterRepair ? 'approve' : 'needs-human');
   assert.equal(builds, passAfterRepair ? 1 : 2);
-  assert.equal(reviews, (builds + 1) * 3);
+  assert.equal(reviews, builds + 1);
   const history = store.runs();
   assert.equal(new Set(history.filter(r => r.role.startsWith('review-')).map(r => r.round_id)).size, builds + 1);
   assert.equal(history.at(-1)!.repair_attempt, builds);
@@ -637,11 +639,11 @@ for (const changes of [false, true]) test(`legacy frozen configs survive restart
       seen.push(input.reviewRole!);
       if (input.reviewRole === 'review-ui') { assert.equal(input.model, 'legacy-ui'); assert.equal(input.reasoningEffort, 'high'); }
       if (input.reviewRole === 'review-ux') { assert.equal(input.model, 'legacy-ux'); assert.equal(input.reasoningEffort, 'low'); }
-      return changes && input.reviewRole === 'review-ux' ? { ...pass, outcome: 'CHANGES', findings: ['Fix keyboard'] } : pass;
+      return changes && input.reviewRole === 'review-ui' ? { ...pass, outcome: 'CHANGES', findings: ['Fix keyboard'] } : pass;
     }, approved);
     runner.enqueue(restored.queueReview(project.id, task.id, restored.task(project.id, task.id).state_version));
     await settled(restored, task.id); await runner.close();
-    assert.deepEqual(seen, ['review-security', 'review-ui', 'review-ux']);
+    assert.deepEqual(seen, changes ? ['review-security', 'review-ui'] : ['review-security', 'review-ui', 'review-ux']);
     const last = restored.runs().at(-1)!;
     assert.deepEqual(last.config, legacy);
     assert.equal(restored.reviewRound(last).length, 4);
@@ -662,3 +664,46 @@ test('planned text-only Build completes Approve without running reviewers', asyn
   assert.equal(store.runs().at(-1)?.outcome, 'APPROVE');
   assert.equal(store.publicationRun(project.id, task.id).id, next.id);
 });
+
+for (const blocker of ['review-code', 'review-security', 'review-ui-ux']) for (const budget of [0, 2]) {
+  test(`Fail-fast ${blocker}, completed repairs=${budget}: partial feedback and fresh required reviews`, async t => {
+    const { store, project, task, directory, queue } = await fixture(t, budget);
+    let builds = 0;
+    const seen: string[] = [];
+    const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, async input => {
+      builds++;
+      const feedback = JSON.parse(readFileSync(join(input.directory, 'input.json'), 'utf8')).feedback;
+      assert.deepEqual(feedback.map((r: { role: string }) => r.role), seen);
+      assert.deepEqual(feedback.at(-1).result.findings, ['Fix first', 'Fix second']);
+      mkdirSync(join(input.cwd, 'src/client'), { recursive: true });
+      writeFileSync(join(input.cwd, 'src/client/view.tsx'), 'export const view = "fixed";');
+      return { ...ready, changed_paths: ['README.md', 'src/client/view.tsx'] };
+    }, async input => {
+      seen.push(input.reviewRole!);
+      assert.match(input.prompt, /do not stop your own review at the first finding/);
+      return visualResult(!builds && input.reviewRole === blocker
+        ? { ...pass, outcome: 'CHANGES', findings: ['Fix first', 'Fix second'] } : pass, input.reviewRole);
+    }, approved);
+    runner.enqueue(queue()); await settled(store, task.id); await runner.close();
+    const roles = ['review-code', 'review-security', 'review-ui-ux'];
+    const prefix = roles.slice(0, roles.indexOf(blocker) + 1);
+    assert.deepEqual(seen, budget === 2 ? prefix : [...prefix, ...roles]);
+    assert.equal(builds, budget === 2 ? 0 : 1);
+    const runs = store.runs(), failed = runs.find(r => r.outcome === 'CHANGES')!;
+    assert.equal(failed.role, blocker); assert.equal(failed.report, 1);
+    assert.equal(store.reviewPasses(failed), false);
+    assert.equal(runs.filter(r => r.role === 'build' && r.repair_round_id).length, builds);
+    assert.equal(runs.filter(r => r.round_id === failed.round_id && r.role.startsWith('review-')).length, prefix.length);
+    if (budget === 2) {
+      assert.equal(store.task(project.id, task.id).stage, 'needs-human');
+      const event = store.events(0).filter(e => e.type === 'review.completed').at(-1)!;
+      assert.match(JSON.parse(event.payload).reason, new RegExp(`${blocker}.*Fix first.*Fix second.*Две доработки`));
+      assert.throws(() => store.queueRepair(project.id, task.id, store.task(project.id, task.id).state_version));
+      assert.throws(() => store.publicationRun(project.id, task.id));
+    } else {
+      assert.equal(store.publicationRun(project.id, task.id).role, 'approve');
+      assert.notEqual(runs.at(-1)!.head_sha, failed.head_sha);
+      assert.equal(store.specRun(project.id, task.id, failed.id).outcome, 'CHANGES');
+    }
+  });
+}

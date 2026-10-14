@@ -2,7 +2,7 @@ import { ModelPicker, ReasoningPicker } from './models.js';
 import { api } from './api.js';
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { stages, type Project, type Task, type Snapshot, type Revision, roles, allRoles, requiredReviews, type Settings, type AgentRun, type HumanRequest, type ChatMessage } from '../shared.js';
+import { stages, type Project, type Task, type Snapshot, type Revision, roles, allRoles, requiredReviews, type ReviewRole, type Settings, type AgentRun, type HumanRequest, type ChatMessage } from '../shared.js';
 import './style.css';
 import { Composer, Message, RunConversation } from './chat.js';
 import { AgentOutput, RunProgress } from './output.js';
@@ -144,6 +144,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
   const [revisions, setRevisions] = useState<Revision[] | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const latest = runs.at(-1);
+  const blockingReview = runs.findLast(run => run.round_id === latest?.round_id && run.outcome === 'CHANGES' && !run.stale && run.description_revision === task.revision);
   const taskRoles = stageRoles(runs);
   const [tab, setTab] = useState<string>('overview');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -245,9 +246,10 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
       try { await api(`${taskPath(task)}/${task.stage === 'approve' ? 'approve' : task.stage === 'review' ? 'review' : task.stage === 'build' ? 'build' : 'start'}`, 'POST', { state_version: task.state_version, ...(task.stage === 'backlog' ? { spec_mode: specMode } : {}) }); await refresh(); }
       catch (error) { setError((error as Error).message); } finally { setBusy(false); }
     }}>{busy ? 'Ставим в очередь…' : task.stage === 'approve' ? 'Запустить Approve' : task.stage === 'review' ? 'Продолжить Review' : task.stage === 'build' ? 'Запустить Build' : 'Приступить к реализации'}</button>}
-    {!editing && task.stage === 'needs-human' && task.run_state === 'interrupted' && latest && latest.role === requiredReviews(latest).at(-1)
+    {!editing && task.stage === 'needs-human' && task.run_state === 'interrupted' && latest && requiredReviews(latest).includes(latest.role as ReviewRole)
       && runs.at(-1)?.status === 'completed' && !runs.at(-1)?.stale && ['PASS', 'CHANGES'].includes(runs.at(-1)?.outcome ?? '') && <>
-      <p>Раунд завершён с замечаниями. Выполнено доработок: {runs.at(-1)?.repair_attempt}/2. Отчёты и оставшиеся findings — на вкладках этапов.</p>
+      <p>Approve не запущен: {stageNames[(blockingReview ?? latest).role]} требует доработок. Выполнено доработок: {latest.repair_attempt}/2.</p>
+      <RunReport task={task} run={blockingReview ?? latest} />
       <button disabled={busy} onClick={async () => {
         setBusy(true); setError('');
         try { await api(`${taskPath(task)}/repair`, 'POST', { state_version: task.state_version }); await refresh(); }

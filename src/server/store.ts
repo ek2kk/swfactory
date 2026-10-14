@@ -3,7 +3,7 @@ import { redactStructured } from './redaction.js';
 import { mkdirSync, chmodSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { defaultModels, reviewsFor, requiredReviews, type ReviewPlan, type SpecMode, type SpecDecision, type ApproveResult, type ReviewResult, type BuildResult, type HumanRequest, type SpecResult, type Settings, type AgentRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision, type ExecutionPause } from '../shared.js';
+import { defaultModels, reviewsFor, requiredReviews, type ReviewRole, type ReviewPlan, type SpecMode, type SpecDecision, type ApproveResult, type ReviewResult, type BuildResult, type HumanRequest, type SpecResult, type Settings, type AgentRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision, type ExecutionPause } from '../shared.js';
 
 function reviewMetadata(plan: ReviewPlan) {
   const { diff, requirements, ...metadata } = plan;
@@ -553,7 +553,7 @@ export class Store {
         || !previous || previous.status !== 'completed' || previous.description_revision !== task.revision
         || previous.stale || !previous.head_sha || !previous.source_hash
         || (!previous.spec_run_id && !(task.spec_decision?.revision === task.revision && task.spec_decision.required === false))
-        || !(previous.role === 'build' ? previous.outcome === 'READY' : ['PASS', 'CHANGES'].includes(previous.outcome ?? ''))) {
+        || !(previous.role === 'build' ? previous.outcome === 'READY' : previous.outcome === 'PASS')) {
         throw new Problem(409, 'Нужна актуальная реализация или завершённый reviewer.');
       }
       const reviewRoles = requiredReviews(previous);
@@ -674,13 +674,14 @@ export class Store {
       const task = this.task(projectId, taskId);
       const previous = this.runs().filter(r => r.task_id === taskId).at(-1);
       if (task.state_version !== version || task.stage !== 'needs-human' || task.run_state !== 'interrupted'
-        || !previous || previous.role !== (requiredReviews(previous).at(-1) ?? 'build') || previous.description_revision !== task.revision
-        || (!manual && previous.repair_attempt >= 2)) throw new Problem(409, 'Нужен завершённый раунд с замечаниями и доступный бюджет доработок.');
+        || !previous || !requiredReviews(previous).includes(previous.role as ReviewRole) || previous.description_revision !== task.revision
+        || previous.status !== 'completed' || !['PASS', 'CHANGES'].includes(previous.outcome ?? '')
+        || (!manual && previous.repair_attempt >= 2)) throw new Problem(409, 'Нужны завершённые ревью с замечаниями и доступный бюджет доработок.');
       const round = this.reviewRound(previous);
-      if (!round.every(r => r && r.status === 'completed' && !r.stale && ['PASS', 'CHANGES'].includes(r.outcome ?? '')
+      if (!round.every(r => !r || r.status === 'completed' && !r.stale && ['PASS', 'CHANGES'].includes(r.outcome ?? '')
         && (r.head_sha === previous.head_sha && r.source_hash === previous.source_hash || this.reviewPlan(previous.round_id)?.checks.some(c => c.reuse_run_id === r.id)) && r.spec_run_id === previous.spec_run_id
         && r.base_sha === previous.base_sha && r.description_revision === task.revision)
-        || !round.some(r => r?.outcome === 'CHANGES')) throw new Problem(409, 'Нет полного актуального раунда с замечаниями.');
+        || !round.some(r => r?.id === previous.id) || !round.some(r => r?.outcome === 'CHANGES')) throw new Problem(409, 'Нет актуальных ревью с замечаниями.');
       const run: AgentRun = { ...previous, output_preview: null, output_at: null, output_version: null, output_length: null, diagnostic: {}, started_at: null, finished_at: null, id: randomUUID(), parent_run_id: previous.id, role: 'build',
         round_id: null, repair_round_id: previous.round_id, repair_attempt: manual ? 0 : previous.repair_attempt,
         status: 'queued', outcome: null, error: null, report: 0 };
