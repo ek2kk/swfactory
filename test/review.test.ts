@@ -13,7 +13,7 @@ import type { BuildResult, SpecResult, ReviewResult } from '../src/shared.js';
 
 const spec: SpecResult = { title: 'Hello', outcome: 'READY', summary: 'Implement hello', requirements: ['Say hello'], acceptance_criteria: ['README says hello'], assumptions: [], out_of_scope: [], questions: [] };
 const ready: BuildResult = { outcome: 'READY', summary: 'Implemented', changed_paths: ['README.md'], actions: ['Edited README'], checks: ['Read README: hello'], questions: [] };
-async function fixture(t: { after: (fn: () => void) => void }, completedRepairs = 2, content = 'hello') {
+async function fixture(t: { after: (fn: () => void) => void }, completedRepairs = 2, content = 'hello', description = 'Say hello', specification = spec) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'factory-review-'))), checkout = join(root, 'repo'), directory = join(root, 'data');
   mkdirSync(checkout);
   const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -23,11 +23,11 @@ async function fixture(t: { after: (fn: () => void) => void }, completedRepairs 
   const store = new Store(directory);
   t.after(() => { if (store.db.open) store.close(); rmSync(root, { recursive: true, force: true }); });
   const project = store.addProject({ checkout, common_dir: join(checkout, '.git'), remote: 'origin', remote_url: remote, hosting: 'github', host: 'github.com', repository: 'test/repo', target_branch: 'main' });
-  const config = store.settings(project.id); config.models.build = 'selected-build'; config.reasoning_efforts = { 'review-code': 'low', 'review-security': 'medium', 'review-ui': 'high', 'review-ux': 'ultra', approve: 'max' }; config.instructions = 'Keep it simple';
+  const config = store.settings(project.id); config.models.build = 'selected-build'; config.reasoning_efforts = { 'review-code': 'low', 'review-security': 'medium', 'review-ui-ux': 'high', approve: 'max' }; config.instructions = 'Keep it simple';
   store.saveSettings(project.id, config, 1);
-  const task = store.createTask(project.id, 'Say hello', 2);
+  const task = store.createTask(project.id, description, 2);
   const initial = store.queueSpec(project.id, task.id, 1, directory);
-  const specRunner = new SpecController(store, directory, () => {}, command, async () => spec);
+  const specRunner = new SpecController(store, directory, () => {}, command, async () => specification);
   specRunner.enqueue(initial); await specRunner.close();
   const queue = () => store.queueBuild(project.id, task.id, store.task(project.id, task.id).state_version);
   const controller = (execute: ExecuteBuild) => new SpecController(store, directory, () => {}, command, undefined, undefined, execute, undefined, approved);
@@ -36,12 +36,15 @@ async function fixture(t: { after: (fn: () => void) => void }, completedRepairs 
   builder.enqueue(build); await builder.close();
   store.db.prepare('UPDATE runs SET repair_attempt = ? WHERE id = ?').run(completedRepairs, build.id);
   const reviewQueue = () => store.queueReview(project.id, task.id, store.task(project.id, task.id).state_version);
-  const reviewer = (execute: ExecuteReview) => new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, execute, approved);
+  const reviewer = (execute: ExecuteReview) => new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, async input => visualResult(await execute(input), input.reviewRole), approved);
   return { root, checkout, directory, store, project, task, initial, git, build, queue: reviewQueue, controller: reviewer };
 }
 
 
 const approved = async () => ({ outcome: 'APPROVE' as const, summary: 'Publish only', risks: [], affected_paths: ['README.md'], questions: [] });
+function visualResult(result: ReviewResult, role?: string): ReviewResult {
+  return role === 'review-ui-ux' ? { ...result, ui: { summary: result.summary, findings: result.findings, evidence: result.evidence }, ux: { summary: 'UX checked', findings: [], evidence: result.evidence } } : result;
+}
 const pass: ReviewResult = { outcome: 'PASS', summary: 'Looks good', findings: [], evidence: ['Inspected change'], applicable: true, applicability: '', questions: [] };
 test('interrupted Review preserves work and permits an explicit retry only after execution stops', async t => {
   const { store, project, task, queue, controller, root } = await fixture(t);
@@ -90,7 +93,7 @@ test('Review schema: evidence, findings, applicability, question and extra-field
     { ...pass, outcome: 'CHANGES' }, { ...pass, outcome: 'NEEDS_INPUT' }, { ...pass, findings: ['bug'] }]) assert.throws(() => validateReview(result, 'review-ui'));
   assert.throws(() => validateReview({ ...pass, applicable: false, applicability: 'No code' }, 'review-code'));
 });
-for (const changes of [false, true]) test(`Four sequential independent reports; CHANGES=${changes} completes round without Build`, async t => {
+for (const changes of [false, true]) test(`Three sequential independent reports; CHANGES=${changes} completes round without Build`, async t => {
   const { store, project, task, directory, queue, controller, build } = await fixture(t);
   const seen: string[] = [], directories = new Set<string>();
   let active = 0;
@@ -106,7 +109,7 @@ for (const changes of [false, true]) test(`Four sequential independent reports; 
   });
   const first = queue(); assert.throws(queue); runner.enqueue(first);
   const finished = await settled(store, task.id); await runner.close();
-  assert.deepEqual(seen, ['review-code', 'review-security', 'review-ui', 'review-ux']); assert.equal(directories.size, 4);
+  assert.deepEqual(seen, ['review-code', 'review-security', 'review-ui-ux']); assert.equal(directories.size, 3);
   assert.equal(finished.stage, changes ? 'needs-human' : 'approve');
   const reviews = store.runs().filter(r => r.role.startsWith('review-'));
   for (const r of reviews) {
@@ -116,7 +119,7 @@ for (const changes of [false, true]) test(`Four sequential independent reports; 
     assert.equal(envelope.spec_revision, r.spec_run_id); assert.equal(envelope.run_id, r.id);
   }
   assert.equal(store.reviewPasses(reviews.at(-1)!), !changes);
-  store.close(); const restored = new Store(directory); assert.equal(restored.runs().filter(r => r.report && r.role.startsWith('review-')).length, 4); restored.close();
+  store.close(); const restored = new Store(directory); assert.equal(restored.runs().filter(r => r.report && r.role.startsWith('review-')).length, 3); restored.close();
 });
 test('Reviewer question pauses next role; answer resumes same role and preserves earlier PASS', async t => {
   const { store, project, task, queue, controller } = await fixture(t);
@@ -135,7 +138,7 @@ test('Reviewer question pauses next role; answer resumes same role and preserves
   assert.equal(next.role, 'review-security');
   assert.throws(() => store.answer(project.id, task.id, request.id, store.task(project.id, task.id).state_version, ['again']));
   runner.enqueue(next); assert.equal((await settled(store, task.id)).stage, 'approve'); await runner.close();
-  assert.deepEqual(seen, ['review-code', 'review-security', 'review-security', 'review-ui', 'review-ux']);
+  assert.deepEqual(seen, ['review-code', 'review-security', 'review-security', 'review-ui-ux']);
 });
 for (const scenario of ['source-before', 'source-during', 'branch', 'blocked', 'invalid', 'artifact-failure', 'event-failure']) test(`Review ${scenario} blocks continuation and preserves work`, async t => {
   const { store, project, task, queue, controller, git } = await fixture(t);
@@ -229,14 +232,14 @@ for (const scenario of ['changes', 'cli-error', 'question'] as const) for (const
     const before = store.snapshot();
     await runner.refreshReviewState();
     const reviews = store.runs().filter(r => r.role.startsWith('review-'));
-    assert.equal(reviews.length, scenario === 'changes' ? 4 : 2);
+    assert.equal(reviews.length, scenario === 'changes' ? 3 : 2);
     assert.ok(reviews.every(r => r.stale === (drift ? 1 : 0)));
     assert.equal(runner.error, null);
     if (!drift) assert.deepEqual(store.snapshot(), before);
     const refreshed = store.snapshot();
     await runner.refreshReviewState();
     assert.deepEqual(store.snapshot(), refreshed);
-    assert.equal(calls, scenario === 'changes' ? 4 : 2);
+    assert.equal(calls, scenario === 'changes' ? 3 : 2);
   });
 }
 
@@ -245,18 +248,18 @@ for (const passAfterRepair of [false, true]) test(`Repair aggregates every revie
   let builds = 0, reviews = 0;
   const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, async input => {
     builds++;
-    for (const role of ['review-code', 'review-security', 'review-ui', 'review-ux']) assert.ok(input.prompt.includes(`Finding ${role}`));
+    for (const role of ['review-code', 'review-security', 'review-ui-ux']) assert.ok(input.prompt.includes(`Finding ${role}`));
     writeFileSync(join(input.cwd, 'README.md'), `hello repair ${builds}`);
     return ready;
   }, async input => {
     reviews++;
     const role = /You are the ([\w-]+)/.exec(input.prompt)![1];
-    return passAfterRepair && builds ? pass : { ...pass, outcome: 'CHANGES', findings: [`Finding ${role}`] };
+    return visualResult(passAfterRepair && builds ? pass : { ...pass, outcome: 'CHANGES', findings: [`Finding ${role}`] }, input.reviewRole);
   }, approved);
   runner.enqueue(queue());
   assert.equal((await settled(store, task.id)).stage, passAfterRepair ? 'approve' : 'needs-human');
   assert.equal(builds, passAfterRepair ? 1 : 2);
-  assert.equal(reviews, (builds + 1) * 4);
+  assert.equal(reviews, (builds + 1) * 3);
   const history = store.runs();
   assert.equal(new Set(history.filter(r => r.role.startsWith('review-')).map(r => r.round_id)).size, builds + 1);
   assert.equal(history.at(-1)!.repair_attempt, builds);
@@ -288,7 +291,7 @@ for (const failure of ['cli', 'invalid', 'question', 'save'] as const) test(`Rep
     writeFileSync(join(input.cwd, 'README.md'), `repaired ${builds}`);
     if (failure === 'save') store.db.exec("CREATE TRIGGER fail_repair BEFORE INSERT ON events WHEN NEW.type = 'build.completed' BEGIN SELECT RAISE(ABORT, 'disk'); END");
     return ready;
-  }, async () => builds ? pass : { ...pass, outcome: 'CHANGES', findings: ['Fix it'] }, approved);
+  }, async input => visualResult(builds ? pass : { ...pass, outcome: 'CHANGES', findings: ['Fix it'] }, input.reviewRole), approved);
   runner.enqueue(queue()); await settled(store, task.id);
   assert.equal(store.runs().at(-1)!.repair_attempt, 0);
   if (failure === 'question') {
@@ -305,7 +308,7 @@ test('Repair queue failure rolls back round completion and never starts Build', 
   let builds = 0;
   store.db.exec("CREATE TRIGGER fail_queue BEFORE INSERT ON events WHEN NEW.type = 'repair.queued' BEGIN SELECT RAISE(ABORT, 'disk'); END");
   const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, async () => { builds++; return ready; },
-    async () => ({ ...pass, outcome: 'CHANGES', findings: ['Fix it'] }));
+    async input => visualResult({ ...pass, outcome: 'CHANGES', findings: ['Fix it'] }, input.reviewRole));
   runner.enqueue(queue()); await settled(store, task.id); await runner.close();
   assert.equal(builds, 0); assert.equal(store.runs().at(-1)!.status, 'failed');
   assert.equal(store.runs().at(-1)!.repair_attempt, 0);
@@ -319,10 +322,10 @@ test('Approve structured schema rejects prose and incomplete decisions', async (
 for (const decision of ['publish', 'repair'] as const) test(`Escalation ${decision} binds request/version and invalidates dependent decisions`, async t => {
   const { store, project, task, directory, queue } = await fixture(t);
   let calls = 0;
-  const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, async () => pass, async input => {
+  const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, async input => visualResult(pass, input.reviewRole), async input => {
     calls++;
-    assert.match(input.prompt, /README says hello/); assert.match(input.prompt, /Inspect the complete changes.*immutable base_sha/);
-    for (const role of ['review-code', 'review-security', 'review-ui', 'review-ux']) assert.ok(input.prompt.includes(role));
+    assert.match(input.prompt, /README says hello/); assert.match(input.prompt, /Consult the changes only as needed.*immutable base_sha/);
+    for (const role of ['review-code', 'review-security', 'review-ui-ux']) assert.ok(input.prompt.includes(role));
     return { ...await approved(), outcome: 'ESCALATE', risks: ['Check rollout'] };
   });
   runner.enqueue(queue()); await settled(store, task.id); await runner.close();
@@ -361,7 +364,7 @@ for (const decision of ['publish', 'repair'] as const) test(`Escalation ${decisi
 for (const mode of ['question', 'drift', 'invalid', 'save'] as const) test(`Approve ${mode} blocks unauthorized continuation`, async t => {
   const { store, project, task, directory, queue } = await fixture(t);
   let calls = 0;
-  const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, async () => pass, async input => {
+  const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, async input => visualResult(pass, input.reviewRole), async input => {
     calls++; assert.equal(input.reasoningEffort, 'max');
     if (mode === 'question' && calls === 1) return { ...await approved(), outcome: 'NEEDS_INPUT', questions: [{ text: 'Rollout?', context: 'Policy', impact: 'Risk', options: [], required: true }] };
     if (mode === 'question') assert.match(input.prompt, /Canary/);
@@ -397,7 +400,7 @@ test('Approve starts for supported 2 MiB source even when diff exceeds coordinat
   const content = 'a\n'.repeat(1024 * 1024);
   const { store, task, directory, queue } = await fixture(t, 2, content);
   let calls = 0;
-  const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, async () => pass, async input => {
+  const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, async input => visualResult(pass, input.reviewRole), async input => {
     calls++;
     const run = store.runs().at(-1)!;
     assert.match(input.prompt, new RegExp(`base_sha ${run.base_sha} and head_sha ${run.head_sha}`));
@@ -521,29 +524,128 @@ test('blocked browser check pauses Review and continues with attributed human ev
   let answered = false;
   const review: ExecuteReview = async input => {
     const role = /You are the ([\w-]+)/.exec(input.prompt)![1]; seen.push(role);
-    assert.match(input.prompt, /Perform required rendered UI\/UX checks yourself using available browser\/computer tools before asking the human/);
+    if (role === 'review-ui-ux') assert.match(input.prompt, /Perform required rendered UI\/UX checks yourself using available browser\/computer tools before asking the human/);
+    else assert.doesNotMatch(input.prompt, /Perform required rendered/);
     assert.match(input.prompt, /report the concrete blocker and checks attempted/);
     assert.doesNotMatch(input.prompt, /checks are performed by the human/);
-    if (role === 'review-ui' && !answered) return { ...pass, outcome: 'NEEDS_INPUT', evidence: [], questions: [
+    if (role === 'review-ui-ux' && !answered) return { ...pass, outcome: 'NEEDS_INPUT', evidence: [], questions: [
       { text: 'Open the page at 375px: is Save visible without horizontal scrolling?', context: 'Browser tools are unavailable in this session; responsive layout could not be checked', impact: 'Cannot complete UI Review', options: [], required: true },
     ] };
-    if (role === 'review-ui') {
+    if (role === 'review-ui-ux') {
       assert.match(input.prompt, /Checked at 375px: Save is visible/);
       return { ...pass, evidence: ['Human confirmed at 375px: Save is visible without horizontal scrolling'] };
     }
     return pass;
   };
   const first = controller(review); first.enqueue(queue()); await settled(store, task.id); await first.close();
-  assert.deepEqual(seen, ['review-code', 'review-security', 'review-ui']);
+  assert.deepEqual(seen, ['review-code', 'review-security', 'review-ui-ux']);
   const request = store.humanRequests().at(-1)!;
-  assert.equal(request.role, 'review-ui');
+  assert.equal(request.role, 'review-ui-ux');
   const waiting = store.task(project.id, task.id); assert.equal(waiting.run_state, 'waiting');
   const head = store.runs().at(-1)!.head_sha;
   const next = store.answer(project.id, task.id, request.id, waiting.state_version, ['Checked at 375px: Save is visible without horizontal scrolling']).run!;
   answered = true;
   const second = controller(review); second.enqueue(next); await settled(store, task.id); await second.close();
-  assert.deepEqual(seen, ['review-code', 'review-security', 'review-ui', 'review-ui', 'review-ux']);
+  assert.deepEqual(seen, ['review-code', 'review-security', 'review-ui-ux', 'review-ui-ux']);
   assert.equal(store.task(project.id, task.id).stage, 'approve');
   assert.equal(store.specRun(project.id, task.id, next.id).head_sha, head);
   assert.match(readFileSync(join(directory, 'artifacts', next.id, 'report.md'), 'utf8'), /Human confirmed/);
+});
+
+test('UI/UX schema requires both sections and rejects PASS hiding a finding in either area', () => {
+  const visual = visualResult(pass, 'review-ui-ux');
+  assert.doesNotThrow(() => validateReview(visual, 'review-ui-ux'));
+  assert.throws(() => validateReview(pass, 'review-ui-ux'));
+  for (const area of ['ui', 'ux'] as const) {
+    assert.throws(() => validateReview({ ...visual, [area]: { ...visual[area], findings: ['Broken'] } }, 'review-ui-ux'));
+    assert.throws(() => validateReview({ ...visual, [area]: { ...visual[area], evidence: [] } }, 'review-ui-ux'));
+    assert.doesNotThrow(() => validateReview({ ...visual, outcome: 'CHANGES', findings: ['Broken'], [area]: { ...visual[area], findings: ['Broken'] } }, 'review-ui-ux'));
+  }
+  assert.doesNotThrow(() => validateReview(visualResult({ ...pass, applicable: false, applicability: 'No interface changed', evidence: [] }, 'review-ui-ux'), 'review-ui-ux'));
+});
+
+for (const outcome of ['CHANGES', 'BLOCKED'] as const) test(`UI/UX ${outcome} blocks approval and publication`, async t => {
+  const { store, project, task, queue, controller } = await fixture(t);
+  const runner = controller(async input => input.reviewRole === 'review-ui-ux'
+    ? { ...pass, outcome, findings: outcome === 'CHANGES' ? ['Keyboard trap'] : [], evidence: [] } : pass);
+  runner.enqueue(queue()); await settled(store, task.id); await runner.close();
+  const last = store.runs().at(-1)!;
+  assert.equal(last.role, 'review-ui-ux'); assert.equal(last.outcome, outcome);
+  assert.equal(store.reviewPasses(last), false);
+  assert.throws(() => store.queueApprove(project.id, task.id, store.task(project.id, task.id).state_version));
+  assert.throws(() => store.publicationRun(project.id, task.id));
+});
+
+test('saved UI task prompts keep visual acceptance in UI/UX and preserve all report sections', async t => {
+  const example = JSON.parse(readFileSync(new URL('./fixtures/ui-review-task.json', import.meta.url), 'utf8'));
+  const { store, task, directory, queue, controller, initial, build } = await fixture(t, 2, 'hello', example.description, example.specification);
+  const runner = controller(async () => pass);
+  runner.enqueue(queue()); await settled(store, task.id); await runner.close();
+  const prompt = (id: string) => JSON.parse(readFileSync(join(directory, 'artifacts', id, 'input.json'), 'utf8')).prompt as string;
+  assert.match(prompt(initial.id), /do not implement or perform full acceptance testing/);
+  assert.match(prompt(build.id), /short smoke check.*leave independent Code, Security and UI\/UX acceptance audits/);
+  for (const review of store.reviewRound(store.runs().at(-1)!)) {
+    assert.ok(review);
+    const saved = prompt(review.id);
+    assert.match(saved, /Make Save responsive at 375px/);
+    assert.match(saved, /mandatory repository instructions and security checks/);
+    if (review.role === 'review-ui-ux') {
+      assert.match(saved, /one shared browser pass/);
+      const report = readFileSync(join(directory, 'artifacts', review.id, 'report.md'), 'utf8');
+      assert.match(report, /## UI\n/); assert.match(report, /## UX\n/);
+    } else {
+      assert.doesNotMatch(saved, /Perform required rendered|viewport\/states/);
+      assert.match(saved, /No mandatory/);
+    }
+  }
+  assert.match(prompt(store.runs().at(-1)!.id), /Do not repeat Code, Security or UI\/UX audits/);
+});
+
+for (const changes of [false, true]) test(`legacy frozen configs survive restart and finish original review pipeline; changes=${changes}`, async t => {
+  const { store, project, task, directory, build } = await fixture(t);
+  const legacy = structuredClone(build.config);
+  delete legacy.models['review-ui-ux']; delete legacy.reasoning_efforts!['review-ui-ux'];
+  legacy.models['review-ui'] = 'legacy-ui'; legacy.models['review-ux'] = 'legacy-ux';
+  legacy.reasoning_efforts!['review-ui'] = 'high'; legacy.reasoning_efforts!['review-ux'] = 'low';
+  store.db.prepare('UPDATE runs SET config = ? WHERE task_id = ?').run(JSON.stringify(legacy), task.id);
+  store.db.prepare('UPDATE project_settings SET config = ? WHERE project_id = ?').run(JSON.stringify(legacy), project.id);
+  const migrated = store.settings(project.id);
+  assert.equal(migrated.models['review-ui-ux'], 'legacy-ui');
+  assert.equal(migrated.reasoning_efforts?.['review-ui-ux'], 'high');
+  assert.equal(migrated.models['review-ux'], 'legacy-ux');
+  assert.equal(migrated.reasoning_efforts?.['review-ux'], 'low');
+  const updated = structuredClone(migrated);
+  delete updated.models['review-ui']; delete updated.models['review-ux'];
+  delete updated.reasoning_efforts!['review-ui']; delete updated.reasoning_efforts!['review-ux'];
+  store.saveSettings(project.id, updated, store.project(project.id).state_version);
+  assert.deepEqual(store.settings(project.id), migrated);
+  const freshTask = store.createTask(project.id, 'New pipeline', store.project(project.id).state_version);
+  const fresh = store.queueSpec(project.id, freshTask.id, freshTask.state_version, directory);
+  assert.equal(fresh.config.models['review-ui-ux'], 'legacy-ui');
+  assert.equal(fresh.config.reasoning_efforts?.['review-ui-ux'], 'high');
+  assert.deepEqual(store.specRun(project.id, task.id, build.id).config, legacy);
+  const first = store.queueReview(project.id, task.id, store.task(project.id, task.id).state_version);
+  const beforeRestart = new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, async () => pass);
+  beforeRestart.enqueue(first); await beforeRestart.close();
+  store.close();
+  const restored = new Store(directory);
+  try {
+    const seen: string[] = [];
+    const runner = new SpecController(restored, directory, () => {}, command, undefined, undefined, undefined, async input => {
+      seen.push(input.reviewRole!);
+      if (input.reviewRole === 'review-ui') { assert.equal(input.model, 'legacy-ui'); assert.equal(input.reasoningEffort, 'high'); }
+      if (input.reviewRole === 'review-ux') { assert.equal(input.model, 'legacy-ux'); assert.equal(input.reasoningEffort, 'low'); }
+      return changes && input.reviewRole === 'review-ux' ? { ...pass, outcome: 'CHANGES', findings: ['Fix keyboard'] } : pass;
+    }, approved);
+    runner.enqueue(restored.queueReview(project.id, task.id, restored.task(project.id, task.id).state_version));
+    await settled(restored, task.id); await runner.close();
+    assert.deepEqual(seen, ['review-security', 'review-ui', 'review-ux']);
+    const last = restored.runs().at(-1)!;
+    assert.deepEqual(last.config, legacy);
+    assert.equal(restored.reviewRound(last).length, 4);
+    if (changes) {
+      const repair = restored.queueRepair(project.id, task.id, restored.task(project.id, task.id).state_version, true);
+      assert.deepEqual(repair.config, legacy);
+    } else assert.equal(restored.publicationRun(project.id, task.id).role, 'approve');
+  } finally { restored.close(); }
 });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { stageStatus, stageTimeline } from '../src/client/stageHistory.js';
+import { stageRoles, stageNames, stageStatus, stageTimeline } from '../src/client/stageHistory.js';
 import { defaultModels, roles, type AgentRun, type ChatMessage, type HumanRequest, type SavedEvent, type TranscriptEntry } from '../src/shared.js';
 
 const run = (id: string, changes: Partial<AgentRun> = {}): AgentRun => ({
@@ -74,4 +74,15 @@ test('diagnostics remain available without a saved report for every attempt', ()
     assert.equal(diagnostics.length, 1, status);
     assert.equal(diagnostics[0].run, attempt);
   }
+});
+
+test('legacy UI and UX reports remain on distinct history tabs alongside new combined runs', () => {
+  const config = { models: { ...defaultModels, 'review-ui': 'old-ui', 'review-ux': 'old-ux' }, instructions: '' };
+  delete config.models['review-ui-ux'];
+  const history = [run('ui', { role: 'review-ui', config, outcome: 'PASS' }), run('ux', { role: 'review-ux', config, outcome: 'PASS' })];
+  assert.deepEqual(stageRoles(history), ['spec', 'build', 'review-code', 'review-security', 'review-ui', 'review-ux', 'approve']);
+  assert.equal(stageNames['review-ui'], 'Review · UI'); assert.equal(stageNames['review-ux'], 'Review · UX');
+  assert.equal(stageStatus(history.slice(0, 1), 1, []).state, 'success');
+  assert.ok(stageRoles([...history, run('combined', { role: 'review-ui-ux' })]).includes('review-ui-ux'));
+  assert.ok(stageRoles([...history, run('combined', { role: 'review-ui-ux' })]).includes('review-ux'));
 });

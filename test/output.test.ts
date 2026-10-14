@@ -181,3 +181,15 @@ test('latest output expands only above 600 characters and preserves multiline sh
   assert.equal(unicode.output_length, 600);
   assert.ok(!renderToStaticMarkup(createElement(AgentOutput, { run: unicode, load: async () => ({ text: '' }) })).includes('Развернуть'));
 });
+
+test('combined UI/UX result is readable with both sections and preserves unknown JSON', () => {
+  const result = { outcome: 'PASS', summary: 'Visual review passed', findings: [], evidence: ['Checked form'], applicable: true, applicability: '', questions: [],
+    ui: { summary: 'Responsive layout', findings: [], evidence: ['Save visible at 375px'] },
+    ux: { summary: 'Keyboard flow', findings: [], evidence: ['Enter submits once'] } };
+  const formatted = formatOutput(JSON.stringify(result));
+  for (const text of ['Результат: PASS', 'UI: Итог: Responsive layout', 'Подтверждения: • Save visible at 375px',
+    'UX: Итог: Keyboard flow', 'Подтверждения: • Enter submits once']) assert.ok(formatted.includes(text), text);
+  assert.ok(!formatted.includes('"ui"'));
+  const unknown = JSON.stringify({ ...result, extra: 'Keep this field' });
+  assert.equal(formatOutput(unknown), unknown);
+});

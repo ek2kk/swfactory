@@ -18,8 +18,10 @@ export type Revision = { task_id: string; revision: number; description: string;
 export type SavedEvent = { id: number; type: string; task_id: string | null; payload: string; created_at: string };
 export type Snapshot = { issue_syncing?: string[]; issue_errors?: { project_id: string; message: string }[]; archived_tasks?: Task[]; execution_pause?: ExecutionPause; projects: Project[]; tasks: Task[]; runs: AgentRun[]; human_requests: HumanRequest[]; execution_error?: string | null; title_error?: string | null; cursor: number };
 
-export const roles = ['spec', 'build', 'review-code', 'review-security', 'review-ui', 'review-ux', 'approve'] as const;
-export type Models = Record<typeof roles[number], string>;
+export const roles = ['spec', 'build', 'review-code', 'review-security', 'review-ui-ux', 'approve'] as const;
+export const legacyReviewRoles = ['review-code', 'review-security', 'review-ui', 'review-ux'] as const;
+export const allRoles = ['spec', 'build', 'review-code', 'review-security', 'review-ui-ux', 'review-ui', 'review-ux', 'approve'] as const;
+export type Models = Record<'spec' | 'build' | 'review-code' | 'review-security' | 'approve', string> & Partial<Record<'review-ui-ux' | 'review-ui' | 'review-ux', string>>;
 export const defaultModels: Models = Object.fromEntries(roles.map(role => [role, 'gpt-6.1-sol'])) as Models;
 export type Settings = { models: Models; reasoning_efforts?: Partial<Models>; instructions: string };
 export type SpecResult = {
@@ -29,9 +31,13 @@ export type SpecResult = {
 export type BuildResult = {
   outcome: 'READY' | 'NEEDS_INPUT' | 'BLOCKED'; summary: string; changed_paths: string[]; actions: string[]; checks: string[]; questions: Question[];
 };
-export const reviewRoles = ['review-code', 'review-security', 'review-ui', 'review-ux'] as const;
-export type ReviewRole = typeof reviewRoles[number];
+export const reviewRoles = ['review-code', 'review-security', 'review-ui-ux'] as const;
+// Saved run configs select their original pipeline; never migrate them in place.
+export const reviewsFor = (config: Settings): readonly ReviewRole[] => config.models['review-ui-ux'] ? reviewRoles : legacyReviewRoles;
+export type ReviewRole = typeof reviewRoles[number] | typeof legacyReviewRoles[number];
+export type ReviewSection = { summary: string; findings: string[]; evidence: string[] };
 export type ReviewResult = {
+  ui?: ReviewSection; ux?: ReviewSection;
   outcome: 'PASS' | 'CHANGES' | 'NEEDS_INPUT' | 'BLOCKED'; summary: string;
   findings: string[]; evidence: string[]; applicable: boolean; applicability: string; questions: Question[];
 };

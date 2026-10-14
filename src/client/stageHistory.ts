@@ -1,6 +1,11 @@
-import type { AgentRun, ChatMessage, HumanRequest, SavedEvent, TranscriptEntry } from '../shared.js';
+import { allRoles, reviewRoles, reviewsFor, type AgentRun, type ChatMessage, type HumanRequest, type SavedEvent, type TranscriptEntry } from '../shared.js';
 
-export const stageNames = { spec: 'Spec', build: 'Build', 'review-code': 'Review · Code', 'review-security': 'Review · Security', 'review-ui': 'Review · UI', 'review-ux': 'Review · UX', approve: 'Approve' };
+export const stageNames = { spec: 'Spec', build: 'Build', 'review-code': 'Review · Code', 'review-security': 'Review · Security', 'review-ui-ux': 'Review · UI/UX', 'review-ui': 'Review · UI', 'review-ux': 'Review · UX', approve: 'Approve' };
+export function stageRoles(runs: AgentRun[]) {
+  const latest = runs.at(-1);
+  const current: readonly string[] = latest ? reviewsFor(latest.config) : reviewRoles;
+  return allRoles.filter(role => !role.startsWith('review-') || current.includes(role) || runs.some(run => run.role === role));
+}
 const states = {
   idle: { label: 'Ещё не запускался', icon: '○' },
   queued: { label: 'В очереди', icon: '◷' },

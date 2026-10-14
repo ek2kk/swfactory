@@ -41,7 +41,7 @@ export function validateSpec(value: unknown): SpecResult {
   catch { throw new Problem(422, 'Codex вернул невалидный заголовок Spec. Переход заблокирован.'); }
   return { ...result, title: result.title.trim() };
 }
-export type CodexInput = { signal?: AbortSignal; interrupt?: (interrupt: (() => void) | null) => void; control?: (steer: Steer | null) => void; cwd: string; directory: string; model: string; reasoningEffort?: string; prompt: string; output?: (text: string) => void; metadata?: (value: RunDiagnostic) => void };
+export type CodexInput = { reviewRole?: ReviewRole; signal?: AbortSignal; interrupt?: (interrupt: (() => void) | null) => void; control?: (steer: Steer | null) => void; cwd: string; directory: string; model: string; reasoningEffort?: string; prompt: string; output?: (text: string) => void; metadata?: (value: RunDiagnostic) => void };
 export type ExecuteSpec = (input: CodexInput) => Promise<SpecResult>;
 
 export function executeSpec(input: CodexInput, executable = 'codex') {
@@ -151,22 +151,37 @@ export const reviewSchema = {
     findings: list, evidence: list, applicable: { type: 'boolean' }, applicability: { type: 'string' }, questions: specSchema.properties.questions },
   required: ['outcome', 'summary', 'findings', 'evidence', 'applicable', 'applicability', 'questions'],
 };
+const reviewSectionSchema = {
+  type: 'object', additionalProperties: false,
+  properties: { summary: { type: 'string' }, findings: list, evidence: list },
+  required: ['summary', 'findings', 'evidence'],
+};
+export const visualReviewSchema = {
+  ...reviewSchema, properties: { ...reviewSchema.properties, ui: reviewSectionSchema, ux: reviewSectionSchema },
+  required: [...reviewSchema.required, 'ui', 'ux'],
+};
 export function validateReview(value: unknown, role?: ReviewRole): ReviewResult {
   const result = value as ReviewResult;
   if (!result || typeof result !== 'object' || Array.isArray(result)
-    || Object.keys(result).sort().join() !== [...reviewSchema.required].sort().join()
+    || Object.keys(result).sort().join() !== [...(role === 'review-ui-ux' ? visualReviewSchema : reviewSchema).required].sort().join()
     || !['PASS', 'CHANGES', 'NEEDS_INPUT', 'BLOCKED'].includes(result.outcome) || !nonempty(result.summary)
     || !validQuestions(result.questions) || (result.outcome === 'NEEDS_INPUT' ? !result.questions.length : result.questions.length > 0)
     || !['findings', 'evidence'].every(key => Array.isArray(result[key as 'findings']) && result[key as 'findings'].every(nonempty))
     || typeof result.applicable !== 'boolean' || typeof result.applicability !== 'string'
-    || (!result.applicable && (!nonempty(result.applicability) || (role && !['review-ui', 'review-ux'].includes(role))))
+    || (!result.applicable && (!nonempty(result.applicability) || (role && !['review-ui', 'review-ux', 'review-ui-ux'].includes(role))))
     || (result.outcome === 'PASS' && (result.findings.length > 0 || (result.applicable && !result.evidence.length)))
-    || (result.outcome === 'CHANGES' && !result.findings.length)) throw new Problem(422, 'Невалидный Review.');
+    || (result.outcome === 'CHANGES' && !result.findings.length)
+    || (role === 'review-ui-ux' && ![result.ui, result.ux].every(section => section
+      && Object.keys(section).sort().join() === 'evidence,findings,summary' && nonempty(section.summary)
+      && Array.isArray(section.findings) && section.findings.every(nonempty)
+      && Array.isArray(section.evidence) && section.evidence.every(nonempty)
+      && (result.outcome !== 'PASS' || (!section.findings.length && (!result.applicable || section.evidence.length)))
+      && section.findings.every(finding => result.findings.includes(finding))))) throw new Problem(422, 'Невалидный Review.');
   return result;
 }
 export type ExecuteReview = (input: CodexInput) => Promise<ReviewResult>;
 export function executeReview(input: CodexInput, executable = 'codex') {
-  return executeResult(input, reviewSchema, validateReview, executable);
+  return executeResult(input, input.reviewRole === 'review-ui-ux' ? visualReviewSchema : reviewSchema, value => validateReview(value, input.reviewRole), executable);
 }
 
 export const approveSchema = {
