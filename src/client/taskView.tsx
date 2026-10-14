@@ -32,9 +32,12 @@ export class TaskView extends Component<Props, object, HTMLElement | null> {
 export class HistoryFlow extends Component<{ children: ReactNode }, object, { id: string; top: number } | null> {
   readonly element = createRef<HTMLDivElement>();
   getSnapshotBeforeUpdate() {
-    if (!this.element.current || this.element.current.getBoundingClientRect().top >= 0) return null;
+    if (!this.element.current) return null;
     const anchor = [...this.element.current.querySelectorAll<HTMLElement>('[data-history-id]')]
-      .find(element => element.getBoundingClientRect().bottom > 0);
+      .find(element => {
+        const { top, bottom } = element.getBoundingClientRect();
+        return bottom > 0 && top < window.innerHeight;
+      });
     return anchor ? { id: anchor.dataset.historyId!, top: anchor.getBoundingClientRect().top } : null;
   }
   componentDidUpdate(_props: unknown, _state: unknown, anchor: { id: string; top: number } | null) {

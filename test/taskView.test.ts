@@ -77,11 +77,11 @@ test('manual archive of a restored blocked card focuses its summary when the dia
   }
 });
 
-test('history prepends restore the visible old event without moving focus; latest view is left alone', async () => {
+test('history prepends preserve a visible event even when the start of the flow is on screen', async () => {
   const { HistoryFlow } = await import('../src/client/taskView.js');
   const original = Object.getOwnPropertyDescriptor(globalThis, 'window');
   const scrolls: number[] = [];
-  Object.defineProperty(globalThis, 'window', { configurable: true, value: { scrollBy: (_x: number, y: number) => scrolls.push(y) } });
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { innerHeight: 800, scrollBy: (_x: number, y: number) => scrolls.push(y) } });
   let top = -400, eventTop = -20;
   const old = { dataset: { historyId: 'old' }, getBoundingClientRect: () => ({ top: eventTop, bottom: eventTop + 100 }) };
   const above = { dataset: { historyId: 'above' }, getBoundingClientRect: () => ({ top: -300, bottom: -100 }) };
@@ -93,10 +93,21 @@ test('history prepends restore the visible old event without moving focus; lates
     eventTop += 200;
     view.componentDidUpdate({}, {}, anchor);
     assert.deepEqual(scrolls, [200]);
-    top = 100;
-    assert.equal(view.getSnapshotBeforeUpdate(), null, 'no anchoring when already reading the newest event');
+    top = 100; eventTop = 100;
+    const visibleStart = view.getSnapshotBeforeUpdate();
+    assert.deepEqual(visibleStart, { id: 'old', top: 100 });
+    eventTop += 600;
+    view.componentDidUpdate({}, {}, visibleStart);
+    assert.deepEqual(scrolls, [200, 600], 'a tall new message must not push the old fragment out of view');
+    eventTop = 900;
+    assert.equal(view.getSnapshotBeforeUpdate(), null, 'offscreen history does not move the page');
+    eventTop = -100;
+    assert.equal(view.getSnapshotBeforeUpdate(), null, 'events completely above the viewport are not anchors');
+    eventTop = 0;
+    old.getBoundingClientRect = () => ({ top: 0, bottom: 0 });
+    assert.equal(view.getSnapshotBeforeUpdate(), null, 'hidden history does not move the page');
     view.componentDidUpdate({}, {}, null);
-    assert.deepEqual(scrolls, [200]);
+    assert.deepEqual(scrolls, [200, 600]);
   } finally {
     if (original) Object.defineProperty(globalThis, 'window', original);
     else Reflect.deleteProperty(globalThis, 'window');

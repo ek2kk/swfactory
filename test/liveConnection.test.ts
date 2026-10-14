@@ -8,6 +8,95 @@ import * as jsx from 'react/jsx-runtime';
 import * as shared from '../src/shared.js';
 import * as stageHistory from '../src/client/stageHistory.js';
 
+test('requirements form preserves both drafts on cancel, reopen and conflicts, and clears only after saving', async () => {
+  const appState: any[] = [], cardState: any[] = [];
+  let state = appState, index = 0, App!: () => any;
+  let fail = false;
+  const calls: any[][] = [];
+  const modules: Record<string, unknown> = {
+    'react/jsx-runtime': jsx,
+    'react': {
+      useState(initial: unknown) {
+        const values = state, slot = index++;
+        if (!(slot in values)) values[slot] = typeof initial === 'function' ? initial() : initial;
+        return [values[slot], (value: unknown) => { values[slot] = typeof value === 'function' ? value(values[slot]) : value; }];
+      },
+      useRef(current: unknown) { const slot = index++; return state[slot] ??= { current }; },
+      useEffect() {},
+    },
+    'react-dom/client': { createRoot: () => ({ render: (element: { type: () => any }) => { App = element.type; App(); } }) },
+    './api.js': { api: async (...args: any[]) => { calls.push(args); if (fail) throw new Error('Conflict'); return snapshot; } },
+    './theme.js': { readTheme: () => 'system', applyTheme: () => {} },
+    '../shared.js': shared, './stageHistory.js': stageHistory,
+    './models.js': {}, './chat.js': {}, './output.js': {}, './taskView.js': {}, './style.css': {},
+  };
+  const source = readFileSync(new URL('../src/client/main.tsx', import.meta.url), 'utf8');
+  runInNewContext(transformSync(source, { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code, {
+    require(name: string) { assert.ok(Object.hasOwn(modules, name), name); return modules[name]; },
+    URLSearchParams, location: { pathname: '/', search: '?task=t', hash: '' },
+    document: { getElementById: () => ({}) },
+  });
+  function elements(node: any): any[] {
+    if (Array.isArray(node)) return node.flatMap(elements);
+    return node?.props ? [node, ...elements(node.props.children)] : [];
+  }
+  const task = { id: 't', project_id: 'p', description: 'Original', stage: 'backlog', run_state: 'idle', state_version: 1, revision: 1 };
+  const snapshot = { projects: [{ id: 'p', hosting: 'github' }], tasks: [task], runs: [], human_requests: [], cursor: 1 };
+  const snapshotIndex = appState.findIndex(value => value && typeof value === 'object' && 'cursor' in value);
+  appState[snapshotIndex] = snapshot;
+  function card() {
+    state = appState; index = 0;
+    const element = elements(App()).find(element => element.type?.name === 'TaskCard');
+    assert.ok(element);
+    state = cardState; index = 0;
+    return elements(element.type(element.props));
+  }
+  const button = (label: string) => {
+    const found = card().find(node => node.type === 'button' && node.props.children === label);
+    assert.ok(found, label); return found;
+  };
+  const field = () => card().find(node => node.type === 'textarea');
+  const type = (text: string) => field().props.onChange({ target: { value: text } });
+  const submit = () => card().find(node => node.type === 'form').props.onSubmit({ preventDefault() {} });
+
+  button('Изменить требования').props.onClick();
+  type('Replacement draft');
+  button('Добавить уточнения').props.onClick();
+  type('Clarification draft');
+  button('Отмена').props.onClick();
+  assert.equal(field(), undefined, 'cancel closes the form');
+  assert.equal(calls.length, 0, 'cancel does not save requirements');
+  button('Изменить требования').props.onClick();
+  assert.equal(field().props.value, 'Clarification draft');
+  assert.equal(field().props['aria-label'], 'Уточнения требований', 'reopen preserves the selected mode');
+  button('Заменить описание').props.onClick();
+  assert.equal(field().props.value, 'Replacement draft', 'the other mode also keeps its draft');
+  button('Добавить уточнения').props.onClick();
+  button('Отмена').props.onClick();
+  task.state_version++;
+  button('Изменить требования').props.onClick();
+  assert.equal(field().props.value, 'Clarification draft');
+  assert.equal(button('Сохранить').props.disabled, true, 'reopen does not silently accept a changed state_version');
+  button('Использовать актуальное состояние').props.onClick();
+  fail = true; await submit();
+  assert.equal(field().props.value, 'Clarification draft', 'save errors retain the draft');
+  assert.ok(card().some(node => node.props.role === 'alert' && node.props.children === 'Conflict'));
+  button('Отмена').props.onClick();
+  task.run_state = 'running'; task.stage = 'spec';
+  button('Изменить требования').props.onClick();
+  assert.equal(field().props.value, 'Clarification draft', 'running still allows the saved clarification');
+  fail = false; await submit();
+  const request = calls.at(-2);
+  assert.ok(request);
+  assert.equal(request[0], '/projects/p/tasks/t/messages');
+  assert.equal(request[2].kind, 'requirements');
+  assert.equal(request[2].text, 'Clarification draft');
+  assert.equal(request[2].state_version, 2);
+  assert.equal(field(), undefined, 'successful save closes the form');
+  button('Изменить требования').props.onClick();
+  assert.equal(field().props.value, '', 'success clears the submitted clarification');
+});
+
 test('App reports unavailable live updates and restores active status and current data on snapshot', async () => {
   const initial = { projects: [], tasks: [], human_requests: [], cursor: 1,
     runs: [{ id: 'run', status: 'running', output_preview: 'old output' }] };
