@@ -1,4 +1,5 @@
 import { ProcessScope, checkExecution, executionSignal } from './processes.js';
+import { classifySpec, validateDecision } from './specDecision.js';
 import { Chat } from './chat.js';
 import { mkdirSync, realpathSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -26,7 +27,7 @@ export class SpecController {
   private detectingLimits = 0;
   error: string | null = null;
   constructor(private store: Store, private directory: string, private publish: () => void,
-    private command: Run = git, private execute: ExecuteSpec = executeSpec, generate = generateTitle, private build: ExecuteBuild = executeBuild, private review: ExecuteReview = executeReview, private approve: ExecuteApprove = executeApprove) {
+    private command: Run = git, private execute: ExecuteSpec = executeSpec, generate = generateTitle, private build: ExecuteBuild = executeBuild, private review: ExecuteReview = executeReview, private approve: ExecuteApprove = executeApprove, private classify = classifySpec) {
     const originalCommand = this.command;
     this.command = async (...args) => { checkExecution(); return originalCommand(...args); };
     this.chat = new Chat(store, publish);
@@ -159,7 +160,7 @@ export class SpecController {
       await released;
       if (this.store.blocked(run.task_id)) return;
       if (this.titles.error) return;
-      if (run.role === 'build') await this.performBuild(run);
+      if (run.role === 'build' && run.base_sha) await this.performBuild(run);
       else if (run.role === 'approve') await this.performApprove(run);
       else if (run.role.startsWith('review-')) await this.performReview(run);
       else await this.perform(run);
@@ -205,6 +206,21 @@ export class SpecController {
     return head;
   }
 
+  private requirements(run: AgentRun) {
+    const task = this.store.task(run.project_id, run.task_id);
+    if (task.revision !== run.description_revision) throw new Problem(409, 'Версия требований изменилась.');
+    if (!run.spec_run_id) {
+      const decision = task.spec_decision;
+      if (!decision || decision.revision !== run.description_revision || decision.required !== false) throw new Problem(409, 'Нет актуального решения о пропуске Spec.');
+      return { source: 'requirements', description_revision: run.description_revision, description: task.description };
+    }
+    const spec = this.store.specRun(run.project_id, run.task_id, run.spec_run_id);
+    if (spec.description_revision !== run.description_revision || spec.role !== 'spec' || spec.status !== 'completed' || spec.outcome !== 'READY') throw new Problem(422, 'Нет готовой Spec.');
+    const path = join(this.directory, 'artifacts', spec.id, 'result.json');
+    if (realpathSync(path) !== path) throw new Problem(422, 'Небезопасный путь Spec.');
+    return validateSpec(JSON.parse(readFileSync(path, 'utf8')).result);
+  }
+
   private async performBuild(run: AgentRun) {
     try {
       const project = this.store.project(run.project_id);
@@ -213,12 +229,7 @@ export class SpecController {
       if (run.source_hash) {
         if (await sourceHash(run, this.command) !== run.source_hash) throw new Problem(422, 'Source изменился после вопроса. Нужна ручная сверка.');
       } else await this.verifyWorktree(run);
-      const spec = this.store.runs().find(r => r.id === run.spec_run_id && r.task_id === task.id && r.description_revision === task.revision
-        && r.role === 'spec' && r.status === 'completed' && r.outcome === 'READY');
-      if (!spec) throw new Problem(422, 'Нет готовой Spec.');
-      const specPath = join(this.directory, 'artifacts', spec.id, 'result.json');
-      if (realpathSync(specPath) !== specPath) throw new Problem(422, 'Небезопасный путь Spec.');
-      const specification = validateSpec(JSON.parse(readFileSync(specPath, 'utf8')).result);
+      const specification = this.requirements(run);
       const context = this.store.humanRequests().filter(r => r.task_id === task.id && r.revision === task.revision && r.status === 'answered');
       const feedback = run.repair_round_id ? this.store.reviewRound({ ...run, round_id: run.repair_round_id }).map(review => {
         if (!review) throw new Problem(422, 'Отсутствует reviewer для доработки.');
@@ -227,18 +238,18 @@ export class SpecController {
         return { role: review.role, result: validateReview(JSON.parse(readFileSync(path, 'utf8')).result, review.role as ReviewRole) };
       }) : [];
       const directory = artifactDirectory(this.directory, run.id);
-      let prompt = `You are the Build role. Implement the task in this worktree using the specification and applicable AGENTS.md instructions.
+      let prompt = `You are the Build role. Implement the task in this worktree using the versioned requirements below and applicable AGENTS.md instructions.
 Run relevant checks and report their actual results. For UI changes, a short smoke check of changed behavior is appropriate; leave independent Code, Security and UI/UX acceptance audits to reviewers. Preserve applicable mandatory repository checks and security safeguards. Return only the requested JSON result.
 Use READY only when implementation is complete, with exact repository-relative changed_paths covering ALL changes since the original base_sha, actions and checks.
-Use NEEDS_INPUT with structured questions for unresolved choices; BLOCKED for inability to complete. Never wait for interactive input.
+Use NEEDS_INPUT with structured questions for blocking ambiguity or unresolved choices, including whether a return to Spec is needed. Skipping Spec never authorizes inventing requirements or skipping mandatory validation; BLOCKED for inability to complete. Never wait for interactive input.
 Do not publish, push, merge, or change other checkouts. Do not create commits; the coordinator will commit explicit paths.
 Never add credentials or secrets. Keep reports/logs outside source, in ${directory}.
-Task/run context: ${JSON.stringify({ task_id: task.id, run_id: run.id, description_revision: task.revision, base_sha: run.base_sha })}
+Task/run context: ${JSON.stringify({ task_id: task.id, run_id: run.id, description_revision: task.revision, spec_run_id: run.spec_run_id, base_sha: run.base_sha })}
 Project instructions:
 ${run.config.instructions}
 Task description:
 ${task.description}
-Spec:
+Requirements source (saved description or Spec):
 ${JSON.stringify(specification)}
 Full previous review round — address every finding:
 ${JSON.stringify(feedback)}
@@ -299,10 +310,9 @@ ${JSON.stringify(context)}`;
   async verifyReviewSource(run: AgentRun) {
     const task = this.store.task(run.project_id, run.task_id);
     const build = this.store.specRun(run.project_id, run.task_id, run.round_id!);
-    const spec = this.store.specRun(run.project_id, run.task_id, run.spec_run_id!);
+    this.requirements(run);
     if (task.revision !== run.description_revision || build.role !== 'build' || build.status !== 'completed' || build.outcome !== 'READY'
-      || spec.role !== 'spec' || spec.outcome !== 'READY' || spec.status !== 'completed'
-      || spec.description_revision !== run.description_revision || build.spec_run_id !== spec.id
+      || build.description_revision !== run.description_revision || build.spec_run_id !== run.spec_run_id
       || build.base_sha !== run.base_sha || build.head_sha !== run.head_sha || build.source_hash !== run.source_hash
       || build.worktree !== run.worktree || build.branch !== run.branch || run.stale) throw new Problem(409, 'Review относится к другой версии реализации или Spec.');
     try {
@@ -318,9 +328,7 @@ ${JSON.stringify(context)}`;
       await this.verifyReviewSource(run);
       const task = this.store.task(run.project_id, run.task_id);
       const directory = artifactDirectory(this.directory, run.id);
-      const specPath = join(this.directory, 'artifacts', run.spec_run_id!, 'result.json');
-      if (realpathSync(specPath) !== specPath) throw new Problem(422, 'Небезопасный путь Spec.');
-      const specification = validateSpec(JSON.parse(readFileSync(specPath, 'utf8')).result);
+      const specification = this.requirements(run);
       const context = this.store.humanRequests().filter(r => r.task_id === task.id && r.revision === task.revision && r.status === 'answered');
       const focus = { 'review-code': 'Diff correctness, edge cases and sufficiency of relevant tests. Evidence: file/line references, reasoning and targeted test results. No mandatory browser acceptance or visual matrix; UI/UX owns visual and user-journey acceptance.',
         'review-security': 'Concrete risks introduced by this change: authorization, trust boundaries, data handling/exposure, injection, secrets and dependencies. Evidence: affected paths, attack conditions and targeted checks. Use Computer Use only for a specific security check that cannot reasonably be performed otherwise. No mandatory visual matrix.',
@@ -338,7 +346,7 @@ Project instructions:
 ${run.config.instructions}
 Task description:
 ${task.description}
-Spec:
+Requirements source (saved description or Spec):
 ${JSON.stringify(specification)}
 Human answers:
 ${JSON.stringify(context)}`;
@@ -394,10 +402,10 @@ ${JSON.stringify(context)}`;
         if (realpathSync(path) !== path) throw new Problem(422, 'Небезопасный путь отчёта.');
         return JSON.parse(readFileSync(path, 'utf8')).result;
       };
-      const specification = validateSpec(read(run.spec_run_id!));
+      const specification = this.requirements(run);
       const reports = this.store.reviewRound(run).map(r => ({ role: r!.role, run_id: r!.id, result: validateReview(read(r!.id), r!.role as ReviewRole) }));
       const context = this.store.humanRequests().filter(r => r.task_id === task.id && r.revision === task.revision && r.status === 'answered');
-      let prompt = `You are the Approve role in a fresh independent session. Reconcile current Spec requirements, mandatory results and unresolved findings from all required reviews. Do not repeat Code, Security or UI/UX audits; use their evidence and report gaps honestly.
+      let prompt = `You are the Approve role in a fresh independent session. Reconcile current versioned requirements, mandatory results and unresolved findings from all required reviews. Do not repeat Code, Security or UI/UX audits; use their evidence and report gaps honestly.
 Consult the changes only as needed to reconcile requirements or unresolved findings in this worktree between immutable base_sha ${run.base_sha} and head_sha ${run.head_sha}, without repeating independent acceptance checks.
 Read applicable AGENTS.md. Do not modify source, index, branch or commits. Never publish, push or merge.
 APPROVE grants permission ONLY to publish a PR/MR, never merge. ESCALATE must explain risks and affected_paths; NEEDS_INPUT uses structured questions.
@@ -434,6 +442,18 @@ Context: ${JSON.stringify({ run, description: task.description, specification, r
     try {
       const project = this.store.project(run.project_id);
       const task = this.store.task(run.project_id, run.task_id);
+      if (task.spec_decision?.revision === run.description_revision && task.spec_decision.required === null) {
+        run.status = 'running'; this.store.updateRun(run, 'backlog', 'running'); this.publish();
+        const result = validateDecision(await this.classify(task.description, run.config.models.spec, executionSignal()!));
+        checkExecution();
+        const decision = { ...task.spec_decision, ...result };
+        this.store.db.transaction(() => {
+          this.store.saveSpecDecision(run, decision);
+          run.role = decision.required ? 'spec' : 'build';
+          this.store.db.prepare('UPDATE runs SET role = ? WHERE id = ?').run(run.role, run.id);
+        })();
+        this.publish();
+      }
       if (!run.parent_run_id) {
         await preflight(project, this.command);
         prepared = true;
@@ -452,6 +472,7 @@ Context: ${JSON.stringify({ run, description: task.description, specification, r
         await this.verifyWorktree(run);
         run.status = 'running';
       }
+      if (run.role === 'build') { await this.performBuild(run); return; }
       const directory = artifactDirectory(this.directory, run.id);
       const context = this.store.humanRequests().filter(request => request.task_id === task.id && request.revision === task.revision && request.status === 'answered');
       let prompt = `You are the Spec role. Inspect the repository and applicable AGENTS.md instructions in this worktree.

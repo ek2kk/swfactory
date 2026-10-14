@@ -68,7 +68,7 @@ test('v3 migration preserves completed Spec evidence and adds empty question sto
   store.updateRun(run, 'build', 'idle', 'Preserved title');
   store.db.exec('DROP TABLE human_requests; ALTER TABLE runs DROP COLUMN parent_run_id; PRAGMA user_version = 3;');
   store.close(); store = new Store(dir);
-  assert.equal(store.db.pragma('user_version', { simple: true }), 16);
+  assert.equal(store.db.pragma('user_version', { simple: true }), 17);
   assert.deepEqual(store.specRun(project.id, task.id, run.id), run);
   assert.equal(store.task(project.id, task.id).title, 'Preserved title');
   assert.deepEqual(store.humanRequests(), []);

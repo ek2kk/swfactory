@@ -124,6 +124,8 @@ function ArchivedTask({ task, refresh, notify, expanded = false, draft, openTask
 }
 
 function TaskCard({ task, project, runs, questions, refresh, active, cursor, notify, draft, setDraft }: { task: Task; project: Project; runs: AgentRun[]; questions: HumanRequest[]; refresh: () => Promise<void>; active: boolean; cursor: number; notify: (text: string) => void; draft?: DescriptionDraft; setDraft: (draft: DescriptionDraft | null) => void }) {
+  const [specMode, setSpecMode] = useState<'auto' | 'spec' | 'skip'>('auto');
+  const decision = task.spec_decision?.revision === task.revision ? task.spec_decision : null;
   const [editing, setEditing] = useState(!!draft);
   const requirementsButton = useRef<HTMLButtonElement>(null);
   const requirementsInput = useRef<HTMLTextAreaElement>(null);
@@ -211,7 +213,9 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
     }}>
       <div className="overview-control"><button id={`${task.id}-tab-overview`} role="tab" aria-selected={tab === 'overview'} aria-controls={`${task.id}-panel-overview`} tabIndex={tab === 'overview' ? 0 : -1} className="secondary" onClick={() => setTab('overview')}>Обзор{questions.some(q => q.status === 'pending') ? ' · нужен ответ' : ''}</button></div>
       <div className="stage-tabs">{taskRoles.map(role => {
-        const status = stageStatus(runs.filter(run => run.role === role), task.revision, questions);
+        const status = role === 'spec' && decision?.required === false
+          ? { state: 'idle', icon: '−', label: decision.mode === 'skip' ? 'Пропущена пользователем' : 'Не требуется' }
+          : stageStatus(runs.filter(run => run.role === role), task.revision, questions);
         return <button key={role} id={`${task.id}-tab-${role}`} role="tab" aria-selected={tab === role} aria-label={`${stageNames[role]}: ${status.label}`} title={status.label} aria-controls={`${task.id}-panel-${role}`} tabIndex={tab === role ? 0 : -1} className={`stage-tab status-${status.state}`} onClick={() => setTab(role)}><span aria-hidden="true">{status.icon}</span> {stageNames[role]}</button>;
       })}</div>
     </div>
@@ -228,9 +232,14 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
       : task.title_state === 'running' ? 'Codex формирует заголовок…'
       : task.title_state === 'interrupted' ? 'Генерация заголовка прервана. Описание сохранено; заголовок можно получить в Spec.'
       : 'Не удалось получить заголовок. Описание сохранено; проверьте Codex CLI. Заголовок можно получить в Spec.'}</p>}
+    {decision && <p role="status">Spec: {decision.required === null ? 'Оценка требований' : decision.required ? 'Требуется' : decision.mode === 'skip' ? 'Пропущена пользователем' : 'Не требуется'} — {decision.reason}
+      {decision.missing.length > 0 && ` Недостающие решения: ${decision.missing.join('; ')}`}</p>}
+    {!editing && task.stage === 'backlog' && task.run_state === 'idle' && <label>Подготовка Spec <select value={specMode} disabled={busy} onChange={e => setSpecMode(e.target.value as typeof specMode)}>
+      <option value="auto">Авто</option><option value="spec">Со Spec</option><option value="skip">Без Spec</option>
+    </select></label>}
     {!editing && ['backlog', 'build', 'review', 'approve'].includes(task.stage) && task.run_state === 'idle' && <button disabled={busy} onClick={async () => {
       setBusy(true); setError('');
-      try { await api(`${taskPath(task)}/${task.stage === 'approve' ? 'approve' : task.stage === 'review' ? 'review' : task.stage === 'build' ? 'build' : 'start'}`, 'POST', { state_version: task.state_version }); await refresh(); }
+      try { await api(`${taskPath(task)}/${task.stage === 'approve' ? 'approve' : task.stage === 'review' ? 'review' : task.stage === 'build' ? 'build' : 'start'}`, 'POST', { state_version: task.state_version, ...(task.stage === 'backlog' ? { spec_mode: specMode } : {}) }); await refresh(); }
       catch (error) { setError((error as Error).message); } finally { setBusy(false); }
     }}>{busy ? 'Ставим в очередь…' : task.stage === 'approve' ? 'Запустить Approve' : task.stage === 'review' ? 'Продолжить Review' : task.stage === 'build' ? 'Запустить Build' : 'Приступить к реализации'}</button>}
     {!editing && task.stage === 'needs-human' && task.run_state === 'interrupted' && latest && latest.role === reviewsFor(latest.config).at(-1)
