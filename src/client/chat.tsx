@@ -21,6 +21,7 @@ export function RunConversation({ runs, role, revision, path, api, messages, req
   const [loaded, setLoaded] = useState(false);
   const [retry, setRetry] = useState(0);
   const offsets = useRef<Record<string, number>>({});
+  const drained = useRef<Record<string, AgentRun['status']>>({});
   const eventOffset = useRef(0);
   const start = useRef<HTMLDivElement>(null);
   const selected = runs.filter(run => run.role === role);
@@ -32,11 +33,12 @@ export function RunConversation({ runs, role, revision, path, api, messages, req
     async function poll() {
       let more = false;
       await Promise.all([
-        ...selected.filter(run => run.status !== 'queued' && !run.diagnostic?.result_run_id).map(async run => {
+        ...selected.filter(run => run.status !== 'queued' && !run.diagnostic?.result_run_id && drained.current[run.id] !== run.status).map(async run => {
           try {
             const page = await api<{ entries: TranscriptEntry[]; next_offset: number; more: boolean }>(`${path}/runs/${run.id}/transcript?offset=${offsets.current[run.id] ?? 0}`);
             if (disposed) return;
             offsets.current[run.id] = page.next_offset; more ||= page.more;
+            if (!page.more && run.status !== 'running') drained.current[run.id] = run.status;
             setEntries(values => {
               const previous = values[run.id] ?? [];
               const ids = new Set(previous.map(entry => entry.id));

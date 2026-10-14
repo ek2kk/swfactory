@@ -128,6 +128,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
   const canReplace = (['backlog', 'build'].includes(task.stage) && task.run_state === 'idle') || (task.stage === 'needs-human' && task.run_state === 'waiting');
   const replacement = useRef(draft?.kind ? task.description : draft?.description ?? task.description);
   const clarification = useRef(draft?.kind ? draft.description : '');
+  const [requirementsError, setRequirementsError] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [revisions, setRevisions] = useState<Revision[] | null>(null);
@@ -150,7 +151,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
     <fieldset className="task-controls" disabled={!!task.deletion_state}>
     <section className="task-description" aria-label="Требования задачи">
     {editing && draft ? <form onSubmit={async event => {
-      event.preventDefault(); setBusy(true); setError('');
+      event.preventDefault(); setBusy(true); setRequirementsError('');
       try {
         if (draft.kind === 'requirements') {
           await api(`${taskPath(task)}/messages`, 'POST', { text: draft.description, kind: 'requirements', state_version: draft.version });
@@ -158,13 +159,13 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
           await api(taskPath(task), 'PATCH', { description: draft.description, state_version: draft.version });
         }
         setDraft(null); setEditing(false); setRevisions(null); await refresh();
-      } catch (error) { setError((error as Error).message); }
+      } catch (error) { setRequirementsError((error as Error).message); }
       finally { setBusy(false); }
     }}>
       <p className="hint">Сохранение обновит описание и его версию, отзовёт открытые вопросы и сделает прежние проверки неактуальными. Новую Spec нужно запустить явно. История и отчёты сохранятся.</p>
       <div className="actions requirements-modes">
-        {canReplace && <button type="button" className="secondary" aria-pressed={!draft.kind} disabled={busy} onClick={() => setDraft({ description: replacement.current, version: task.state_version })}>Заменить описание</button>}
-        <button type="button" className="secondary" aria-pressed={draft.kind === 'requirements'} disabled={busy} onClick={() => setDraft({ description: clarification.current, version: task.state_version, kind: 'requirements' })}>Добавить уточнения</button>
+        {canReplace && <button type="button" className="secondary" aria-pressed={!draft.kind} disabled={busy} onClick={() => setDraft({ description: replacement.current, version: draft.version })}>Заменить описание</button>}
+        <button type="button" className="secondary" aria-pressed={draft.kind === 'requirements'} disabled={busy} onClick={() => setDraft({ description: clarification.current, version: draft.version, kind: 'requirements' })}>Добавить уточнения</button>
       </div>
       {draft.kind === 'requirements' && <p className="hint">{['queued', 'running'].includes(task.run_state) ? 'Уточнения ожидают применения после текущего этапа. До применения описание и версия требований остаются прежними.' : 'Уточнения добавятся к существующему описанию.'}</p>}
       <label>{draft.kind === 'requirements' ? 'Уточнения требований' : 'Описание'}<textarea aria-label={draft.kind === 'requirements' ? 'Уточнения требований' : 'Описание'} required maxLength={draft.kind === 'requirements' ? 4096 : 100000} value={draft.description} onChange={e => { (draft.kind === 'requirements' ? clarification : replacement).current = e.target.value; setDraft({ ...draft, description: e.target.value }); }} /></label>
@@ -172,12 +173,13 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
       <div className="actions"><button disabled={busy || !draft.description.trim() || task.state_version !== draft.version || (!draft.kind && !canReplace)}>{busy ? 'Сохраняем…' : 'Сохранить'}</button>
         <button type="button" className="secondary" disabled={busy} onClick={() => setDraft({ ...draft, version: task.state_version })}>Использовать актуальное состояние</button>
         <button type="button" className="secondary" disabled={busy} onClick={() => setEditing(false)}>Отмена</button></div>
+      {requirementsError && <p role="alert" className="error">{requirementsError}</p>}
     </form> : <><p className="description">{task.description}</p>{!task.publication_status && task.run_state !== 'interrupted' && <button className="secondary" onClick={() => {
       if (!draft) {
         replacement.current = task.description; clarification.current = '';
         setDraft({ description: canReplace ? task.description : '', version: task.state_version, ...(canReplace ? {} : { kind: 'requirements' as const }) });
       }
-      setEditing(true); setError('');
+      setEditing(true); setRequirementsError('');
     }}>Изменить требования</button>}</>}
     </section>
     {messages.filter(message => message.kind === 'requirements' && ['queued', 'failed'].includes(message.status)).map(message => <p key={message.id} role={message.status === 'failed' ? 'alert' : 'status'}>{message.status === 'queued' ? 'Изменение требований ожидает применения после текущего этапа.' : `Изменение требований не применено: ${message.error ?? 'Ошибка сохранения'}`}</p>)}
