@@ -88,10 +88,14 @@ function ArchivedTask({ task, refresh, notify, expanded = false, draft, openTask
   const [open, setOpen] = useState(expanded);
   const [history, setHistory] = useState<{ revisions: Revision[]; messages: ChatMessage[]; runs: AgentRun[] } | null>(null);
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(open);
   useEffect(() => {
     if (!open) return;
     let disposed = false;
-    api<NonNullable<typeof history>>(`${taskPath(task)}/history`).then(value => { if (!disposed) setHistory(value); }).catch(error => { if (!disposed) setError(error.message); });
+    setLoading(true);
+    api<NonNullable<typeof history>>(`${taskPath(task)}/history`).then(value => {
+      if (!disposed) { setHistory(value); setError(''); setLoading(false); }
+    }).catch(error => { if (!disposed) { setError(error.message); setLoading(false); } });
     return () => { disposed = true; };
   }, [open, task.id, task.state_version]);
   return <details open={open} onToggle={event => { if (event.target === event.currentTarget) setOpen(event.currentTarget.open); }}>
@@ -107,6 +111,7 @@ function ArchivedTask({ task, refresh, notify, expanded = false, draft, openTask
         {task.deletion_error && <p role="alert">{task.deletion_error}</p>}
         <button id={`open-${task.id}`} onClick={() => openTask(task.id)}>Открыть задачу / сверить остановку ↗</button>
       </> : <TaskDisposition task={task} refresh={refresh} notify={notify} />}
+      {loading && <p role="status">Загружаем историю…</p>}
       {error && <p role="alert">{error}</p>}
       {history && <>
         <details><summary>История описания</summary>{history.revisions.map(revision => <div key={revision.revision}><p>Редакция {revision.revision}</p><pre>{revision.description}</pre></div>)}</details>

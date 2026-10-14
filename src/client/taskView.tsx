@@ -3,21 +3,24 @@ import { Component, createRef, type ReactNode } from 'react';
 export type DescriptionDraft = { description: string; version: number };
 type Props = { blocked: boolean; hidden: boolean; children: ReactNode };
 
-export class TaskView extends Component<Props, object, boolean> {
+export class TaskView extends Component<Props, object, HTMLElement | null> {
   readonly container = createRef<HTMLDivElement>();
   private focused: HTMLElement | null = null;
 
-  getSnapshotBeforeUpdate(previous: Props) {
+  getSnapshotBeforeUpdate() {
     // Capture focus before React removes the old presentation, including an open dialog.
     const active = document.activeElement;
     const lostFocus = active === document.body && this.focused
       && (!this.focused.isConnected || this.focused.matches(':disabled'));
-    return previous.blocked !== this.props.blocked && !this.props.hidden
-      && (!!this.container.current?.contains(active) || !!lostFocus);
+    if (this.props.hidden) return null;
+    if (this.container.current?.contains(active)) return active as HTMLElement;
+    return lostFocus ? this.focused : null;
   }
 
-  componentDidUpdate(_previous: Props, _state: object, restoreFocus: boolean) {
-    if (restoreFocus) this.container.current?.querySelector<HTMLElement>('[data-task-heading]')?.focus();
+  componentDidUpdate(previous: Props, _state: object, focused: HTMLElement | null) {
+    if (focused && (previous.blocked !== this.props.blocked || !focused.isConnected)) {
+      this.container.current?.querySelector<HTMLElement>('[data-task-heading]')?.focus();
+    }
   }
 
   render() {
