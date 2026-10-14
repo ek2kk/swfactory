@@ -7,8 +7,9 @@ import { transformSync } from 'esbuild';
 import * as jsx from 'react/jsx-runtime';
 import * as shared from '../src/shared.js';
 import * as stageHistory from '../src/client/stageHistory.js';
+import { TaskMarkdown } from '../src/client/TaskMarkdown.js';
 
-function taskCard() {
+function taskCard(api = async (..._args: any[]): Promise<any> => ({})) {
   const values: any[] = [];
   let index = 0, effects: (() => void)[] = [], draft: any;
   const source = readFileSync(new URL('../src/client/main.tsx', import.meta.url), 'utf8');
@@ -26,11 +27,12 @@ function taskCard() {
     },
     '../shared.js': shared, './stageHistory.js': stageHistory,
     './theme.js': { applyTheme() {}, readTheme() {} },
-    './style.css': {}, './models.js': {}, './api.js': {}, 'react-dom/client': {},
+    './style.css': {}, './models.js': {}, './api.js': { api }, 'react-dom/client': {},
+    './TaskMarkdown.js': { TaskMarkdown },
     './taskView.js': {}, './chat.js': { Composer() {}, Message() {}, RunConversation() {} },
     './output.js': { AgentOutput() {}, RunProgress() {} },
   };
-  runInNewContext(transformSync(source.replace(/createRoot\(document[^\n]+/, 'export { TaskCard };'), { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code, {
+  runInNewContext(transformSync(source.replace(/createRoot\(document[^\n]+/, 'export { TaskCard, ArchivedTask, History };'), { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code, {
     module, require(name: string) { assert.ok(Object.hasOwn(modules, name), name); return modules[name]; },
   });
   const props = {
@@ -40,9 +42,9 @@ function taskCard() {
     questions: [], active: false, cursor: 0, refresh: async () => {}, notify() {},
     setDraft(value: unknown) { draft = value; },
   };
-  return { props, render() {
+  return { props, render(component = 'TaskCard', extraProps = {}) {
     index = 0; effects = [];
-    const tree = module.exports.TaskCard({ ...props, draft });
+    const tree = module.exports[component]({ ...props, draft, ...extraProps });
     return { tree, commit: () => effects.forEach(effect => effect()) };
   }, get draft() { return draft; } };
 }
@@ -52,6 +54,48 @@ function elements(node: any): any[] {
   if (!node?.props) return [];
   return [node, ...elements(node.props.children)];
 }
+
+test('task, archive and revision views share the renderer without changing their sources', async () => {
+  const description = '# Requirements\n\n- [x] Saved  \n\n```txt\n  exact source\n```\n';
+  const revision = { revision: 1, description, created_at: '2026-10-14T00:00:00Z' };
+  const current = taskCard();
+  current.props.task.description = description;
+  assert.equal(elements(current.render().tree).find(node => node.type === TaskMarkdown).props.children, description);
+  const history = taskCard();
+  assert.equal(elements(history.render('History', { revisions: [revision] }).tree).find(node => node.type === TaskMarkdown).props.children, description);
+  const archive = taskCard(async () => ({ revisions: [revision], messages: [], runs: [] }));
+  archive.props.task.description = description;
+  archive.render('ArchivedTask', { expanded: true }).commit();
+  await new Promise(resolve => setImmediate(resolve));
+  const sources = elements(archive.render('ArchivedTask', { expanded: true }).tree).filter(node => node.type === TaskMarkdown);
+  assert.equal(sources.length, 2);
+  assert.ok(sources.every(node => node.props.children === description));
+});
+
+test('editing, saving and reopening requirements use the exact Markdown source', async () => {
+  const original = '  # Original\n\n- [x] Ready  \n';
+  const updated = original + '\n```txt\n  keep <code> & spaces  \n```\n';
+  const calls: any[][] = [];
+  const card = taskCard(async (...args) => { calls.push(args); });
+  card.props.task.description = original;
+  const open = () => elements(card.render().tree).find(node => node.type === 'button' && node.props.children === 'Изменить требования').props.onClick();
+  open();
+  let textarea = elements(card.render().tree).find(node => node.type === 'textarea');
+  assert.equal(textarea.props.value, original);
+  textarea.props.onChange({ target: { value: updated } });
+  const form = elements(card.render().tree).find(node => node.type === 'form');
+  await form.props.onSubmit({ preventDefault() {} });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], '/projects/project/tasks/task');
+  assert.equal(calls[0][1], 'PATCH');
+  assert.equal(calls[0][2].description, updated);
+  card.props.task.description = calls[0][2].description;
+  card.props.task.state_version++;
+  assert.equal(elements(card.render().tree).find(node => node.type === TaskMarkdown).props.children, updated);
+  open();
+  textarea = elements(card.render().tree).find(node => node.type === 'textarea');
+  assert.equal(textarea.props.value, updated);
+});
 
 test('opening requirements focuses its textarea once in idle, queued and running states', () => {
   for (const runState of ['idle', 'queued', 'running']) {

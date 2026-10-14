@@ -9,6 +9,7 @@ import { AgentOutput, RunProgress } from './output.js';
 import { applyTheme, readTheme, type Theme } from './theme.js';
 import { stageRoles, stageNames, stageTabStatus } from './stageHistory.js';
 import { TaskView, type DescriptionDraft } from './taskView.js';
+import { TaskMarkdown } from './TaskMarkdown.js';
 
 applyTheme(readTheme());
 
@@ -102,7 +103,7 @@ function ArchivedTask({ task, refresh, notify, expanded = false, draft, openTask
   return <details open={open} onToggle={event => { if (event.target === event.currentTarget) setOpen(event.currentTarget.open); }}>
     <summary data-task-heading>{task.title ?? task.id} · {task.deletion_state === 'deleted' ? 'остановка подтверждена' : task.deletion_state === 'stopping' ? 'остановка выполняется' : 'остановка не подтверждена'}</summary>
     {open && <>
-      <p className="description">{task.description}</p>
+      <TaskMarkdown>{task.description}</TaskMarkdown>
       {draft && <label>Несохранённый черновик описания — можно скопировать<textarea readOnly value={draft.description} /></label>}
       <SourceIssue task={task} />
       {task.publication_status === 'unknown' || task.publication_status === 'pending' ? <p role="alert">Remote операция могла завершиться. Проверьте hosting; автоматического повтора публикации нет.</p> : null}
@@ -115,7 +116,7 @@ function ArchivedTask({ task, refresh, notify, expanded = false, draft, openTask
       {loading && <p role="status">Загружаем историю…</p>}
       {error && <p role="alert">{error}</p>}
       {history && <>
-        <details><summary>История описания</summary>{history.revisions.map(revision => <div key={revision.revision}><p>Версия требований: {revision.revision}</p><pre>{revision.description}</pre></div>)}</details>
+        <details><summary>История описания</summary>{history.revisions.map(revision => <div key={revision.revision}><p>Версия требований: {revision.revision}</p><TaskMarkdown>{revision.description}</TaskMarkdown></div>)}</details>
         {history.messages.map(message => <Message key={message.id} message={message} />)}
         {history.runs.map(run => <RunReport key={run.id} task={task} run={run} />)}
       </>}
@@ -186,7 +187,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
         <button type="button" className="secondary" disabled={busy} onClick={() => setDraft({ ...draft, version: task.state_version })}>Использовать актуальное состояние</button>
         <button type="button" className="secondary" disabled={busy} onClick={() => setEditing(false)}>Отмена</button></div>
       {requirementsError && <p role="alert" className="error">{requirementsError}</p>}
-    </form> : <><p className="description">{task.description}</p>{!task.publication_status && task.run_state !== 'interrupted' && <button ref={requirementsButton} className="secondary" onClick={() => {
+    </form> : <><TaskMarkdown>{task.description}</TaskMarkdown>{!task.publication_status && task.run_state !== 'interrupted' && <button ref={requirementsButton} className="secondary" onClick={() => {
       if (!draft) {
         replacement.current = task.description; clarification.current = '';
         setDraft({ description: canReplace ? task.description : '', version: task.state_version, ...(canReplace ? {} : { kind: 'requirements' as const }) });
@@ -341,7 +342,7 @@ function History({ task, revisions, setRevisions }: { task: Task; revisions: Rev
     api<Revision[]>(`${taskPath(task)}/revisions`).then(value => { if (active) setRevisions(value); }).catch(error => { if (active) setError(error.message); });
     return () => { active = false; };
   }, [task.id, task.revision, setRevisions]);
-  return <>{error && <p role="alert">{error}</p>}{revisions ? revisions.map(r => <div key={r.revision}><p className="meta">Версия требований: {r.revision} · {new Date(r.created_at).toLocaleString('ru')}</p><pre>{r.description}</pre></div>) : <p role="status">Загружаем историю…</p>}</>;
+  return <>{error && <p role="alert">{error}</p>}{revisions ? revisions.map(r => <div key={r.revision}><p className="meta">Версия требований: {r.revision} · {new Date(r.created_at).toLocaleString('ru')}</p><TaskMarkdown>{r.description}</TaskMarkdown></div>) : <p role="status">Загружаем историю…</p>}</>;
 }
 
 function RunReport({ task, run }: { task: Task; run: AgentRun }) {
