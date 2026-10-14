@@ -24,15 +24,17 @@ function fixture(t: { after: (fn: () => void) => void }) {
   t.after(() => { if (store.db.open) store.close(); rmSync(root, { recursive: true, force: true }); });
   const project = store.addProject({ checkout, common_dir: join(checkout, '.git'), remote: 'origin', remote_url: remote, hosting: 'github', host: 'github.com', repository: 'test/repo', target_branch: 'main' });
   const task = store.createTask(project.id, description, 1);
+  store.db.prepare("UPDATE tasks SET title = 'Greeting', title_state = 'completed' WHERE id = ?").run(task.id);
   const current = () => store.task(project.id, task.id);
   return { store, project, task, current, directory };
 }
 
 for (const mode of ['skip', 'auto', 'spec'] as SpecMode[]) test(`${mode}: versioned input, review/approve gates and restart`, async t => {
   const { store, project, task, current, directory } = fixture(t);
-  let classifications = 0, specifications = 0, reviews = 0;
+  store.db.prepare("UPDATE tasks SET title = NULL, title_state = 'pending' WHERE id = ?").run(task.id);
+  let classifications = 0, specifications = 0, reviews = 0, titles = 0;
   const controller = () => new SpecController(store, directory, () => {}, command,
-    async () => { specifications++; return spec; }, undefined,
+    async () => { specifications++; return spec; }, async () => { titles++; return 'Greeting'; },
     async input => {
       assert.match(input.prompt, /NEEDS_INPUT/);
       if (mode !== 'spec') { assert.match(input.prompt, /"source":"requirements"/); assert.match(input.prompt, /"description_revision":1/); }
@@ -67,12 +69,17 @@ for (const mode of ['skip', 'auto', 'spec'] as SpecMode[]) test(`${mode}: versio
   }
   await perform(store.queueApprove(project.id, task.id, current().state_version));
   const approved = store.publicationRun(project.id, task.id);
+  assert.equal(current().title, 'Greeting');
+  assert.equal(current().title_state, 'completed');
+  assert.equal(titles, mode === 'spec' ? 0 : 1);
   const verifier = controller(); await verifier.verifyReviewSource(approved); await verifier.close();
   assert.equal(current().spec_decision?.required, mode === 'spec');
   const decision = current().spec_decision;
   store.close();
   const reopened = new Store(directory); t.after(() => reopened.close());
   assert.deepEqual(reopened.task(project.id, task.id).spec_decision, decision);
+  assert.equal(reopened.task(project.id, task.id).title, 'Greeting');
+  assert.equal(reopened.task(project.id, task.id).title_state, 'completed');
   assert.equal(reopened.publicationRun(project.id, task.id).id, approved.id);
   assert.equal(reopened.runs().filter(r => r.role === 'spec').length, mode === 'spec' ? 1 : 0);
   const recheck = new SpecController(reopened, directory, () => {}, command);
@@ -139,4 +146,51 @@ process.stdin.on('data', x => prompt += x); process.stdin.on('end', () => {
   for (const flag of ['--ignore-user-config', '--ignore-rules', '--ephemeral', 'features.shell_tool=false', 'features.multi_agent=false', 'project_doc_max_bytes=0', 'selected-spec-model']) assert.ok(captureResult.args.includes(flag), flag);
   assert.match(captureResult.prompt, /Do not write a specification/);
   assert.notEqual(captureResult.cwd, process.cwd());
+});
+
+for (const mode of ['skip', 'auto'] as const) for (const titleState of ['pending', 'running'] as const) test(`fast start ${mode} with ${titleState} title completes the title before Build`, async t => {
+  const { store, project, task, current, directory } = fixture(t);
+  store.db.prepare("UPDATE tasks SET title = NULL, title_state = 'pending' WHERE id = ?").run(task.id);
+  let calls = 0, interrupted = false;
+  let started!: () => void;
+  const titleStarted = new Promise<void>(resolve => { started = resolve; });
+  const runner = new SpecController(store, directory, () => {}, command, async () => { assert.fail('no Spec'); },
+    async (_description, signal) => {
+      calls++;
+      if (titleState === 'running' && calls === 1) {
+        started();
+        return new Promise<string>((_resolve, reject) => signal.addEventListener('abort', () => { interrupted = true; reject(new Error('aborted')); }, { once: true }));
+      }
+      return 'Update README greeting';
+    }, async input => {
+      assert.equal(current().title, 'Update README greeting');
+      assert.equal(current().title_state, 'completed');
+      writeFileSync(join(input.cwd, 'README.md'), 'Hello'); return ready;
+    }, undefined, undefined, async () => ({ required: false, reason: 'Concrete requirements', missing: [] }));
+  if (titleState === 'running') { runner.titles.kick(); await titleStarted; }
+  const enqueue = runner.enqueue.bind(runner);
+  t.mock.method(runner, 'enqueue', (run: AgentRun) => { if (!run.parent_run_id) enqueue(run); });
+  const run = store.queueSpec(project.id, task.id, current().state_version, directory, mode);
+  runner.enqueue(run);
+  for (let i = 0; i < 1000 && ['queued', 'running'].includes(store.specRun(project.id, task.id, run.id).status); i++) await new Promise(resolve => setTimeout(resolve, 10));
+  await runner.close();
+  assert.equal(current().title, 'Update README greeting');
+  assert.equal(current().title_state, 'completed');
+  assert.equal(current().stage, 'review');
+  if (titleState === 'running') assert.equal(interrupted, true);
+  assert.equal(store.runs().filter(r => r.role === 'spec').length, 0);
+});
+
+for (const failure of ['error', 'invalid'] as const) test(`direct Build title ${failure} blocks implementation without changing source`, async t => {
+  const { store, project, task, current, directory } = fixture(t);
+  store.db.prepare("UPDATE tasks SET title = NULL, title_state = 'pending' WHERE id = ?").run(task.id);
+  const runner = new SpecController(store, directory, () => {}, command, undefined,
+    async () => { if (failure === 'error') throw new Error('title unavailable'); return ''; },
+    async () => { assert.fail('must not implement without a valid title'); });
+  const run = store.queueSpec(project.id, task.id, current().state_version, directory, 'skip');
+  runner.enqueue(run); await runner.close();
+  assert.equal(store.specRun(project.id, task.id, run.id).status, 'failed');
+  assert.equal(current().title, null); assert.equal(current().title_state, 'failed');
+  assert.equal(current().stage, 'needs-human');
+  assert.equal(readFileSync(join(run.worktree, 'README.md'), 'utf8'), 'initial');
 });

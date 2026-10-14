@@ -9,7 +9,7 @@ import { preflight, verifyRepository, fetchBase, run as git, type Run } from './
 import { executeApprove, validateApprove, type ExecuteApprove, executeSpec, validateSpec, executeBuild, validateBuild, executeReview, validateReview, type ExecuteReview, type ExecuteBuild, type ExecuteSpec } from './codex.js';
 import { publishGithub } from './publication.js';
 import { sourceHash, commitBuild } from './build.js';
-import { Titles, generateTitle } from './title.js';
+import { Titles, generateTitle, parseTitle } from './title.js';
 import { formatOutput } from './output.js';
 import { CodexFailure } from './diagnostics.js';
 import { Scheduler } from './scheduler.js';
@@ -27,7 +27,7 @@ export class SpecController {
   private detectingLimits = 0;
   error: string | null = null;
   constructor(private store: Store, private directory: string, private publish: () => void,
-    private command: Run = git, private execute: ExecuteSpec = executeSpec, generate = generateTitle, private build: ExecuteBuild = executeBuild, private review: ExecuteReview = executeReview, private approve: ExecuteApprove = executeApprove, private classify = classifySpec) {
+    private command: Run = git, private execute: ExecuteSpec = executeSpec, private generate = generateTitle, private build: ExecuteBuild = executeBuild, private review: ExecuteReview = executeReview, private approve: ExecuteApprove = executeApprove, private classify = classifySpec) {
     const originalCommand = this.command;
     this.command = async (...args) => { checkExecution(); return originalCommand(...args); };
     this.chat = new Chat(store, publish);
@@ -230,6 +230,19 @@ export class SpecController {
         if (await sourceHash(run, this.command) !== run.source_hash) throw new Problem(422, 'Source изменился после вопроса. Нужна ручная сверка.');
       } else await this.verifyWorktree(run);
       const specification = this.requirements(run);
+      if (!task.title) {
+        this.store.db.transaction(() => {
+          this.store.db.prepare("UPDATE tasks SET title_state = 'running' WHERE id = ?").run(task.id);
+          this.store.event('title.started', task.id, { revision: task.revision });
+        })();
+        this.publish();
+        try {
+          const title = parseTitle({ title: await this.generate(task.description, executionSignal()!) });
+          checkExecution();
+          this.store.finishTitle(task, title);
+        } catch (error) { this.store.finishTitle(task, null); throw error; }
+        this.publish();
+      }
       const context = this.store.humanRequests().filter(r => r.task_id === task.id && r.revision === task.revision && r.status === 'answered');
       const feedback = run.repair_round_id ? this.store.reviewRound({ ...run, round_id: run.repair_round_id }).map(review => {
         if (!review) throw new Problem(422, 'Отсутствует reviewer для доработки.');
