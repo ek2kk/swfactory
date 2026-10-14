@@ -47,7 +47,7 @@ export async function createApp(options: {
   const origin = new URL(options.origin);
   const cookieName = `swfactory_${origin.port}`;
   function snapshot() {
-    return { ...store.snapshot(), issue_errors: [...issues.errors], execution_error: controller.error ?? controller.chat.error, title_error: titles.error };
+    return { ...store.snapshot(), issue_syncing: issues.syncing, issue_errors: [...issues.errors], execution_error: controller.error ?? controller.chat.error, title_error: titles.error };
   }
   function publish() {
     for (const client of clients.values()) client.update();
@@ -106,6 +106,10 @@ export async function createApp(options: {
     return result;
   });
   const projectParams = object({ projectId: uuid });
+  app.post<{ Params: { projectId: string } }>('/api/projects/:projectId/issues/refresh', { schema: { params: projectParams } }, async request => {
+    void issues.refresh(request.params.projectId);
+    return { ok: true };
+  });
   app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/models', { schema: { params: projectParams } }, async request => {
     const project = store.project(request.params.projectId);
     return catalogs.get(project.id, project.checkout);

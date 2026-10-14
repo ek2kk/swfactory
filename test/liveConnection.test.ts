@@ -68,3 +68,84 @@ test('App reports unavailable live updates and restores active status and curren
   } finally { for (const cleanup of cleanups) cleanup?.(); }
   assert.equal(sources[0].closes, 1, 'unmount closes the connection');
 });
+
+test('GitHub refresh controls follow project snapshots, prevent double clicks and show request errors', async () => {
+  const github = { id: 'github-project', hosting: 'github', host: 'github.com', repository: 'owner/repo' };
+  const gitlab = { ...github, id: 'gitlab-project', hosting: 'gitlab' };
+  const appState: any[] = [], buttonState: any[] = [];
+  let state = appState, index = 0, App!: () => any;
+  let resolve!: () => void, reject!: (error: Error) => void;
+  let request: Promise<void>;
+  const pending = () => { request = new Promise<void>((done, fail) => { resolve = done; reject = fail; }); };
+  const calls: unknown[][] = [];
+  const modules: Record<string, unknown> = {
+    'react/jsx-runtime': jsx,
+    'react': {
+      useState(initial: unknown) {
+        const values = state, slot = index++;
+        if (!(slot in values)) values[slot] = typeof initial === 'function' ? initial() : initial;
+        return [values[slot], (value: unknown) => { values[slot] = typeof value === 'function' ? value(values[slot]) : value; }];
+      },
+      useRef(current: unknown) {
+        const slot = index++;
+        return state[slot] ??= { current };
+      },
+      useEffect() {},
+    },
+    'react-dom/client': { createRoot: () => ({ render: (element: { type: () => any }) => { App = element.type; App(); } }) },
+    './api.js': { api: (...args: unknown[]) => { calls.push(args); return request; } },
+    './theme.js': { readTheme: () => 'system', applyTheme: () => {} },
+    '../shared.js': shared,
+    './models.js': {}, './chat.js': {}, './output.js': {}, './taskView.js': {}, './style.css': {},
+  };
+  const source = readFileSync(new URL('../src/client/main.tsx', import.meta.url), 'utf8');
+  runInNewContext(transformSync(source, { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code, {
+    require(name: string) { assert.ok(Object.hasOwn(modules, name), name); return modules[name]; },
+    URLSearchParams, location: { pathname: '/', search: '', hash: '' }, document: { getElementById: () => ({}) },
+  });
+  function elements(node: any): any[] {
+    if (Array.isArray(node)) return node.flatMap(elements);
+    return node?.props ? [node, ...elements(node.props.children)] : [];
+  }
+  const snapshotIndex = appState.findIndex(value => value && typeof value === 'object' && 'cursor' in value);
+  appState[snapshotIndex] = { ...appState[snapshotIndex], projects: [github, gitlab] };
+  function control(syncing: string[] = []) {
+    appState[snapshotIndex].issue_syncing = syncing;
+    state = appState; index = 0;
+    const controls = elements(App()).filter(element => element.type?.name === 'IssueRefresh');
+    assert.equal(controls.length, 1, 'GitLab has no refresh action');
+    assert.equal(controls[0].props.project.id, github.id);
+    state = buttonState; index = 0;
+    return elements(controls[0].type(controls[0].props));
+  }
+  const button = (nodes: any[]) => nodes.find(node => node.type === 'button');
+  const status = (nodes: any[]) => nodes.find(node => node.props.role === 'status').props.children;
+  assert.equal(button(control()).props.children, 'Обновить задачи из GitHub');
+  const automatic = control([github.id]);
+  assert.equal(button(automatic).props.disabled, true);
+  assert.equal(status(automatic), 'Обновляем…');
+  await button(automatic).props.onClick(); assert.equal(calls.length, 0);
+  assert.equal(button(control([gitlab.id])).props.disabled, false, 'another project does not block this control');
+  pending();
+  const click = button(control()).props.onClick;
+  const first = click(); await click();
+  assert.equal(calls.length, 1);
+  assert.equal(JSON.stringify(calls[0]), JSON.stringify(['/projects/github-project/issues/refresh', 'POST']));
+  assert.equal(button(control()).props.disabled, true);
+  assert.equal(status(control()), 'Обновляем…');
+  resolve(); await first;
+  assert.equal(button(control([github.id])).props.disabled, true, 'request completion still respects backend state');
+  assert.equal(button(control()).props.disabled, false, 'completion snapshot unlocks the control');
+  pending();
+  const failed = button(control()).props.onClick();
+  reject(new Error('Backend недоступен')); await failed;
+  const failure = control();
+  assert.equal(button(failure).props.disabled, false);
+  const alert = failure.find(node => node.props.role === 'alert');
+  assert.ok(alert.props.children.join('').includes('github.com/owner/repo: Backend недоступен'));
+  pending();
+  const retry = button(control()).props.onClick();
+  assert.ok(!control().some(node => node.props.role === 'alert'), 'retry clears the request error');
+  resolve(); await retry;
+  assert.equal(status(control()), '');
+});
