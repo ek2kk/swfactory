@@ -1,6 +1,94 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TaskView } from '../src/client/taskView.js';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import { transformSync } from 'esbuild';
+import * as jsx from 'react/jsx-runtime';
+import * as shared from '../src/shared.js';
+import * as stageHistory from '../src/client/stageHistory.js';
+
+function taskCard() {
+  const values: any[] = [];
+  let index = 0, effects: (() => void)[] = [], draft: any;
+  const source = readFileSync(new URL('../src/client/main.tsx', import.meta.url), 'utf8');
+  const module = { exports: {} as any };
+  const modules: Record<string, unknown> = {
+    'react/jsx-runtime': jsx,
+    react: {
+      useState(initial: unknown) {
+        const slot = index++;
+        if (!(slot in values)) values[slot] = initial;
+        return [values[slot], (value: unknown) => { values[slot] = value; }];
+      },
+      useRef(current: unknown) { return values[index++] ??= { current }; },
+      useEffect(callback: () => void) { effects.push(callback); },
+    },
+    '../shared.js': shared, './stageHistory.js': stageHistory,
+    './theme.js': { applyTheme() {}, readTheme() {} },
+    './style.css': {}, './models.js': {}, './api.js': {}, 'react-dom/client': {},
+    './taskView.js': {}, './chat.js': { Composer() {}, Message() {}, RunConversation() {} },
+    './output.js': { AgentOutput() {}, RunProgress() {} },
+  };
+  runInNewContext(transformSync(source.replace(/createRoot\(document[^\n]+/, 'export { TaskCard };'), { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code, {
+    module, require(name: string) { assert.ok(Object.hasOwn(modules, name), name); return modules[name]; },
+  });
+  const props = {
+    task: { id: 'task', project_id: 'project', description: 'Original requirements', stage: 'build', run_state: 'idle', state_version: 1, revision: 1 },
+    project: { host: 'github.com', repository: 'owner/repo', checkout: '/test' },
+    runs: [{ id: 'run', role: 'build', status: 'completed', outcome: 'READY', description_revision: 1 }],
+    questions: [], active: false, cursor: 0, refresh: async () => {}, notify() {},
+    setDraft(value: unknown) { draft = value; },
+  };
+  return { props, render() {
+    index = 0; effects = [];
+    const tree = module.exports.TaskCard({ ...props, draft });
+    return { tree, commit: () => effects.forEach(effect => effect()) };
+  }, get draft() { return draft; } };
+}
+
+function elements(node: any): any[] {
+  if (Array.isArray(node)) return node.flatMap(elements);
+  if (!node?.props) return [];
+  return [node, ...elements(node.props.children)];
+}
+
+test('requirements cancellation restores focus to its opener and keeps the draft', () => {
+  const card = taskCard();
+  let focused = 0;
+  const button = { focus() { focused++; } };
+  const opener = (tree: unknown) => elements(tree).find(element => element.type === 'button' && element.props.children === 'Изменить требования');
+  let view = card.render();
+  opener(view.tree).props.ref.current = button; view.commit();
+  assert.equal(focused, 0, 'mounting the card must not take focus');
+  opener(view.tree).props.onClick();
+  view = card.render(); view.commit();
+  elements(view.tree).find(element => element.type === 'textarea').props.onChange({ target: { value: 'Unsaved requirements' } });
+  view = card.render(); view.commit();
+  elements(view.tree).find(element => element.type === 'button' && element.props.children === 'Отмена').props.onClick();
+  view = card.render(); opener(view.tree).props.ref.current = button; view.commit();
+  assert.equal(focused, 1);
+  assert.equal(card.draft.description, 'Unsaved requirements');
+  view = card.render(); view.commit();
+  assert.equal(focused, 1, 'ordinary updates must not take focus');
+  opener(view.tree).props.onClick();
+  view = card.render(); view.commit();
+  assert.equal(elements(view.tree).find(element => element.type === 'textarea').props.value, 'Unsaved requirements');
+});
+
+test('overview omits reports while stage history retains access to them', () => {
+  const card = taskCard();
+  const { tree } = card.render();
+  const overview = elements(tree).find(element => element.props.id === 'task-panel-overview');
+  assert.ok(overview);
+  assert.equal(elements(overview).filter(element => element.type?.name === 'RunReport').length, 0);
+  const stage = elements(tree).find(element => element.props.id === 'task-panel-build');
+  const conversation = elements(stage).find(element => element.type?.name === 'RunConversation');
+  assert.ok(conversation);
+  const report = conversation.props.report(card.props.runs[0]);
+  assert.equal(report.type.name, 'RunReport');
+  assert.equal(report.props.run.id, 'run');
+});
 
 test('task presentation transfers focus on archive and unblock only from the replaced card', () => {
   const original = Object.getOwnPropertyDescriptor(globalThis, 'document');

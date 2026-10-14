@@ -125,6 +125,12 @@ function ArchivedTask({ task, refresh, notify, expanded = false, draft, openTask
 
 function TaskCard({ task, project, runs, questions, refresh, active, cursor, notify, draft, setDraft }: { task: Task; project: Project; runs: AgentRun[]; questions: HumanRequest[]; refresh: () => Promise<void>; active: boolean; cursor: number; notify: (text: string) => void; draft?: DescriptionDraft; setDraft: (draft: DescriptionDraft | null) => void }) {
   const [editing, setEditing] = useState(!!draft);
+  const requirementsButton = useRef<HTMLButtonElement>(null);
+  const wasEditing = useRef(editing);
+  useEffect(() => {
+    if (wasEditing.current && !editing) requirementsButton.current?.focus();
+    wasEditing.current = editing;
+  }, [editing]);
   const canReplace = (['backlog', 'build'].includes(task.stage) && task.run_state === 'idle') || (task.stage === 'needs-human' && task.run_state === 'waiting');
   const replacement = useRef(draft?.kind ? task.description : draft?.description ?? task.description);
   const clarification = useRef(draft?.kind ? draft.description : '');
@@ -174,7 +180,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
         <button type="button" className="secondary" disabled={busy} onClick={() => setDraft({ ...draft, version: task.state_version })}>Использовать актуальное состояние</button>
         <button type="button" className="secondary" disabled={busy} onClick={() => setEditing(false)}>Отмена</button></div>
       {requirementsError && <p role="alert" className="error">{requirementsError}</p>}
-    </form> : <><p className="description">{task.description}</p>{!task.publication_status && task.run_state !== 'interrupted' && <button className="secondary" onClick={() => {
+    </form> : <><p className="description">{task.description}</p>{!task.publication_status && task.run_state !== 'interrupted' && <button ref={requirementsButton} className="secondary" onClick={() => {
       if (!draft) {
         replacement.current = task.description; clarification.current = '';
         setDraft({ description: canReplace ? task.description : '', version: task.state_version, ...(canReplace ? {} : { kind: 'requirements' as const }) });
@@ -226,7 +232,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
     }}>{busy ? 'Ставим в очередь…' : task.stage === 'approve' ? 'Запустить Approve' : task.stage === 'review' ? 'Продолжить Review' : task.stage === 'build' ? 'Запустить Build' : 'Приступить к реализации'}</button>}
     {!editing && task.stage === 'needs-human' && task.run_state === 'interrupted' && runs.at(-1)?.role === 'review-ux'
       && runs.at(-1)?.status === 'completed' && !runs.at(-1)?.stale && ['PASS', 'CHANGES'].includes(runs.at(-1)?.outcome ?? '') && <>
-      <p>Раунд завершён с замечаниями. Выполнено доработок: {runs.at(-1)?.repair_attempt}/2. Отчёты и оставшиеся findings — ниже.</p>
+      <p>Раунд завершён с замечаниями. Выполнено доработок: {runs.at(-1)?.repair_attempt}/2. Отчёты и оставшиеся findings — на вкладках этапов.</p>
       <button disabled={busy} onClick={async () => {
         setBusy(true); setError('');
         try { await api(`${taskPath(task)}/repair`, 'POST', { state_version: task.state_version }); await refresh(); }
@@ -241,7 +247,6 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
     }}>{runs.at(-1)?.diagnostic?.result_saved ? 'Продолжить по сохранённому результату' : 'Повторить завершённый запуск'}</button>}
     {task.run_state === 'interrupted' && runs.at(-1)?.status === 'failed' && runs.at(-1)?.diagnostic?.result_saved && <p>Результат агента сохранён. Продолжение повторит проверки backend и переход этапа без нового вызова модели.</p>}
     {task.run_state === 'interrupted' && (runs.at(-1)?.status === 'interrupted' || !runs.at(-1)?.diagnostic?.execution_finished) && <p>Перед продолжением нужна ручная проверка процесса и worktree. Автоматический повтор недоступен.</p>}
-    {runs.map(run => <RunReport key={run.id} task={task} run={run} />)}
     <details onToggle={event => setShowHistory(event.currentTarget.open)}><summary>История описания</summary>
       {showHistory && <History task={task} revisions={revisions} setRevisions={setRevisions} />}
     </details>
@@ -270,7 +275,7 @@ function HumanDecision({ task, request, refresh }: { task: Task; request: HumanR
   };
   return <section aria-label="Решение о публикации">
     <h4>ESCALATE · требуется решение человека</h4><p>{request.result.summary}</p>
-    <p>Разрешение касается только публикации PR/MR этой версии. Merge запрещён. Четыре отчёта Review доступны ниже.</p>
+    <p>Разрешение касается только публикации PR/MR этой версии. Merge запрещён. Четыре отчёта Review доступны на соответствующих вкладках.</p>
     <ul>{request.result.risks.map((risk, i) => <li key={i}>{risk}</li>)}</ul>
     <p>Затронутые файлы: {request.result.affected_paths.join(', ') || 'Не указаны; см. отчёты.'}</p>
     {request.status === 'pending' ? <>
