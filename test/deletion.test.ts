@@ -284,7 +284,7 @@ for (const version of [11, 12]) for (const history of ['title', 'edited-title', 
   assert.equal(store.rawTask(project.id, task.id).deletion_state, 'deleted');
   await controller.close(); controller = undefined; store.close();
   store = new Store(directory);
-  assert.equal(store.db.pragma('user_version', { simple: true }), 15);
+  assert.equal(store.db.pragma('user_version', { simple: true }), 16);
   assert.equal(store.rawTask(project.id, task.id).stop_unverified, 0, 'migration must not repeat after reconciliation');
 });
 
@@ -485,4 +485,212 @@ test('v14 migration exposes previously deleted history; failed cards archive exp
   assert.equal(store.snapshot().tasks.length, 0);
   const saved = store.snapshot().archived_tasks!.find(task => task.id === failed.id)!;
   assert.equal(saved.deletion_state, 'failed'); assert.equal(saved.stop_unverified, 1);
+});
+
+import { GithubIssues } from '../src/server/issues.js';
+
+function githubCard(store: Store, projectId: string) {
+  store.importGithubIssue(projectId, { number: 1, title: 'Imported card', description: 'Original description', url: 'https://github.com/owner/repo/issues/1' });
+  return store.snapshot().tasks.find(task => task.issue_number === 1)!;
+}
+async function syncCard(store: Store, controller: SpecController, matches: boolean) {
+  const importer = new GithubIssues(store, () => {}, async args => JSON.stringify(args.at(-1)!.includes('?') ? [] : {
+    number: 1, title: 'Remote title', body: 'Remote description', state: 'open', labels: matches ? ['ready-for-agent'] : [], html_url: 'https://github.com/owner/repo/issues/1',
+  }), taskId => controller.deleteTask(taskId));
+  importer.start(); await importer.settled(); await importer.close();
+  assert.deepEqual(importer.errors, []);
+}
+
+test('legacy delete manually archives a restored card whose stop is already confirmed', async t => {
+  const { app, store, project, headers } = await apiFixture(t);
+  const task = githubCard(store, project.id);
+  store.reconcileGithubIssue(project.id, 1, false, 'Removed label');
+  store.finishDeletion(task.id);
+  store.reconcileGithubIssue(project.id, 1, true, '');
+  const payload = { request_id: randomUUID(), state_version: store.rawTask(project.id, task.id).state_version };
+  const send = () => app.inject({ method: 'POST', url: `/api/projects/${project.id}/tasks/${task.id}/delete`, headers, payload });
+  const response = await send();
+  assert.equal(response.statusCode, 200); assert.equal(response.json().deleted, true);
+  assert.equal(store.snapshot().tasks.length, 0);
+  assert.equal(store.snapshot().archived_tasks![0].archive_source, 'manual');
+  assert.equal(store.reconcileGithubIssue(project.id, 1, true, ''), undefined);
+  assert.deepEqual((await send()).json(), response.json());
+  assert.equal(store.events(0).filter(event => event.type === 'task.archived').length, 2);
+  assert.equal(store.revisions(project.id, task.id)[0].description, task.description);
+});
+
+test('legacy delete saves manual visibility atomically before stop and concurrent filter changes', async t => {
+  const { app, store, project, headers } = await apiFixture(t);
+  const task = githubCard(store, project.id);
+  store.reconcileGithubIssue(project.id, 1, false, 'Removed label');
+  store.reconcileGithubIssue(project.id, 1, true, '');
+  let entered!: () => void, release!: () => void;
+  const stopping = new Promise<void>(resolve => { entered = resolve; });
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  t.after(() => release());
+  t.mock.method(SpecController.prototype, 'deleteTask', async (id: string) => {
+    assert.equal(id, task.id); entered(); await barrier; store.finishDeletion(id);
+  });
+  const payload = { request_id: randomUUID(), state_version: store.rawTask(project.id, task.id).state_version };
+  const response = app.inject({ method: 'POST', url: `/api/projects/${project.id}/tasks/${task.id}/delete`, headers, payload }).then(value => value);
+  await stopping;
+  try {
+    assert.equal(store.snapshot().tasks.length, 0);
+    assert.equal(store.rawTask(project.id, task.id).archive_source, 'manual');
+    const cursor = store.snapshot().cursor;
+    for (const matches of [false, true, false, true]) {
+      const importer = new GithubIssues(store, () => {}, async args => JSON.stringify(args.at(-1)!.includes('?') ? [] : {
+        number: 1, title: 'Remote title', body: 'Remote description', state: 'open', labels: matches ? ['ready-for-agent'] : [], html_url: task.issue_url,
+      }));
+      importer.start(); await importer.settled(); await importer.close();
+      assert.deepEqual(importer.errors, []);
+      assert.equal(store.snapshot().tasks.length, 0);
+      assert.equal(store.rawTask(project.id, task.id).archive_source, 'manual');
+      assert.equal(store.snapshot().cursor, cursor);
+    }
+  } finally { release(); await response; }
+  assert.equal((await response).json().deleted, true);
+  assert.equal(store.snapshot().archived_tasks![0].deletion_state, 'deleted');
+  assert.equal(store.rawTask(project.id, task.id).archive_source, 'manual');
+});
+
+for (const state of ['backlog', 'local-edit', 'queued', 'running', 'needs-human', 'completed'] as const) test(`filter archive stops ${state}, restores without running and retains results`, async t => {
+  const { store, project, controller, directory } = fixture(t);
+  const task = githubCard(store, project.id);
+  let run: AgentRun | undefined;
+  if (state === 'local-edit') store.editTask(project.id, task.id, 'Local description', task.state_version);
+  if (['queued', 'running', 'needs-human', 'completed'].includes(state)) {
+    run = store.queueSpec(project.id, task.id, task.state_version, directory);
+    if (state === 'needs-human' || state === 'completed') {
+      run.status = 'completed'; run.outcome = state === 'completed' ? 'READY' : 'NEEDS_INPUT'; run.report = 1;
+      store.updateRun(run, state === 'completed' ? 'pr-created' : 'needs-human', state === 'completed' ? 'completed' : 'waiting', undefined,
+        { title: task.title!, outcome: run.outcome as 'READY' | 'NEEDS_INPUT', summary: 'Saved result', requirements: [], acceptance_criteria: [], assumptions: [], out_of_scope: [], questions: [] });
+    }
+  }
+  store.db.prepare("INSERT INTO chat_messages(id, task_id, revision, kind, text, status) VALUES (?, ?, 1, 'guidance', 'Do not redeliver', 'queued')").run(randomUUID(), task.id);
+  const before = store.rawTask(project.id, task.id), revisions = store.revisions(project.id, task.id);
+  const preserved = store.runs();
+  let started = 0;
+  let release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  t.after(() => release());
+  t.mock.method(controller as any, 'perform', async (value: AgentRun) => {
+    started++;
+    value.status = 'running'; store.updateRun(value, 'spec', 'running');
+    await barrier;
+    value.status = 'completed'; value.outcome = 'READY'; store.updateRun(value, 'build', 'idle');
+    if (!store.blocked(task.id)) throw new Error('Pipeline must remain blocked');
+  });
+  if (state === 'queued') { store.pauseExecution(null); controller.enqueue(run!); }
+  if (state === 'running') { controller.enqueue(run!); await setImmediate(); }
+  await syncCard(store, controller, false);
+  assert.equal(store.snapshot().tasks.length, 0);
+  assert.equal(store.snapshot().archived_tasks![0].id, task.id);
+  assert.equal(store.rawTask(project.id, task.id).description, before.description);
+  assert.deepEqual(store.revisions(project.id, task.id), revisions);
+  assert.equal(controller.chat.messages(task.id)[0].status, 'revoked');
+  if (state === 'running') {
+    assert.equal((controller as any).scheduler.active.has(task.id), true);
+    assert.equal(store.rawTask(project.id, task.id).deletion_state, 'stopping');
+    await syncCard(store, controller, true);
+    assert.equal(store.snapshot().tasks[0].id, task.id);
+    assert.equal(store.rawTask(project.id, task.id).deletion_state, 'stopping');
+    assert.throws(() => store.queueSpec(project.id, task.id, store.rawTask(project.id, task.id).state_version, directory), /заблокированы/);
+    release(); await controller.deleteTask(task.id);
+    assert.equal(store.snapshot().tasks[0].id, task.id, 'late stop must not archive the restored card');
+    assert.equal(store.runs()[0].status, 'interrupted'); assert.equal(store.runs()[0].outcome, null);
+    assert.equal(started, 1);
+  } else {
+    await controller.deleteTask(task.id);
+    await syncCard(store, controller, true);
+    assert.equal(store.snapshot().tasks[0].id, task.id);
+    if (state === 'queued') {
+      store.resumeExecution(store.executionPause().state_version); controller.resume(); await setImmediate();
+      assert.equal(store.runs()[0].status, 'interrupted');
+    }
+    if (state === 'needs-human') assert.equal(store.humanRequests()[0].status, 'revoked');
+    if (state === 'completed' || state === 'needs-human') {
+      assert.deepEqual(store.runs(), preserved);
+      assert.equal(store.snapshot().runs[0].report, 1, 'restored blocked card exposes saved reports');
+    }
+    if (state === 'completed') assert.equal(store.rawTask(project.id, task.id).run_state, 'completed');
+    assert.equal(started, 0);
+  }
+  assert.equal(store.rawTask(project.id, task.id).description, before.description);
+  assert.equal(store.runs().length, preserved.length);
+  assert.equal(controller.chat.messages(task.id)[0].status, 'revoked');
+});
+
+for (const state of ['queued', 'running', 'needs-human'] as const) test(`restored ${state} card permits an explicit new Spec after verified stop without resuming old work`, async t => {
+  const { app, store, project, headers } = await apiFixture(t);
+  store.pauseExecution(null);
+  const task = githubCard(store, project.id);
+  const original = store.queueSpec(project.id, task.id, 1, '/tmp');
+  if (state === 'running') {
+    original.status = 'running'; store.updateRun(original, 'spec', 'running');
+    store.db.prepare('UPDATE tasks SET stop_unverified = 1, execution_unverified = 1 WHERE id = ?').run(task.id);
+  }
+  if (state === 'needs-human') {
+    original.status = 'completed'; original.outcome = 'NEEDS_INPUT'; original.report = 1;
+    store.updateRun(original, 'needs-human', 'waiting', undefined,
+      { title: 'Saved title', outcome: 'NEEDS_INPUT', summary: 'Saved questions', requirements: [], acceptance_criteria: [], assumptions: [], out_of_scope: [], questions: [] });
+  }
+  store.reconcileGithubIssue(project.id, 1, false, 'Removed label');
+  store.finishDeletion(task.id, state === 'running' ? 'Unknown processes' : undefined);
+  store.reconcileGithubIssue(project.id, 1, true, '');
+  const path = `/api/projects/${project.id}/tasks/${task.id}`;
+  const post = (action: string, payload: object) => app.inject({ method: 'POST', url: path + action, headers, payload });
+  const blocked = store.rawTask(project.id, task.id);
+  assert.equal((await post('/start', { request_id: randomUUID(), state_version: blocked.state_version })).statusCode, 409);
+  if (state === 'running') {
+    store.releaseStoppedTask(project.id, task.id);
+    assert.equal(store.rawTask(project.id, task.id).deletion_state, 'failed');
+  }
+  const payload = { request_id: randomUUID(), state_version: store.rawTask(project.id, task.id).state_version,
+    ...(state === 'running' ? { reconciliation: 'Checked processes and sessions: all stopped; no remote publication.' } : {}) };
+  const stop = await post('/stop', payload);
+  assert.equal(stop.statusCode, 200); assert.equal(stop.json().deleted, true);
+  const ready = store.rawTask(project.id, task.id);
+  assert.equal(ready.deletion_state, null); assert.equal(ready.stage, 'backlog'); assert.equal(ready.run_state, 'idle');
+  const history = store.runs();
+  assert.equal(history.length, 1); assert.equal(history[0].id, original.id);
+  assert.equal(history[0].status, state === 'needs-human' ? 'completed' : 'interrupted');
+  if (state === 'needs-human') {
+    assert.equal(history[0].outcome, 'NEEDS_INPUT'); assert.equal(history[0].report, 1);
+    assert.equal(store.humanRequests()[0].status, 'revoked');
+  }
+  assert.deepEqual((await post('/stop', payload)).json(), stop.json());
+  assert.deepEqual(store.rawTask(project.id, task.id), ready, 'request replay cannot reset the new lifecycle');
+  const start = await post('/start', { request_id: randomUUID(), state_version: ready.state_version });
+  assert.equal(start.statusCode, 200);
+  assert.notEqual(start.json().id, original.id); assert.notEqual(start.json().worktree, original.worktree);
+  assert.equal(start.json().parent_run_id, null); assert.equal(start.json().status, 'queued');
+  assert.deepEqual(store.runs()[0], history[0], 'new run preserves the old result and interruption');
+});
+
+test('restored card permits stop/reconciliation without re-archiving, preserves unknown publication and replays requests', async t => {
+  const { app, store, project, headers } = await apiFixture(t);
+  const task = githubCard(store, project.id);
+  const run = store.queueSpec(project.id, task.id, 1, '/tmp');
+  store.db.prepare("UPDATE tasks SET execution_unverified = 1, stop_unverified = 1, publication_status = 'pending' WHERE id = ?").run(task.id);
+  store.reconcileGithubIssue(project.id, 1, false, 'Removed label');
+  store.finishDeletion(task.id, 'Unknown processes');
+  store.reconcileGithubIssue(project.id, 1, true, '');
+  const path = `/api/projects/${project.id}/tasks/${task.id}`;
+  const stop = (payload: object) => app.inject({ method: 'POST', url: path + '/stop', headers, payload });
+  assert.equal((await stop({ request_id: randomUUID(), state_version: 1 })).statusCode, 409);
+  assert.equal((await stop({ request_id: randomUUID(), state_version: store.rawTask(project.id, task.id).state_version })).json().deleted, false);
+  assert.equal(store.rawTask(project.id, task.id).archived, 0);
+  const payload = { request_id: randomUUID(), state_version: store.rawTask(project.id, task.id).state_version,
+    reconciliation: 'Human verified processes stopped; checked remote publication, result remains unknown.' };
+  const response = await stop(payload);
+  assert.equal(response.statusCode, 200); assert.equal(response.json().deleted, true);
+  assert.deepEqual((await stop(payload)).json(), response.json());
+  const restored = store.rawTask(project.id, task.id);
+  assert.equal(restored.archived, 0); assert.equal(restored.deletion_state, null);
+  assert.equal(restored.stop_unverified, 0); assert.equal(restored.execution_unverified, 0);
+  assert.equal(restored.publication_status, 'unknown');
+  assert.equal(store.runs()[0].id, run.id); assert.equal(store.runs()[0].status, 'interrupted');
+  assert.throws(() => store.beginPublication(project.id, task.id, restored.state_version), /неизвестном исходе/);
+  assert.equal(store.events(0).filter(e => e.type === 'task.archived').length, 1);
 });

@@ -198,7 +198,7 @@ test('failed persistence rolls back new links, description revisions and the imp
   store.db.exec("CREATE TRIGGER fail_import BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT, 'write failed'); END");
   assert.throws(() => store.importGithubIssue(project.id, { number: 2, url: issue(2).html_url, title: 'New', description: 'New' }), /write failed/);
   assert.throws(() => store.importGithubIssue(project.id, { number: 1, url: task.issue_url!, title: 'Changed', description: 'Changed' }), /write failed/);
-  assert.throws(() => store.importGithubIssue(project.id, { number: 1, closed: true }), /write failed/);
+  assert.throws(() => store.reconcileGithubIssue(project.id, 1, false, 'Исходная GitHub issue закрыта.'), /write failed/);
   assert.deepEqual(store.rawTask(project.id, task.id), before);
   assert.equal(store.revisions(project.id, task.id).length, 1);
   assert.equal((store.db.prepare('SELECT count(*) AS n FROM github_issues').get() as { n: number }).n, 1);
@@ -213,7 +213,7 @@ test('canonical GitHub URL casing is retained without trusting a different repos
 });
 
 for (const protection of ['local-edit', 'reverted-edit', 'stage', 'queued', 'any-run', 'archive', 'delete'] as const) {
-  test(`${protection} blocks remote changes and closure across periodic imports`, async t => {
+  test(`${protection} blocks remote edits but confirmed closure archives across periodic imports`, async t => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const { store, project, directory } = fixture(t);
     const task = seed(store, project);
@@ -239,7 +239,11 @@ for (const protection of ['local-edit', 'reverted-edit', 'stage', 'queued', 'any
       importer.start(); await importer.settled();
       for (let pass = 0; pass < 2; pass++) {
         t.mock.timers.tick(60_000); await importer.settled();
-        assert.deepEqual(store.rawTask(project.id, task.id), before);
+        const after = store.rawTask(project.id, task.id);
+        assert.equal(after.description, before.description); assert.equal(after.title, before.title);
+        assert.equal(after.archived, 1);
+        assert.equal(after.archive_source, ['archive', 'delete'].includes(protection) ? before.archive_source : 'github-filter');
+        assert.equal(store.events(0).filter(e => e.type === 'task.archived').length, protection === 'delete' ? 0 : 1);
         assert.deepEqual(store.revisions(project.id, task.id), revisions);
         assert.equal((store.db.prepare('SELECT count(*) AS n FROM github_issues').get() as { n: number }).n, 1);
         assert.equal(store.snapshot().tasks.length + store.snapshot().archived_tasks!.length, 1);
@@ -263,28 +267,38 @@ for (const action of ['edit', 'queue', 'archive'] as const) for (const boundary 
     else store.archiveTask(project.id, task.id, 1);
     const before = store.rawTask(project.id, task.id);
     release.resolve(); await importer.settled(); await importer.close();
-    assert.deepEqual(store.rawTask(project.id, task.id), before);
+    const after = store.rawTask(project.id, task.id);
+    assert.equal(after.description, before.description); assert.equal(after.revision, before.revision);
+    assert.equal(after.archived, 1); assert.equal(after.archive_source, action === 'archive' ? 'manual' : 'github-filter');
+    assert.equal(after.deletion_state, 'stopping');
   });
 }
 
-test('explicit closure without label archives history permanently; open without label and 404 do not', async t => {
-  const { store, project } = fixture(t);
-  const task = seed(store, project);
-  await load(store, async args => JSON.stringify(args.at(-1)!.includes('?') ? [] : issue(1, { labels: [], body: 'Unlabelled edit' })));
-  assert.equal(store.task(project.id, task.id).description, task.description);
-  const failed = await load(store, async args => { if (args.at(-1)!.includes('?')) return '[]'; throw new Error('HTTP 404 secret-token'); });
-  assert.equal(failed.errors.length, 1); assert.equal(store.task(project.id, task.id).archived, 0);
-  assert.ok(!JSON.stringify(failed.errors).includes('secret-token'));
-  await load(store, async args => JSON.stringify(args.at(-1)!.includes('?') ? [] : issue(1, { state: 'closed', labels: [] })));
-  assert.equal(store.snapshot().tasks.length, 0);
-  assert.equal(store.snapshot().archived_tasks![0].id, task.id);
-  assert.equal(store.snapshot().archived_tasks![0].issue_url, task.issue_url);
-  assert.equal(store.revisions(project.id, task.id).length, 1);
-  await load(store, async () => JSON.stringify([issue(1)]));
-  assert.equal(store.snapshot().tasks.length, 0); assert.equal(store.snapshot().archived_tasks!.length, 1);
-});
+for (const mismatch of [{ labels: [] }, { state: 'closed' }, { state: 'closed', labels: [] }]) {
+  test(`confirmed mismatch archives and restores the same history (${JSON.stringify(mismatch)})`, async t => {
+    const { store, project } = fixture(t);
+    const task = seed(store, project);
+    const failed = await load(store, async args => { if (args.at(-1)!.includes('?')) return '[]'; throw new Error('HTTP 404 secret-token'); });
+    assert.equal(failed.errors.length, 1); assert.equal(store.task(project.id, task.id).archived, 0);
+    assert.ok(!JSON.stringify(failed.errors).includes('secret-token'));
+    await load(store, async args => JSON.stringify(args.at(-1)!.includes('?') ? [] : issue(1, mismatch)));
+    assert.equal(store.snapshot().tasks.length, 0);
+    assert.equal(store.snapshot().archived_tasks![0].id, task.id);
+    assert.equal(store.snapshot().archived_tasks![0].issue_url, task.issue_url);
+    assert.equal(store.rawTask(project.id, task.id).archive_source, 'github-filter');
+    assert.equal(store.revisions(project.id, task.id).length, 1);
+    const cursor = store.snapshot().cursor;
+    await load(store, async args => JSON.stringify(args.at(-1)!.includes('?') ? [] : issue(1, mismatch)));
+    assert.equal(store.snapshot().cursor, cursor, 'unchanged responses are idempotent');
+    await load(store, async args => JSON.stringify(args.at(-1)!.includes('?') ? [issue(1)] : issue(1)));
+    assert.equal(store.snapshot().tasks.length, 1); assert.equal(store.snapshot().archived_tasks!.length, 0);
+    assert.equal(store.snapshot().tasks[0].id, task.id); assert.equal(store.snapshot().tasks[0].description, task.description);
+    assert.equal(store.snapshot().tasks[0].deletion_state, 'stopping', 'visibility does not unblock execution');
+    assert.equal(store.runs().length, 0);
+  });
+}
 
-test('failed later page does not imply closure of missing issues or prevent another project', async t => {
+test('failed later page still applies an individually confirmed mismatch and does not prevent another project', async t => {
   const { store, project } = fixture(t);
   const task = seed(store, project, 999);
   const second = store.addProject({ ...projectInput, common_dir: '/second/.git', repository: 'owner/second' });
@@ -295,7 +309,7 @@ test('failed later page does not imply closure of missing issues or prevent anot
     if (endpoint.endsWith('page=2')) throw new Error('credential raw stderr');
     assert.ok(endpoint.endsWith('/999')); return JSON.stringify(issue(999, { labels: [] }));
   });
-  assert.equal(store.task(project.id, task.id).archived, 0);
+  assert.equal(store.rawTask(project.id, task.id).archived, 1);
   assert.equal(store.snapshot().tasks.filter(task => task.project_id === second.id).length, 1);
   assert.equal(importer.errors.length, 1); assert.ok(!JSON.stringify(importer.errors).includes('credential'));
 });
@@ -322,7 +336,7 @@ test('v14 migration keeps local tasks, revisions and run history and adds persis
   const before = store.task(project.id, task.id), revisions = store.revisions(project.id, task.id), runs = store.runs();
   store.db.exec('DROP TABLE github_issues; PRAGMA user_version = 14');
   store.close(); store = new Store(directory);
-  assert.equal(store.db.pragma('user_version', { simple: true }), 15);
+  assert.equal(store.db.pragma('user_version', { simple: true }), 16);
   assert.deepEqual(store.task(project.id, task.id), before); assert.deepEqual(store.revisions(project.id, task.id), revisions);
   assert.deepEqual(store.runs(), runs);
   const imported = seed(store, project);
@@ -494,4 +508,162 @@ test('connecting a project starts asynchronous import once and publishes the res
   t.mock.timers.tick(59_999); assert.equal(calls, 1);
   t.mock.timers.tick(1); await result.issues.settled();
   assert.equal(calls, 3); assert.deepEqual(result.store.snapshot(), before);
+});
+
+for (const response of ['not json', 'null', '[]', '{}',
+  JSON.stringify(issue(2, { labels: [] })),
+  JSON.stringify(issue(1, { labels: [], html_url: 'https://github.com/other/repo/issues/1' })),
+  JSON.stringify(issue(1, { labels: [], html_url: 'https://other.host/owner/repo/issues/1' })),
+  JSON.stringify(issue(1, { labels: [], pull_request: {}, html_url: 'https://github.com/owner/repo/pull/1' })),
+  JSON.stringify(issue(1, { labels: [null], state: 'closed' })),
+  JSON.stringify(issue(1, { labels: [], state: ['open'] })),
+  JSON.stringify(issue(1, { labels: [], state: ['closed'] })), '404', 'timeout']) {
+  test(`individual unconfirmed response preserves an imported card (${response.slice(0, 60)})`, async t => {
+    const { store, project } = fixture(t);
+    const task = seed(store, project), before = store.rawTask(project.id, task.id);
+    const importer = await load(store, async args => {
+      if (args.at(-1)!.includes('?')) return '[]';
+      if (response === '404' || response === 'timeout') throw new Error(response);
+      return response;
+    });
+    assert.deepEqual(store.rawTask(project.id, task.id), before);
+    assert.equal(importer.errors.length, 1);
+  });
+}
+
+test('manual archive wins a concurrent matching response and can take ownership of an automatic archive', async t => {
+  const { store, project } = fixture(t);
+  const task = seed(store, project);
+  store.reconcileGithubIssue(project.id, 1, false, 'Removed label');
+  const entered = deferred(), release = deferred();
+  const importer = new GithubIssues(store, () => {}, async args => {
+    if (args.at(-1)!.includes('?')) return '[]';
+    entered.resolve(); await release.promise; return JSON.stringify(issue(1));
+  });
+  importer.start(); await entered.promise;
+  store.archiveTask(project.id, task.id, store.rawTask(project.id, task.id).state_version);
+  release.resolve(); await importer.settled(); await importer.close();
+  assert.equal(store.rawTask(project.id, task.id).archive_source, 'manual');
+  assert.equal(store.rawTask(project.id, task.id).archived, 1);
+  await load(store, async args => JSON.stringify(args.at(-1)!.includes('?') ? [issue(1)] : issue(1)));
+  assert.equal(store.rawTask(project.id, task.id).archived, 1);
+});
+
+test('v15 migration restores only proven automatic archives and retains visibility and blockers on restart', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'factory-filter-migration-'));
+  let store = new Store(directory);
+  t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const project = store.addProject(projectInput);
+  const automatic = seed(store, project, 1), ambiguous = seed(store, project, 2), manual = seed(store, project, 3);
+  for (const task of [automatic, ambiguous, manual]) {
+    store.db.prepare("UPDATE tasks SET archived = 1, deletion_state = 'deleted' WHERE id = ?").run(task.id);
+    store.event('task.archived', task.id, { reason: 'Исходная GitHub issue закрыта.', issue_number: task.issue_number });
+  }
+  store.event('task.archived', ambiguous.id, {});
+  store.event('task.deletion-requested', manual.id, {});
+  store.db.exec('ALTER TABLE tasks DROP COLUMN archive_source; ALTER TABLE tasks DROP COLUMN archive_reason; PRAGMA user_version = 15');
+  store.close(); store = new Store(directory);
+  assert.equal(store.rawTask(project.id, automatic.id).archive_source, 'github-filter');
+  assert.equal(store.rawTask(project.id, ambiguous.id).archive_source, 'manual');
+  assert.equal(store.rawTask(project.id, manual.id).archive_source, 'manual');
+  await load(store, async args => {
+    const endpoint = args.at(-1)!;
+    return JSON.stringify(endpoint.includes('?') ? [] : issue(Number(endpoint.split('/').at(-1))));
+  });
+  assert.deepEqual(store.snapshot().tasks.map(task => task.id), [automatic.id]);
+  assert.equal(store.snapshot().archived_tasks!.length, 2);
+  assert.equal(store.rawTask(project.id, automatic.id).deletion_state, 'deleted');
+  store.close(); store = new Store(directory);
+  assert.equal(store.snapshot().tasks[0].id, automatic.id);
+  assert.equal(store.rawTask(project.id, automatic.id).deletion_state, 'deleted');
+  assert.equal(store.runs().length, 0);
+  assert.equal(store.revisions(project.id, automatic.id).length, 1);
+});
+
+for (const mismatch of [{ labels: [] }, { state: 'closed' }]) test(`two SSE clients receive automatic archive and restore (${JSON.stringify(mismatch)})`, { timeout: 10000 }, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const directory = mkdtempSync(join(tmpdir(), 'factory-filter-sse-'));
+  const saved = new Store(directory), project = saved.addProject(projectInput), task = seed(saved, project);
+  const local = saved.createTask(project.id, 'Local card', 1); saved.close();
+  let remote = issue(1);
+  const result = await createApp({ directory, origin, generateTitle: async () => 'Local card', issueCommand: async args =>
+    JSON.stringify(args.at(-1)!.includes('?') ? [] : remote) });
+  t.after(async () => { await result.app.close(); rmSync(directory, { recursive: true, force: true }); });
+  await result.issues.settled();
+  const session = await result.app.inject({ method: 'POST', url: '/api/session', headers: { host: '127.0.0.1:4317', origin }, payload: { token: result.token } });
+  const headers = { host: '127.0.0.1:4317', origin, cookie: String(session.headers['set-cookie']).split(';')[0] };
+  await result.app.listen({ host: '127.0.0.1', port: 0 });
+  const address = result.app.server.address(); assert.ok(address && typeof address !== 'string');
+  const subscribe = () => {
+    let snapshot: Snapshot | undefined;
+    const events = new Set<string>();
+    const pending: { predicate: (value: Snapshot) => boolean; resolve: (value: Snapshot) => void }[] = [];
+    let buffer = '';
+    const request = get(`http://127.0.0.1:${address.port}/api/events`, { headers }, response => {
+      response.on('data', chunk => {
+        buffer += chunk;
+        let end: number;
+        while ((end = buffer.indexOf('\n\n')) >= 0) {
+          const entry = buffer.slice(0, end); buffer = buffer.slice(end + 2);
+          const data = entry.match(/data: ([^\n]+)/)?.[1]; if (!data) continue;
+          if (entry.includes('event: change')) events.add(JSON.parse(data).type);
+          if (!entry.includes('event: snapshot')) continue;
+          snapshot = JSON.parse(data);
+          for (let n = pending.length - 1; n >= 0; n--) if (pending[n].predicate(snapshot!)) pending.splice(n, 1)[0].resolve(snapshot!);
+        }
+      });
+    });
+    t.after(() => request.destroy());
+    const next = (predicate: (value: Snapshot) => boolean) => snapshot && predicate(snapshot)
+      ? Promise.resolve(snapshot) : new Promise<Snapshot>(resolve => pending.push({ predicate, resolve }));
+    return { next, events };
+  };
+  const clients = [subscribe(), subscribe()];
+  await Promise.all(clients.map(client => client.next(value => value.tasks.some(t => t.id === task.id))));
+  remote = issue(1, mismatch); t.mock.timers.tick(60_000); await result.issues.settled();
+  const archived = await Promise.all(clients.map(client => client.next(value => !!value.archived_tasks?.some(t => t.id === task.id))));
+  for (const snapshot of archived) {
+    assert.equal(snapshot.tasks.some(t => t.id === task.id), false);
+    assert.equal(snapshot.tasks.some(t => t.id === local.id), true);
+    assert.equal(snapshot.archived_tasks![0].archive_source, 'github-filter');
+    assert.ok(snapshot.archived_tasks![0].archive_reason);
+  }
+  remote = issue(1); t.mock.timers.tick(60_000); await result.issues.settled();
+  const restored = await Promise.all(clients.map(client => client.next(value => value.tasks.some(t => t.id === task.id))));
+  for (const snapshot of restored) {
+    assert.equal(snapshot.archived_tasks?.length, 0);
+    assert.equal(snapshot.tasks.find(t => t.id === task.id)!.description, task.description);
+    assert.equal(snapshot.runs.length, 0);
+  }
+  for (const client of clients) assert.ok(client.events.has('task.archived') && client.events.has('task.restored'));
+});
+
+test('repeated filter cycles and restart retain ID, local edits and unverified stop without new work', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'factory-filter-restart-'));
+  let store = new Store(directory);
+  t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const project = store.addProject(projectInput), task = seed(store, project);
+  store.editTask(project.id, task.id, 'Local description retained', 1);
+  await load(store, async args => JSON.stringify(args.at(-1)!.includes('?') ? [] : issue(1, { labels: [] })));
+  store.close(); store = new Store(directory);
+  assert.equal(store.rawTask(project.id, task.id).archive_source, 'github-filter');
+  assert.equal(store.rawTask(project.id, task.id).deletion_state, 'failed');
+  assert.equal(store.rawTask(project.id, task.id).stop_unverified, 1);
+  for (let cycle = 0; cycle < 3; cycle++) {
+    await load(store, async args => JSON.stringify(args.at(-1)!.includes('?') ? [issue(1)] : issue(1)));
+    assert.equal(store.snapshot().tasks[0].id, task.id);
+    assert.equal(store.snapshot().tasks[0].description, 'Local description retained');
+    assert.equal(store.snapshot().tasks[0].stop_unverified, 1);
+    const cursor = store.snapshot().cursor;
+    await load(store, async args => JSON.stringify(args.at(-1)!.includes('?') ? [issue(1)] : issue(1)));
+    assert.equal(store.snapshot().cursor, cursor);
+    await load(store, async args => JSON.stringify(args.at(-1)!.includes('?') ? [] : issue(1, { labels: [] })));
+    assert.equal(store.snapshot().archived_tasks![0].id, task.id);
+    assert.equal(store.snapshot().tasks.length, 0);
+  }
+  assert.equal(store.runs().length, 0);
+  assert.equal(store.revisions(project.id, task.id).length, 2);
+  assert.equal((store.db.prepare('SELECT count(*) AS n FROM tasks').get() as { n: number }).n, 1);
+  assert.equal(store.events(0).filter(e => e.type === 'task.archived').length, 4);
+  assert.equal(store.events(0).filter(e => e.type === 'task.restored').length, 3);
 });

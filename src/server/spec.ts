@@ -69,6 +69,7 @@ export class SpecController {
         const task = this.store.db.prepare('SELECT execution_unverified, stop_unverified FROM tasks WHERE id = ?').get(taskId) as { execution_unverified: number; stop_unverified: number };
         if (task.stop_unverified || (task.execution_unverified && !scope)) throw new Error('Остановка всех потомков не подтверждена: detached-процесс мог потерять связь с родителем. Нужна ручная сверка процессов и remote публикации; автоматический повтор запрещён.');
         this.store.finishDeletion(taskId);
+        this.scopes.delete(taskId);
       } catch (error) { this.store.finishDeletion(taskId, (error as Error).message); }
       this.publish();
     })().finally(() => this.deletions.delete(taskId));

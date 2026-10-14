@@ -33,7 +33,7 @@ export class Store {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       const version = this.db.pragma('user_version', { simple: true });
-      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13 && version !== 14 && version !== 15) throw new Error('Версия базы новее приложения. Обновите приложение.');
+      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13 && version !== 14 && version !== 15 && version !== 16) throw new Error('Версия базы новее приложения. Обновите приложение.');
       this.db.transaction(() => {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS projects (
@@ -92,7 +92,7 @@ export class Store {
           }
         }
         const taskColumns = this.db.pragma('table_info(tasks)') as { name: string }[];
-        for (const [name, type] of [['publication_status', 'TEXT'], ['pr_url', 'TEXT'], ['pr_number', 'INTEGER'], ['deletion_state', 'TEXT'], ['deletion_error', 'TEXT'], ['execution_unverified', 'INTEGER NOT NULL DEFAULT 0'], ['stop_unverified', 'INTEGER NOT NULL DEFAULT 0'], ['archived', 'INTEGER NOT NULL DEFAULT 0']]) {
+        for (const [name, type] of [['publication_status', 'TEXT'], ['pr_url', 'TEXT'], ['pr_number', 'INTEGER'], ['deletion_state', 'TEXT'], ['deletion_error', 'TEXT'], ['execution_unverified', 'INTEGER NOT NULL DEFAULT 0'], ['stop_unverified', 'INTEGER NOT NULL DEFAULT 0'], ['archived', 'INTEGER NOT NULL DEFAULT 0'], ['archive_source', 'TEXT'], ['archive_reason', 'TEXT']]) {
           if (!taskColumns.some(c => c.name === name)) this.db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
         }
         for (const task of this.db.prepare("SELECT id FROM tasks WHERE publication_status = 'pending'").all() as { id: string }[]) {
@@ -116,8 +116,24 @@ export class Store {
           project_id TEXT NOT NULL REFERENCES projects(id), issue_number INTEGER NOT NULL,
           issue_url TEXT NOT NULL, task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id),
           imported_version INTEGER NOT NULL, PRIMARY KEY(project_id, issue_number));`);
-        this.db.pragma('user_version = 15');
         if (Number(version) < 14) this.db.exec("UPDATE tasks SET archived = 1 WHERE deletion_state = 'deleted'");
+        if (Number(version) < 16) {
+          // Only the old automatic closure event, without any manual deletion intent, proves provenance.
+          for (const row of this.db.prepare(`SELECT t.id, g.issue_number FROM tasks t JOIN github_issues g ON g.task_id = t.id
+            WHERE t.archived = 1 AND t.archive_source IS NULL
+              AND NOT EXISTS (SELECT 1 FROM events e WHERE e.task_id = t.id AND e.type = 'task.deletion-requested')`).all() as { id: string; issue_number: number }[]) {
+            const archives = this.db.prepare("SELECT payload FROM events WHERE task_id = ? AND type = 'task.archived'").all(row.id) as { payload: string }[];
+            if (archives.length !== 1) continue;
+            try {
+              const payload = JSON.parse(archives[0].payload);
+              if (payload.reason === 'Исходная GitHub issue закрыта.' && payload.issue_number === row.issue_number) {
+                this.db.prepare("UPDATE tasks SET archive_source = 'github-filter', archive_reason = ? WHERE id = ?").run(payload.reason, row.id);
+              }
+            } catch { /* Ambiguous archives remain manual. */ }
+          }
+          this.db.exec("UPDATE tasks SET archive_source = 'manual' WHERE archived = 1 AND archive_source IS NULL");
+        }
+        this.db.pragma('user_version = 16');
         // No OS proof survives restart. Never infer termination from SQLite run status.
         if (Number(version) < 13) {
           this.db.exec(`UPDATE tasks SET stop_unverified = 1
@@ -149,9 +165,9 @@ export class Store {
   snapshot(): Snapshot {
     return {
       projects: this.db.prepare('SELECT * FROM projects ORDER BY rowid').all() as Project[],
-      tasks: this.db.prepare("SELECT t.*, g.issue_number, g.issue_url FROM tasks t LEFT JOIN github_issues g ON g.task_id = t.id WHERE archived = 0 AND deletion_state IS NOT 'deleted' ORDER BY t.rowid").all() as Task[],
-      archived_tasks: this.db.prepare("SELECT t.*, g.issue_number, g.issue_url FROM tasks t LEFT JOIN github_issues g ON g.task_id = t.id WHERE archived = 1 OR deletion_state = 'deleted' ORDER BY t.rowid").all() as Task[],
-      runs: this.runs().filter(r => !this.blocked(r.task_id)), execution_pause: this.executionPause(),
+      tasks: this.db.prepare("SELECT t.*, g.issue_number, g.issue_url FROM tasks t LEFT JOIN github_issues g ON g.task_id = t.id WHERE archived = 0 ORDER BY t.rowid").all() as Task[],
+      archived_tasks: this.db.prepare("SELECT t.*, g.issue_number, g.issue_url FROM tasks t LEFT JOIN github_issues g ON g.task_id = t.id WHERE archived = 1 ORDER BY t.rowid").all() as Task[],
+      runs: this.runs().filter(r => !(this.db.prepare('SELECT archived FROM tasks WHERE id = ?').get(r.task_id) as Task).archived), execution_pause: this.executionPause(),
       human_requests: this.humanRequests().filter(r => !this.blocked(r.task_id)),
       cursor: (this.db.prepare('SELECT coalesce(max(id), 0) AS id FROM events').get() as { id: number }).id,
     };
@@ -198,26 +214,30 @@ export class Store {
     return task;
   }
   blocked(id: string) {
-    return !!(this.db.prepare('SELECT deletion_state FROM tasks WHERE id = ?').get(id) as Task | undefined)?.deletion_state;
+    const task = this.db.prepare('SELECT archived, deletion_state FROM tasks WHERE id = ?').get(id) as Task | undefined;
+    return !!(task?.archived || task?.deletion_state);
   }
   task(projectId: string, id: string) {
     const task = this.rawTask(projectId, id);
-    if (task.deletion_state) throw new Problem(409, 'Удаление задачи принято. Новые действия заблокированы.');
+    if (task.archived || task.deletion_state) throw new Problem(409, 'Удаление задачи принято. Новые действия заблокированы.');
     return task;
   }
-  archiveTask(projectId: string, id: string, version: number) {
-    const task = this.rawTask(projectId, id);
-    if (task.state_version !== version) throw new Problem(409, 'Карточка изменилась. Обновите её перед архивированием.');
-    if (task.archived) return task;
-    if (task.deletion_state !== 'stopping') this.beginDeletion(projectId, id, version);
-    this.db.prepare('UPDATE tasks SET archived = 1, state_version = state_version + 1 WHERE id = ?').run(id);
-    this.event('task.archived', id, { warning: 'Карточка скрыта; результат остановки доступен в архиве.' });
-    return this.rawTask(projectId, id);
+  archiveTask(projectId: string, id: string, version: number, source: 'manual' | 'github-filter' = 'manual', reason: string | null = null) {
+    return this.db.transaction(() => {
+      const task = this.rawTask(projectId, id);
+      if (task.state_version !== version) throw new Problem(409, 'Карточка изменилась. Обновите её перед архивированием.');
+      if (task.archived && (source !== 'manual' || task.archive_source === 'manual')) return task;
+      if (!task.archived && task.deletion_state !== 'stopping') this.beginDeletion(projectId, id, version);
+      this.db.prepare('UPDATE tasks SET archived = 1, archive_source = ?, archive_reason = ?, state_version = state_version + 1 WHERE id = ?').run(source, reason, id);
+      this.event('task.archived', id, { source, reason, warning: 'Карточка скрыта; результат остановки доступен в архиве.' });
+      return this.rawTask(projectId, id);
+    }).immediate();
   }
   beginDeletion(projectId: string, id: string, version: number, reconciliation?: string) {
     const task = this.rawTask(projectId, id);
-    if (task.deletion_state === 'deleted') return task;
+    if (task.deletion_state === 'deleted' && task.archived) return task;
     if (task.state_version !== version) throw new Problem(409, 'Карточка изменилась. Обновите её перед удалением.');
+    if (task.deletion_state === 'deleted') return task;
     if (reconciliation) {
       if (task.deletion_state !== 'failed' || !task.stop_unverified) throw new Problem(409, 'Ручная сверка доступна только для неподтверждённой остановки процессов.');
       this.db.prepare('UPDATE tasks SET stop_unverified = 0, execution_unverified = 0 WHERE id = ?').run(id);
@@ -233,12 +253,25 @@ export class Store {
     this.db.transaction(() => {
       this.db.prepare('UPDATE tasks SET deletion_state = ?, deletion_error = ?, state_version = state_version + 1 WHERE id = ?')
         .run(error ? 'failed' : 'deleted', error ?? null, id);
-      if (!error) {
-        this.db.prepare("UPDATE runs SET status = 'interrupted', error = 'Задача удалена.', finished_at = ? WHERE task_id = ? AND status IN ('queued','running')").run(new Date().toISOString(), id);
-        this.db.prepare("UPDATE tasks SET archived = 1, run_state = 'interrupted', title_state = CASE WHEN title_state IN ('pending','running') THEN 'interrupted' ELSE title_state END, publication_status = CASE WHEN publication_status = 'pending' THEN 'unknown' ELSE publication_status END WHERE id = ?").run(id);
-      }
+      this.db.prepare("UPDATE runs SET status = 'interrupted', error = 'Исполнение остановлено при архивировании.', finished_at = ? WHERE task_id = ? AND status IN ('queued','running')").run(new Date().toISOString(), id);
+      // Visibility belongs to archive/restore, never to a late stop callback (except legacy /delete).
+      this.db.prepare(`UPDATE tasks SET archived = CASE WHEN ? = 0 AND archive_source IS NOT 'github-filter' THEN 1 ELSE archived END,
+        run_state = CASE WHEN run_state IN ('queued','running','waiting') THEN 'interrupted' ELSE run_state END,
+        title_state = CASE WHEN title_state IN ('pending','running') THEN 'interrupted' ELSE title_state END,
+        publication_status = CASE WHEN publication_status = 'pending' THEN 'unknown' ELSE publication_status END WHERE id = ?`).run(Number(!!error), id);
       this.event(error ? 'task.deletion-failed' : 'task.deleted', id, { error: error ?? null, warning: (this.db.prepare('SELECT publication_status FROM tasks WHERE id = ?').get(id) as Task).publication_status === 'unknown' ? 'Remote операция могла завершиться. Проверьте hosting вручную; автоматического повтора нет. Task marker: ' + id : null });
     })();
+  }
+  releaseStoppedTask(projectId: string, id: string) {
+    this.db.transaction(() => {
+      const task = this.rawTask(projectId, id);
+      if (task.archived || task.deletion_state !== 'deleted' || task.stop_unverified || task.execution_unverified) return;
+      // A new Spec is explicit; interrupted runs and unknown publication remain in history.
+      const restartable = task.run_state === 'interrupted' && !task.publication_status;
+      this.db.prepare('UPDATE tasks SET deletion_state = NULL, stage = ?, run_state = ?, state_version = state_version + 1 WHERE id = ?')
+        .run(restartable ? 'backlog' : task.stage, restartable ? 'idle' : task.run_state, id);
+      this.event('task.execution-unblocked', id, {});
+    }).immediate();
   }
   createTask(projectId: string, description: string, version: number) {
     if (this.project(projectId).state_version !== version) throw new Problem(409, 'Настройки проекта изменились. Обновите страницу.');
@@ -248,17 +281,29 @@ export class Store {
     this.event('task.created', id, { project_id: projectId, revision: 1 });
     return this.task(projectId, id);
   }
-  activeGithubIssues(projectId: string) {
-    return this.db.prepare(`SELECT g.issue_number FROM github_issues g JOIN tasks t ON t.id = g.task_id
-      WHERE g.project_id = ? AND t.archived = 0 AND t.deletion_state IS NULL`).all(projectId) as { issue_number: number }[];
+  retainedGithubIssues(projectId: string) {
+    return this.db.prepare('SELECT issue_number FROM github_issues WHERE project_id = ?').all(projectId) as { issue_number: number }[];
   }
-  importGithubIssue(projectId: string, issue: GithubIssue | { number: number; closed: true }) {
+  reconcileGithubIssue(projectId: string, number: number, matches: boolean, reason: string) {
+    return this.db.transaction(() => {
+      const link = this.db.prepare('SELECT task_id FROM github_issues WHERE project_id = ? AND issue_number = ?').get(projectId, number) as { task_id: string } | undefined;
+      if (!link) return;
+      const task = this.rawTask(projectId, link.task_id);
+      if (!matches) {
+        if (task.archived) return;
+        return this.archiveTask(projectId, task.id, task.state_version, 'github-filter', reason);
+      }
+      if (!task.archived || task.archive_source !== 'github-filter') return;
+      this.db.prepare('UPDATE tasks SET archived = 0, state_version = state_version + 1 WHERE id = ?').run(task.id);
+      this.event('task.restored', task.id, { source: 'github-filter', issue_number: number });
+      return this.rawTask(projectId, task.id);
+    }).immediate();
+  }
+  importGithubIssue(projectId: string, issue: GithubIssue) {
     return this.db.transaction(() => {
       const link = this.db.prepare('SELECT task_id, imported_version FROM github_issues WHERE project_id = ? AND issue_number = ?')
         .get(projectId, issue.number) as { task_id: string; imported_version: number } | undefined;
-      const closed = 'closed' in issue;
       if (!link) {
-        if (closed) return false;
         const task = this.createTask(projectId, issue.description, this.project(projectId).state_version);
         this.db.prepare("UPDATE tasks SET title = ?, title_state = 'completed' WHERE id = ?").run(issue.title, task.id);
         this.db.prepare('INSERT INTO github_issues VALUES (?, ?, ?, ?, ?)').run(projectId, issue.number, issue.url, task.id, task.state_version);
@@ -270,12 +315,6 @@ export class Store {
         || task.title_state !== 'completed' || task.state_version !== link.imported_version
         || task.execution_unverified || task.stop_unverified
         || this.db.prepare('SELECT 1 FROM runs WHERE task_id = ? LIMIT 1').get(task.id)) return false;
-      if (closed) {
-        // No execution exists to stop; use the same retained archive state as a completed manual archive.
-        this.db.prepare("UPDATE tasks SET archived = 1, deletion_state = 'deleted', state_version = state_version + 1 WHERE id = ?").run(task.id);
-        this.event('task.archived', task.id, { reason: 'Исходная GitHub issue закрыта.', issue_number: issue.number });
-        return true;
-      }
       if (task.title === issue.title && task.description === issue.description) return false;
       const revision = task.revision + Number(task.description !== issue.description);
       this.db.prepare('UPDATE tasks SET title = ?, description = ?, revision = ?, state_version = state_version + 1 WHERE id = ?')
