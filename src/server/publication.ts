@@ -38,7 +38,7 @@ export async function publishGithub(project: Project, task: Task, run: AgentRun,
     await verify();
     return result;
   }
-  const body = [marker, task.description, '## Summary', read(run.round_id!).summary, '## Reviews',
+  const body = [marker, ...(task.issue_number == null ? [] : [`Closes #${task.issue_number}`]), task.description, '## Summary', read(run.round_id!).summary, '## Reviews',
     ...reviews.map(r => `${r.role}: ${r.outcome}\n${read(r.id).summary}`), '## Approval', read(run.id).summary,
     `Approved head: ${run.head_sha}`, 'CI: not checked. Missing, pending or failed CI is not PASS. Merge remains a human action.'].join('\n\n');
   const artifacts = join(directory, 'artifacts', run.id);
