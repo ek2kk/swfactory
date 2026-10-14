@@ -1,4 +1,3 @@
-import { redactStructured } from './diagnostics.js';
 import { validateSpec, validateBuild, validateReview, validateApprove } from './codex.js';
 
 const labels: Record<string, string> = {
@@ -11,13 +10,12 @@ const labels: Record<string, string> = {
 };
 
 export function formatOutput(text: string): string {
-  const safe = redactStructured(text) as string;
   let value: unknown;
-  try { value = JSON.parse(safe); } catch { return safe; }
+  try { value = JSON.parse(text); } catch { return text; }
   const recognized = [validateSpec, validateBuild, validateReview, (value: unknown) => validateReview(value, 'review-ui-ux'), validateApprove].some(validate => {
     try { validate(value); return true; } catch { return false; }
   });
-  if (!recognized) return safe;
+  if (!recognized) return text;
   function readable(item: unknown): string {
     if (typeof item === 'string') return item;
     if (typeof item === 'boolean') return item ? 'Да' : 'Нет';

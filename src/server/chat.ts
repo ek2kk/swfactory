@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import type { AgentRun, ChatMessage } from '../shared.js';
 import { Store, Problem } from './store.js';
 import { DeliveryError, type Steer } from './interactive.js';
-import { redact } from './diagnostics.js';
 
 export class Chat {
   error: string | null = null;
@@ -23,7 +22,7 @@ export class Chat {
     const id = randomUUID();
     const run = this.store.runs().filter(r => r.task_id === taskId).at(-1);
     this.store.db.prepare(`INSERT INTO chat_messages (id, task_id, revision, run_id, kind, text, status) VALUES (?, ?, ?, ?, ?, ?, 'queued')`)
-      .run(id, taskId, task.revision, run && ['queued', 'running'].includes(run.status) ? run.id : null, kind, redact(text.trim()));
+      .run(id, taskId, task.revision, run && ['queued', 'running'].includes(run.status) ? run.id : null, kind, text.trim());
     this.store.event('chat.queued', taskId, { message_id: id });
     if (kind === 'requirements' && !['queued', 'running'].includes(task.run_state)) this.store.applyRequirements(taskId);
     return { id };

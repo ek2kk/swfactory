@@ -100,6 +100,16 @@ function fixture(t: { after: (fn: () => void) => void }) {
   const add = (text: string, kind: 'guidance' | 'requirements' = 'guidance') => store.mutate(text, text, () => chat.add(project.id, task.id, store.task(project.id, task.id).state_version, text, kind));
   return { directory, store, project, task, run, chat, add, restart: () => { store.close(); store = new Store(directory); return store; } };
 }
+test('chat preserves credential values through delivery and restart', async t => {
+  const { chat, add, run, restart } = fixture(t);
+  const text = 'token="test-value" Bearer fakecredential1234567890';
+  add(text);
+  assert.equal(chat.messages(run.task_id)[0].text, text);
+  chat.control(run, async (_id, prompt) => { assert.ok(prompt.endsWith(text)); });
+  await setImmediate();
+  const store = restart();
+  assert.equal(new Chat(store, () => {}).messages(run.task_id)[0].text, text);
+});
 test('queued guidance uses the same executor, confirms only on ack and request replay never resends', async t => {
   const { chat, add, run } = fixture(t);
   add('First'); add('First');
@@ -152,7 +162,6 @@ test('ordinary guidance cannot answer NEEDS_INPUT, grant approval or edit requir
 test('transcript handles legacy and app-server events, long UTF-8 lines, partial tails and untrusted text', t => {
   const { directory, run } = fixture(t);
   const path = artifactDirectory(directory, run.id);
-  saveArtifact(path, 'log-format.json', JSON.stringify({ format: 'redacted-v1' }));
   const message = 'Ж'.repeat(70_000) + '<script>bad()</script>';
   const line = JSON.stringify({ method: 'item/completed', params: { item: { type: 'agentMessage', text: message } } });
   writeFileSync(join(path, 'events.jsonl'), line + '\n{"unfinished":');

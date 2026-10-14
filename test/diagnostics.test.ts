@@ -61,33 +61,33 @@ test('paused scheduler releases finished slots and resumes FIFO; shutdown settle
   const waiting = scheduler.enqueue('6', async () => { assert.fail('must not start'); }); scheduler.close(); await waiting;
 });
 
-test('logs page bounded UTF-8 safely and reject symlinks; saved input secrets are removed', t => {
+test('logs page bounded UTF-8 safely and reject symlinks; saved input is unmodified', t => {
   const { directory, run } = fixture(t); const path = artifactDirectory(directory, run.id);
-  saveArtifact(path, 'log-format.json', JSON.stringify({ format: 'redacted-v1' }));
   const text = 'я'.repeat(40000); writeFileSync(join(path, 'events.jsonl'), text);
   const first = readLog(directory, run.id, 'events.jsonl', 0); assert.ok(first.next_offset <= 65536); assert.equal(first.more, true);
   const second = readLog(directory, run.id, 'events.jsonl', first.next_offset); assert.equal(first.text + second.text, text);
   assert.throws(() => readLog(directory, run.id, 'events.jsonl', 999999));
   unlinkSync(join(path, 'events.jsonl')); symlinkSync('/etc/passwd', join(path, 'events.jsonl')); assert.throws(() => readLog(directory, run.id, 'events.jsonl', 0));
-  saveArtifact(path, 'stderr.log', 'token=abcdefghijklmnop'); assert.ok(!readLog(directory, run.id, 'stderr.log', 0).text.includes('abcdefghijklmnop'));
+  saveArtifact(path, 'stderr.log', 'token=abcdefghijklmnop'); assert.equal(readLog(directory, run.id, 'stderr.log', 0).text, 'token=abcdefghijklmnop');
 });
 
-test('structured artifact redaction preserves JSON with escaped quoted config examples', t => {
+test('structured artifacts preserve JSON with escaped quoted config examples', t => {
   const { directory, run } = fixture(t); const path = artifactDirectory(directory, run.id);
+  const previous = process.env.SWFACTORY_TEST_TOKEN;
+  process.env.SWFACTORY_TEST_TOKEN = 'hidden-value';
+  t.after(() => { if (previous === undefined) delete process.env.SWFACTORY_TEST_TOKEN; else process.env.SWFACTORY_TEST_TOKEN = previous; });
   const value = { result: { summary: 'Use token="example" in the config', requirements: ['password="another example"'] }, config: { token: 'hidden-value' } };
   saveArtifact(path, 'result.json', JSON.stringify(value));
   const saved = readFileSync(join(path, 'result.json'), 'utf8');
   const parsed = JSON.parse(saved);
-  assert.equal(parsed.result.summary, 'Use token="[REDACTED]" in the config');
-  assert.equal(parsed.config.token, '[REDACTED]');
-  assert.ok(!saved.includes('hidden-value')); assert.ok(!saved.includes('example'));
+  assert.deepEqual(parsed, value);
 });
 
-test('unmarked legacy logs and unsafe markers cannot expose credentials to paginated readers', t => {
+test('unmarked legacy logs remain readable without a redaction marker', t => {
   const { directory, run } = fixture(t); const path = artifactDirectory(directory, run.id);
-  writeFileSync(join(path, 'stderr.log'), ' '.repeat(65530) + 'Bearer fakecredential1234567890\n');
-  for (const offset of [0, 65536]) assert.throws(() => readLog(directory, run.id, 'stderr.log', offset), /redaction/);
-  const external = join(directory, 'marker.json'); saveArtifact(directory, 'marker.json', JSON.stringify({ format: 'redacted-v1' }));
-  symlinkSync(external, join(path, 'log-format.json'));
-  assert.throws(() => readLog(directory, run.id, 'stderr.log', 0), /redaction/);
+  const text = ' '.repeat(65530) + 'Bearer fakecredential1234567890\n';
+  writeFileSync(join(path, 'stderr.log'), text);
+  const first = readLog(directory, run.id, 'stderr.log', 0);
+  const second = readLog(directory, run.id, 'stderr.log', first.next_offset);
+  assert.equal(first.text + second.text, text);
 });

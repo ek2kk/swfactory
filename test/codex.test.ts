@@ -43,11 +43,11 @@ test('NEEDS_INPUT requires structured context, impact, options and required flag
   }
 });
 
-import { CodexFailure, classifyFailure, redact } from '../src/server/diagnostics.js';
+import { CodexFailure, classifyFailure } from '../src/server/diagnostics.js';
 import { readFileSync } from 'node:fs';
 import type { RunDiagnostic } from '../src/shared.js';
 for (const [code, kind] of [['invalid_api_key', 'authentication'], ['model_not_found', 'model_unavailable'], ['rate_limit_exceeded', 'rate_limit'], ['other', 'protocol_error']] as const) {
-  test(`CLI error ${code} is classified only after close, with redacted chunked logs`, async t => {
+  test(`CLI error ${code} is classified only after close, with unmodified chunked logs`, async t => {
     const root = mkdtempSync(join(tmpdir(), 'factory-diagnostic-'));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const cli = join(root, 'codex');
@@ -67,19 +67,16 @@ for (const [code, kind] of [['invalid_api_key', 'authentication'], ['model_not_f
       assert.equal(error.resetAt, kind === 'rate_limit' ? '2099-01-01T00:00:00.000Z' : null); return true;
     });
     assert.equal(metadata.cli_version, 'codex-cli 1.2.3'); assert.equal(metadata.session_id, 'session-123');
-    assert.ok(!readFileSync(join(root, 'events.jsonl'), 'utf8').includes(secret));
-    assert.ok(!readFileSync(join(root, 'stderr.log'), 'utf8').includes('abcdefghijk'));
+    assert.ok(readFileSync(join(root, 'events.jsonl'), 'utf8').includes(secret));
+    assert.ok(readFileSync(join(root, 'stderr.log'), 'utf8').includes('abcdefghijk'));
   });
 }
-test('error classification remains conservative and configuration secrets are redacted', () => {
+test('error classification remains conservative', () => {
   assert.equal(classifyFailure('unknown failure').kind, 'protocol_error');
   assert.equal(classifyFailure({ error: { code: 'rate_limit_exceeded' } }).resetAt, null);
-  process.env.SWFACTORY_TEST_TOKEN = 'test-secret-value';
-  try { assert.equal(redact('test-secret-value password=another-secret'), '[REDACTED] password=[REDACTED]'); }
-  finally { delete process.env.SWFACTORY_TEST_TOKEN; }
 });
 
-test('JSONL redaction preserves nested agent JSON and removes quoted configuration secrets', async t => {
+test('JSONL preserves nested agent JSON and quoted configuration values', async t => {
   const root = mkdtempSync(join(tmpdir(), 'factory-json-redaction-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const cli = join(root, 'codex');
@@ -96,12 +93,11 @@ test('JSONL redaction preserves nested agent JSON and removes quoted configurati
   assert.deepEqual(await executeSpec({ cwd: root, directory: root, model: 'chosen-model', prompt: 'prompt' }, cli), result);
   const log = readFileSync(join(root, 'events.jsonl'), 'utf8');
   const saved = log.trim().split('\n').map(line => JSON.parse(line));
-  assert.equal(JSON.parse(saved[2].item.text).summary, 'Use token="[REDACTED]" in the config');
-  assert.ok(!log.includes('example')); assert.ok(!log.includes('quoted secret'));
+  assert.equal(JSON.parse(saved[2].item.text).summary, result.summary);
+  assert.ok(log.includes('example')); assert.ok(log.includes('quoted secret'));
   const credentials = JSON.parse(saved[4].item.output).tokens;
-  for (const value of Object.values(credentials)) assert.equal(value, '[REDACTED]');
-  for (const secret of ['eyJ.header.payload.signature', 'rt_fakecredential1234567890', 'id_credential_value', 'api_credential_value', 'camel_credential_value']) assert.ok(!log.includes(secret));
-  assert.equal(JSON.parse(readFileSync(join(root, 'log-format.json'), 'utf8')).format, 'redacted-v1');
+  assert.deepEqual(credentials, JSON.parse(events[4].item!.output!).tokens);
+  for (const secret of ['eyJ.header.payload.signature', 'rt_fakecredential1234567890', 'id_credential_value', 'api_credential_value', 'camel_credential_value']) assert.ok(log.includes(secret));
 });
 
 test('explicit error codes/status outrank incidental model names and unrelated envelope fields', () => {

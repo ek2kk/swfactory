@@ -49,4 +49,3 @@ export function classifyFailure(value: unknown): CodexFailure {
   const at = Number.isFinite(time) ? time : typeof retry === 'number' && retry >= 0 ? Date.now() + retry * 1000 : NaN;
   return new CodexFailure(kind, kind === 'rate_limit' && Number.isFinite(new Date(at).getTime()) ? new Date(at).toISOString() : null);
 }
-export { redact, redactStructured } from './redaction.js';

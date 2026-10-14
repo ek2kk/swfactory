@@ -2,7 +2,7 @@ import { execFile, spawn } from './processes.js';
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { saveArtifact } from './artifacts.js';
-import { CodexFailure, classifyFailure, redact, redactStructured } from './diagnostics.js';
+import { CodexFailure, classifyFailure } from './diagnostics.js';
 import type { CodexInput } from './codex.js';
 
 export class DeliveryError extends Error {
@@ -23,7 +23,6 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
   try { err = openSync(join(input.directory, 'stderr.log'), 'wx', 0o600); }
   catch (error) { closeSync(out); throw error; }
   try {
-    saveArtifact(input.directory, 'log-format.json', JSON.stringify({ format: 'redacted-v1' }));
     return await new Promise<T>((resolve, reject) => {
       const child = spawn(executable, ['app-server', '--listen', 'stdio://'], { cwd: input.cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
       let sequence = 0, buffer = '', stderr = '', bytes = 0, threadId = '', turnId = '', message = '';
@@ -36,7 +35,7 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
         clearTimeout(progressTimer); progressTimer = undefined;
         if (!progressPending) return;
         progressPending = false;
-        // Store counters, never raw deltas: credentials can span stream chunks.
+        // Persist stream counters; full messages are recorded on completion.
         writeSync(out, JSON.stringify({ method: 'run/progress', params: { ...progress }, recorded_at: progress.last_activity_at }) + '\n');
         input.metadata?.({ ...progress });
       }
@@ -83,7 +82,7 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
             if (!line.trim()) continue;
             const event = JSON.parse(line);
             // RPC replies may contain full configuration. Persist notifications only.
-            if (['item/started', 'item/completed', 'turn/started', 'turn/completed', 'error'].includes(event.method) && event.id === undefined) writeSync(out, JSON.stringify({ ...redactStructured(event) as object, recorded_at: new Date().toISOString() }) + '\n');
+            if (['item/started', 'item/completed', 'turn/started', 'turn/completed', 'error'].includes(event.method) && event.id === undefined) writeSync(out, JSON.stringify({ ...event, recorded_at: new Date().toISOString() }) + '\n');
             if (event.id !== undefined && !event.method) {
               const request = pending.get(event.id);
               if (request) {
@@ -145,7 +144,7 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
           bytes += Buffer.byteLength(chunk); if (bytes > 32 * 1024 * 1024) throw new Error('Log limit');
           stderr += chunk;
           let newline: number;
-          while ((newline = stderr.indexOf('\n')) >= 0) { writeSync(err, redact(stderr.slice(0, newline)) + '\n'); stderr = stderr.slice(newline + 1); }
+          while ((newline = stderr.indexOf('\n')) >= 0) { writeSync(err, stderr.slice(0, newline) + '\n'); stderr = stderr.slice(newline + 1); }
         } catch { stop(new CodexFailure('protocol_error')); }
       });
       child.on('error', () => stop(new CodexFailure('protocol_error')));
@@ -159,7 +158,7 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
         try { flushProgress(); } catch { failure ??= new CodexFailure('protocol_error'); }
         for (const request of pending.values()) { clearTimeout(request.timer); request.reject(new DeliveryError('unknown', 'Соединение с CLI закрыто без подтверждения доставки.')); }
         pending.clear();
-        try { if (stderr) writeSync(err, redact(stderr)); } catch { failure = new CodexFailure('protocol_error'); }
+        try { if (stderr) writeSync(err, stderr); } catch { failure = new CodexFailure('protocol_error'); }
         if (!finished || buffer.trim()) failure ??= new CodexFailure('protocol_error');
         if (failure instanceof CodexFailure) failure.finished = true;
         if (failure) reject(failure); else resolve(result!);

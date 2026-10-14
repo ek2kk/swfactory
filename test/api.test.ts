@@ -436,7 +436,7 @@ test('diagnostic actions validate versions/schema/ownership, replay once, and lo
   const artifacts = artifactDirectory(directory, run.id);
   writeFileSync(join(artifacts, 'stderr.log'), 'Bearer fakecredential1234567890\n');
   const legacy = await app.inject({ url: `${path}/runs/${run.id}/log?name=stderr.log&offset=0`, headers });
-  assert.equal(legacy.statusCode, 409); assert.ok(!legacy.body.includes('fakecredential1234567890'));
+  assert.equal(legacy.statusCode, 200); assert.ok(legacy.body.includes('fakecredential1234567890'));
   assert.equal((await app.inject({ url: `${path}/runs/${run.id}/log?name=../state.sqlite&offset=0`, headers })).statusCode, 400);
   assert.equal((await app.inject({ url: `${path}/runs/${run.id}/log?name=stderr.log&offset=-1`, headers })).statusCode, 400);
   assert.equal((await app.inject({ url: `${path}/runs/${randomUUID()}/log?name=stderr.log&offset=0`, headers })).statusCode, 404);

@@ -3,7 +3,7 @@ import { execFile, spawn } from './processes.js';
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ApproveResult, SpecResult, BuildResult, ReviewResult, ReviewRole } from '../shared.js';
-import { CodexFailure, classifyFailure, redact, redactStructured } from './diagnostics.js';
+import { CodexFailure, classifyFailure } from './diagnostics.js';
 import type { RunDiagnostic } from '../shared.js';
 import { parseTitle } from './title.js';
 import { Problem } from './store.js';
@@ -64,7 +64,6 @@ async function executeResult<T>(input: CodexInput, schema: object, validate: (va
   try { stderr = openSync(join(input.directory, 'stderr.log'), 'wx', 0o600); }
   catch (error) { closeSync(stdout); throw error; }
   try {
-    saveArtifact(input.directory, 'log-format.json', JSON.stringify({ format: 'redacted-v1' }));
     return await new Promise<T>((resolve, reject) => {
       const child = spawn(executable, ['exec', '--json', '--dangerously-bypass-approvals-and-sandbox',
         '--model', input.model, ...(input.reasoningEffort ? ['-c', `model_reasoning_effort=${JSON.stringify(input.reasoningEffort)}`] : []), '--output-schema', join(input.directory, 'schema.json'), '--color', 'never', '-'],
@@ -88,9 +87,9 @@ async function executeResult<T>(input: CodexInput, schema: object, validate: (va
             let event;
             try { event = JSON.parse(line); }
             catch { writeSync(stdout, '[Invalid JSONL event omitted]\n'); throw new Error('Invalid JSONL'); }
-            writeSync(stdout, JSON.stringify(redactStructured(event)) + '\n');
+            writeSync(stdout, JSON.stringify(event) + '\n');
             if (typeof event?.type !== 'string' || completed) throw new Error('Invalid stream');
-            if (event.type === 'thread.started') { thread = true; if (typeof event.thread_id === 'string' && event.thread_id.length <= 256) input.metadata?.({ session_id: redact(event.thread_id) }); }
+            if (event.type === 'thread.started') { thread = true; if (typeof event.thread_id === 'string' && event.thread_id.length <= 256) input.metadata?.({ session_id: event.thread_id }); }
             if (event.type === 'turn.started') { if (started || !thread) throw new Error('Invalid turn'); started = true; }
             if (event.type === 'error' || event.type === 'turn.failed') throw classifyFailure(event);
             if (event.type === 'item.completed' && event.item?.type === 'agent_message') {
@@ -107,13 +106,13 @@ async function executeResult<T>(input: CodexInput, schema: object, validate: (va
       child.stderr.on('data', (chunk: Buffer) => {
         if (failed) return;
         try { bytes += chunk.length; if (bytes > 32 * 1024 * 1024) throw new Error(); stderrBuffer += chunk.toString('utf8'); stderrTail = (stderrTail + chunk.toString('utf8')).slice(-65536);
-          let newline: number; while ((newline = stderrBuffer.indexOf('\n')) >= 0) { writeSync(stderr, redact(stderrBuffer.slice(0, newline)) + '\n'); stderrBuffer = stderrBuffer.slice(newline + 1); } }
+          let newline: number; while ((newline = stderrBuffer.indexOf('\n')) >= 0) { writeSync(stderr, stderrBuffer.slice(0, newline) + '\n'); stderrBuffer = stderrBuffer.slice(newline + 1); } }
         catch { fail(new Problem(422, 'Не удалось сохранить лог Codex или превышен лимит 32 MiB.')); }
       });
       child.on('error', () => { failed = new Problem(422, 'Не удалось запустить Codex. Проверьте CLI и checkout.'); });
       child.stdin.on('error', () => { failed ??= new Problem(422, 'Codex не принял prompt. Проверьте CLI и локальные логи.'); });
       child.on('close', code => {
-        try { if (stderrBuffer) writeSync(stderr, redact(stderrBuffer)); if (buffer) writeSync(stdout, '[Incomplete JSONL event omitted]\n'); } catch { failed = new Problem(422, 'Не удалось сохранить локальный лог.'); }
+        try { if (stderrBuffer) writeSync(stderr, stderrBuffer); if (buffer) writeSync(stdout, '[Incomplete JSONL event omitted]\n'); } catch { failed = new Problem(422, 'Не удалось сохранить локальный лог.'); }
         if (failed instanceof CodexFailure) failed.finished = true;
         if (failed) return reject(failed);
         if (code !== 0 || !completed || buffer.trim()) { const error = code !== 0 ? classifyFailure(stderrTail) : new CodexFailure(message ? 'protocol_error' : 'missing_artifact'); error.finished = true; return reject(error); }

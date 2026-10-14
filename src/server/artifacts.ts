@@ -1,6 +1,5 @@
 import { constants, mkdirSync, realpathSync, writeFileSync, renameSync, openSync, readFileSync, closeSync, fstatSync, readSync } from 'node:fs';
 import { join } from 'node:path';
-import { redact, redactStructured } from './diagnostics.js';
 import { Problem } from './store.js';
 
 export function artifactDirectory(directory: string, runId: string) {
@@ -13,7 +12,7 @@ export function artifactDirectory(directory: string, runId: string) {
 }
 export function saveArtifact(directory: string, name: string, text: string) {
   const temporary = join(directory, `${name}.tmp`);
-  writeFileSync(temporary, name.endsWith('.json') ? JSON.stringify(redactStructured(JSON.parse(text)), null, 2) : redact(text), { flag: 'wx', mode: 0o600 });
+  writeFileSync(temporary, name.endsWith('.json') ? JSON.stringify(JSON.parse(text), null, 2) : text, { flag: 'wx', mode: 0o600 });
   renameSync(temporary, join(directory, name));
 }
 export function readReport(directory: string, runId: string) {
@@ -30,15 +29,6 @@ export function readReport(directory: string, runId: string) {
 }
 
 export function readLog(directory: string, runId: string, name: 'events.jsonl' | 'stderr.log', offset: number) {
-  const marker = join(realpathSync(directory), 'artifacts', runId, 'log-format.json');
-  try {
-    if (realpathSync(marker) !== marker) throw new Error('symlink');
-    const fd = openSync(marker, constants.O_RDONLY | constants.O_NOFOLLOW);
-    try {
-      const stat = fstatSync(fd);
-      if (!stat.isFile() || stat.size > 128 || JSON.parse(readFileSync(fd, 'utf8')).format !== 'redacted-v1') throw new Error('unverified format');
-    } finally { closeSync(fd); }
-  } catch { throw new Problem(409, 'Лог без подтверждённой redaction доступен только локально. Браузерное чтение старых логов запрещено.'); }
   const path = join(realpathSync(directory), 'artifacts', runId, name);
   try {
     if (realpathSync(path) !== path) throw new Error('symlink');

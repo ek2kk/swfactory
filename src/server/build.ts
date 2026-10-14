@@ -10,11 +10,6 @@ const blocked = (message: string): never => { throw new Problem(422, `${message}
 function safePath(path: string) {
   if (path.startsWith('/') || path.split('/').some(p => !p || p === '.' || p === '..' || p.toLowerCase() === '.git') || /[\x00-\x1f\x7f]/.test(path)) blocked('Неоднозначный путь.');
 }
-function safeContent(path: string, content: string) {
-  // shortcut: conservative filename/signature checks; add a project secret scanner for broader detection.
-  if (/(^|\/)(\.env(?:\..*)?|id_(rsa|ed25519)|credentials(?:\..*)?|[^/]*\.(pem|key|p12|pfx))$/i.test(path)
-    || /-----BEGIN [A-Z ]*PRIVATE KEY-----|(?:gh[pousr]_|github_pat_|sk-(?:proj-)?)[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}/i.test(content)) blocked('В изменениях возможен секрет.');
-}
 function fileContent(cwd: string, path: string) {
   safePath(path);
   const file = join(cwd, path);
@@ -79,7 +74,6 @@ export async function commitBuild(run: AgentRun, result: BuildResult, command: R
       const entry = await command('git', ['--literal-pathspecs', 'ls-tree', sha, '--', path], cwd);
       if (entry) {
         if (!/^100(?:644|755) blob /.test(entry)) blocked('В commit есть symlink или submodule.');
-        safeContent(path, await command('git', ['show', `${sha}:${path}`], cwd));
       }
     }
     parent = sha;
@@ -91,8 +85,7 @@ export async function commitBuild(run: AgentRun, result: BuildResult, command: R
   ]);
   for (const path of dirty) {
     actual.add(path);
-    const file = fileContent(cwd, path);
-    if (file) safeContent(path, file.content.toString('utf8'));
+    fileContent(cwd, path);
   }
   if (JSON.stringify([...actual].sort()) !== JSON.stringify([...result.changed_paths].sort())) blocked('Заявленные пути не совпадают с изменениями Git.');
   if (await sourceHash(run, command) !== snapshot) blocked('Source изменился во время проверки.');
@@ -103,7 +96,6 @@ export async function commitBuild(run: AgentRun, result: BuildResult, command: R
       const entry = await command('git', ['--literal-pathspecs', 'ls-tree', tree, '--', path], cwd);
       if (entry) {
         if (!/^100(?:644|755) blob /.test(entry)) blocked('В index есть symlink или submodule.');
-        safeContent(path, await command('git', ['show', `${tree}:${path}`], cwd));
       }
     }
     if (tree === await command('git', ['rev-parse', 'HEAD^{tree}'], cwd)) blocked('Нет изменений для commit.');

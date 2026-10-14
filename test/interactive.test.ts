@@ -8,7 +8,7 @@ import { CodexFailure } from '../src/server/diagnostics.js';
 import { DeliveryError, type Steer } from '../src/server/interactive.js';
 import type { RunDiagnostic } from '../src/shared.js';
 const ready = { outcome: 'READY', title: 'Smoke', summary: 'Confirmed', requirements: ['One'], acceptance_criteria: ['Test'], assumptions: [], out_of_scope: [], questions: [] };
-for (const scenario of ['success', 'reject', 'lost', 'invalid-result', 'auth', 'rate-limit', 'server-request'] as const) test(`app-server ${scenario}: handshake, policy, steer binding, lifecycle and redaction`, async t => {
+for (const scenario of ['success', 'reject', 'lost', 'invalid-result', 'auth', 'rate-limit', 'server-request'] as const) test(`app-server ${scenario}: handshake, policy, steer binding, lifecycle and unmodified logs`, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'factory-interactive-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const cli = join(directory, 'codex');
@@ -68,7 +68,8 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
     const error = await delivery; assert.ok(error instanceof DeliveryError); assert.equal(error.status, scenario === 'reject' ? 'failed' : 'unknown');
   } else if (scenario !== 'auth') assert.equal(await delivery, 'delivered');
   const log = readFileSync(join(directory, 'events.jsonl'), 'utf8');
-  assert.ok(!log.includes('hidden-value')); assert.ok(!log.includes('partial secret'));
+  assert.equal(log.includes('hidden-value'), ['success', 'reject', 'invalid-result'].includes(scenario));
+  assert.ok(!log.includes('partial secret'));
   if (scenario === 'success') assert.deepEqual(metadata.usage, { input_tokens: 10, output_tokens: 20, cached_input_tokens: 3 });
 });
 
