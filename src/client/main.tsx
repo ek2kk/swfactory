@@ -346,7 +346,7 @@ function RunReport({ task, run }: { task: Task; run: AgentRun }) {
     return () => { active = false; };
   }, [open, run.id, run.report, task.id]);
   return <details onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>Отчёт · {run.outcome ?? run.status}{run.stale || run.description_revision !== task.revision ? ' · Неактуален' : ''}{run.finished_at && ` · ${new Date(run.finished_at).toLocaleString('ru')}`}</summary>
+    <summary>{run.report ? 'Отчёт' : 'Диагностика'} · {run.outcome ?? run.status}{run.stale || run.description_revision !== task.revision ? ' · Неактуален' : ''}{run.finished_at && ` · ${new Date(run.finished_at).toLocaleString('ru')}`}</summary>
     <p className="meta">Версия требований: {run.description_revision} · Модель: {run.config.models[run.role]}</p>
     <p className="meta">Доработки: {run.repair_attempt}/2 · {run.round_id && `Раунд: ${run.round_id}`} {run.spec_run_id && `Spec: ${run.spec_run_id}`}<br />{run.base_sha && `Base: ${run.base_sha}`}<br />{run.head_sha && `Head: ${run.head_sha}`}<br />Branch: {run.branch}<br />{run.worktree}</p>
     <p className="meta">Модели запуска: {roles.map(role => `${role}: ${run.config.models[role]} (${run.config.reasoning_efforts?.[role] ?? 'по умолчанию Codex'})`).join(' · ')}</p>

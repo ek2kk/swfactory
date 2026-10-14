@@ -97,7 +97,7 @@ export function stageTimeline(runs: AgentRun[], transcripts: Record<string, Tran
       items.push({ id: `error:${run.id}`, kind: 'event', title: 'Ошибка', text: run.error, alert: true,
         at: run.finished_at ?? '', time: time(run.finished_at ?? ''), attempt, sequence: 0, source: 3, run });
     }
-    if (run.report) items.push({ id: `report:${run.id}`, kind: 'report', title: 'Сохранённый отчёт', text: '', run,
+    items.push({ id: `report:${run.id}`, kind: 'report', title: run.report ? 'Сохранённый отчёт' : 'Диагностика', text: '', run,
       at: run.finished_at ?? '', time: time(run.finished_at ?? ''), attempt, sequence: 0, source: 4 });
   });
   return items.sort((a, b) => b.time - a.time || b.attempt - a.attempt || b.source - a.source || b.sequence - a.sequence);

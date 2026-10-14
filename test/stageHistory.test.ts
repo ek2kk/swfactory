@@ -42,7 +42,7 @@ test('all attempts, tools, messages and saved interventions form one stable newe
   const messages = [{ id: 'm', run_id: 'new', created_at: '2026-10-14T10:00:04Z', text: 'guidance' } as ChatMessage,
     { id: 'unbound', run_id: null, created_at: '2026-10-14T10:00:05Z' } as ChatMessage];
   const history = stageTimeline(runs, transcripts, messages, events, []);
-  assert.deepEqual(history.map(item => item.id), ['message:m', 'event:3', 'transcript:d', 'transcript:c', 'transcript:b', 'transcript:a', 'event:2', 'event:1']);
+  assert.deepEqual(history.map(item => item.id), ['message:m', 'event:3', 'transcript:d', 'transcript:c', 'transcript:b', 'transcript:a', 'event:2', 'event:1', 'report:new', 'report:old']);
   assert.equal(history.find(item => item.id === 'transcript:b')?.at, '', 'missing timestamp is not invented');
   assert.deepEqual(stageTimeline(runs, structuredClone(transcripts), structuredClone(messages), structuredClone(events), []).map(item => item.id), history.map(item => item.id), 'reload order is stable');
   const update = stageTimeline(runs, { ...transcripts, new: [...transcripts.new, entry('e', '2026-10-14T10:00:06Z')] }, messages, events, []);
@@ -63,4 +63,15 @@ test('undated attempts retain saved sequence; continuation without model and hum
   assert.equal(history.find(item => item.id === 'event:5')?.run?.id, 'new');
   assert.equal(history.find(item => item.id === 'report:new')?.at, '');
   assert.deepEqual(history.filter(item => item.kind === 'agent').map(item => item.text), ['new2', 'new1', 'old2', 'old1']);
+});
+
+
+test('diagnostics remain available without a saved report for every attempt', () => {
+  for (const status of ['queued', 'running', 'completed', 'failed', 'interrupted'] as const) {
+    const attempt = run(status, { status, report: 0, error: status === 'failed' ? 'CLI failed' : null });
+    const history = stageTimeline([attempt], {}, [], [], []);
+    const diagnostics = history.filter(item => item.kind === 'report');
+    assert.equal(diagnostics.length, 1, status);
+    assert.equal(diagnostics[0].run, attempt);
+  }
 });
