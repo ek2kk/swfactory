@@ -557,3 +557,45 @@ test('explicit start after Stop fetches current target into a real fresh worktre
   assert.equal(readFileSync(join(old.worktree, 'partial.txt'), 'utf8'), 'uncommitted old edits');
   assert.equal(store.readRun(project.id, task.id, old.id).status, 'interrupted');
 });
+
+
+test('v20 main database migrates Stop authority once and preserves stage reset metadata', t => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'factory-stop-v20-')));
+  let store = new Store(directory);
+  t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const project = store.addProject(projectInput), task = store.createTask(project.id, 'Migrate main', 1);
+  const run = store.queueSpec(project.id, task.id, 1, directory, 'spec');
+  store.db.prepare("UPDATE tasks SET archived = 1, deletion_state = 'deleted', stop_unverified = 1, results_restart = ? WHERE id = ?")
+    .run(JSON.stringify({ role: 'spec', reason: 'Preserve reset metadata' }), task.id);
+  store.db.exec('DROP TABLE execution_processes; ALTER TABLE runs DROP COLUMN revoked');
+  for (const column of ['execution_generation', 'legacy_execution_unknown', 'execution_warning', 'publication_run_id', 'publication_generation']) {
+    store.db.exec(`ALTER TABLE tasks DROP COLUMN ${column}`);
+  }
+  store.db.pragma('user_version = 20'); store.close(); store = new Store(directory);
+  assert.equal(store.db.pragma('user_version', { simple: true }), 22);
+  assert.equal(store.hasRun(run), false);
+  const migrated = store.rawTask(project.id, task.id);
+  assert.equal(migrated.execution_generation, 1); assert.equal(migrated.legacy_execution_unknown, 1);
+  assert.equal(migrated.results_restart?.role, 'spec');
+  store.close(); store = new Store(directory);
+  assert.equal(store.rawTask(project.id, task.id).execution_generation, 1, 'migration must not repeat');
+});
+
+test('stage reset after Stop cannot reuse revoked Spec and clears only removed process records', async t => {
+  const { store, project, directory, controller } = fixture(t);
+  const task = store.createTask(project.id, 'Fresh after Stop', 1);
+  const spec = store.queueSpec(project.id, task.id, 1, directory, 'spec');
+  spec.status = 'completed'; spec.outcome = 'READY'; store.updateRun(spec, 'build', 'idle');
+  store.recordProcess(task.id, { pid: 987654, pgid: 987654, started_at: 'old', state: 'exited', run_id: spec.id });
+  assert.equal(store.resultsResetPlan(project.id, task.id, 'build').restart.role, 'build');
+  store.db.prepare('UPDATE tasks SET results_restart = ? WHERE id = ?').run(JSON.stringify({ role: 'build' }), task.id);
+  store.beginDeletion(project.id, task.id, store.task(project.id, task.id).state_version);
+  await controller.deleteTask(task.id, true);
+  assert.equal(store.task(project.id, task.id).results_restart, null);
+  assert.equal(store.resultsResetPlan(project.id, task.id, 'build').restart.role, 'spec');
+  const reset = store.beginResultsReset(project.id, task.id, store.task(project.id, task.id).state_version, randomUUID());
+  assert.deepEqual(store.executionProcesses(task.id), []);
+  store.finishResultsReset(task.id, reset.reset_id);
+  const fresh = store.queueResultsRestart(project.id, task.id, store.task(project.id, task.id).state_version, directory);
+  assert.equal(store.hasRun(fresh), true); assert.notEqual(fresh.worktree, spec.worktree);
+});

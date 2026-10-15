@@ -137,7 +137,7 @@ test('v1 database migration preserves descriptions and does not automatically ru
     store.close(); store = new Store(dir);
     assert.equal(store.task(p.id, task.id).description, 'old description');
     assert.equal(store.task(p.id, task.id).title_state, 'interrupted');
-    assert.equal(store.db.pragma('user_version', { simple: true }), 21);
+    assert.equal(store.db.pragma('user_version', { simple: true }), 22);
     assert.equal(store.claimTitle(store.task(p.id, task.id)), undefined);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
@@ -203,7 +203,7 @@ for (const variant of ['spec-v2', 'title-v2'] as const) test(`migration from ${v
     assert.equal(saved.description, 'keep description'); assert.equal(saved.title, 'Saved title');
     assert.equal(saved.title_state, 'completed');
     assert.equal(store.revisions(p.id, task.id).length, 1);
-    assert.equal(store.db.pragma('user_version', { simple: true }), 21);
+    assert.equal(store.db.pragma('user_version', { simple: true }), 22);
     assert.equal(Object.keys(store.settings(p.id).models).length, 6);
     if (runId) {
       assert.equal(store.specRun(p.id, task.id, runId).outcome, 'READY');

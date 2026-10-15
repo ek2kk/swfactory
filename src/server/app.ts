@@ -165,19 +165,43 @@ export async function createApp(options: {
     if (queued) controller.checkDependencies(queued.origin, queued.check);
     publish(); return result;
   });
-  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/reset-results', {
-    schema: { params: taskParams, body: object({ request_id: uuid, state_version: version }) },
+  app.get<{ Params: { projectId: string; taskId: string; role: AgentRun['role'] } }>('/api/projects/:projectId/tasks/:taskId/reset-results/:role', {
+    schema: { params: object({ projectId: uuid, taskId: uuid, role: { enum: allRoles } }) },
+  }, async request => {
+    const { projectId, taskId, role } = request.params;
+    store.rawTask(projectId, taskId);
+    const pending = store.resultsCleanup(taskId);
+    return pending?.plan ? { ...JSON.parse(pending.plan), state_version: store.rawTask(projectId, taskId).state_version } : store.resultsResetPlan(projectId, taskId, role);
+  });
+  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number; stage?: AgentRun['role'] } }>('/api/projects/:projectId/tasks/:taskId/reset-results', {
+    schema: { params: taskParams, body: { ...object({ request_id: uuid, state_version: version }),
+      properties: { request_id: uuid, state_version: version, stage: { enum: allRoles } } } },
   }, async request => {
     const { projectId, taskId } = request.params;
-    const { request_id, state_version } = request.body;
+    const { request_id, state_version, stage } = request.body;
     store.rawTask(projectId, taskId);
-    const result = store.mutate(request_id, JSON.stringify(['task.reset-results', projectId, taskId, state_version]), () => {
+    const result = store.mutate(request_id, JSON.stringify(['task.reset-results', projectId, taskId, state_version, ...(stage ? [stage] : [])]), () => {
       controller.assertResultsResetIdle(taskId);
-      return store.beginResultsReset(projectId, taskId, state_version, request_id);
+      return store.beginResultsReset(projectId, taskId, state_version, request_id, stage);
     }) as { reset_id: string };
     controller.completeResultsReset(taskId, result.reset_id);
     publish();
     return result;
+  });
+  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/restart-results', {
+    schema: { params: taskParams, body: object({ request_id: uuid, state_version: version }) },
+  }, async request => {
+    const { projectId, taskId } = request.params;
+    const { request_id, state_version } = request.body;
+    const fingerprint = JSON.stringify(['task.restart-results', projectId, taskId, state_version]);
+    const prior = store.replay(request_id, fingerprint);
+    if (prior !== undefined) return prior;
+    if (controller.error || titles.error || controller.chat.error) throw new Problem(503, controller.error ?? titles.error ?? controller.chat.error!);
+    const run = store.mutate(request_id, fingerprint, () => {
+      controller.assertResultsResetIdle(taskId);
+      return store.queueResultsRestart(projectId, taskId, state_version, directory);
+    }) as AgentRun;
+    controller.enqueue(run, request.log); publish(); return run;
   });
   const actionBody = object({ request_id: uuid, state_version: version, description });
   app.post<{ Params: { projectId: string }; Body: Action }>('/api/projects/:projectId/tasks', { schema: { params: projectParams, body: actionBody } }, async request => {
@@ -280,11 +304,12 @@ export async function createApp(options: {
     publish(); return result;
   });
   app.get<{ Params: { projectId: string; taskId: string } }>('/api/projects/:projectId/tasks/:taskId/revisions', { schema: { params: taskParams } }, async request => store.revisions(request.params.projectId, request.params.taskId));
-  app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/settings', { schema: { params: projectParams } }, async request => store.settings(request.params.projectId));
+  app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/settings', { schema: { params: projectParams } }, async request => ({ ...store.settings(request.params.projectId), state_version: store.project(request.params.projectId).state_version }));
   app.put<{ Params: { projectId: string }; Body: Settings & { request_id: string; state_version: number } }>('/api/projects/:projectId/settings', {
     schema: { params: projectParams, body: { ...object({ request_id: uuid, state_version: version,
       instructions: { type: 'string', maxLength: 30000 },
       models: { ...object(Object.fromEntries(allRoles.map(role => [role, { type: 'string', minLength: 1, maxLength: 128, pattern: '^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$' }]))), required: roles },
+      fast_modes: { ...object(Object.fromEntries(allRoles.map(role => [role, { type: 'boolean' }]))), required: [] },
       reasoning_efforts: { ...object(Object.fromEntries(allRoles.map(role => [role, { type: 'string', minLength: 1, maxLength: 64, pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]*$' }]))), required: [] },
     }), required: ['request_id', 'state_version', 'instructions', 'models'] } },
   }, async request => {
@@ -304,6 +329,14 @@ export async function createApp(options: {
         if (!catalog.models.find(model => model.id === config.models[role])?.reasoning_efforts?.some(option => option.effort === config.reasoning_efforts![role])) {
           throw new Problem(422, `Глубина рассуждений для ${role} не подтверждена каталогом Codex. Обновите список или выберите «По умолчанию Codex».`);
         }
+      }
+    }
+    const fastChanged = roles.filter(role => config.fast_modes?.[role] === true && (saved.fast_modes?.[role] !== true || saved.models[role] !== config.models[role]));
+    if (fastChanged.length) {
+      const catalog = await catalogs.get(projectId, project.checkout);
+      for (const role of fastChanged) {
+        const fast = catalog.models.find(model => model.id === config.models[role])?.fast;
+        if (catalog.source !== 'codex' || !fast?.supported) throw new Problem(422, `Fast для ${role} не подтверждён. ${fast?.reason ?? 'Обновите каталог; модель и авторизация должны поддерживать Fast.'}`);
       }
     }
     const result = store.mutate(request_id, fingerprint, () => store.saveSettings(projectId, config, state_version));

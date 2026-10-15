@@ -63,7 +63,7 @@ test('READY uses fetched remote SHA, immutable config, separate worktree, durabl
   const run = queue(description);
   store.mutate('settings2', 'settings2', () => store.saveSettings(project.id, { ...config, models: { ...config.models, spec: 'different' }, reasoning_efforts: { spec: 'low' } }, 2));
   const runner = controller(async input => {
-    assert.equal(input.model, config.models.spec); assert.equal(input.reasoningEffort, 'high'); assert.match(input.prompt, /Use existing patterns/);
+    assert.equal(input.model, config.models.spec); assert.equal(input.reasoningEffort, 'high'); assert.equal(input.fast, config.fast_modes?.spec); assert.match(input.prompt, /Use existing patterns/);
     assert.match(input.prompt, /AGENTS.md/); assert.match(input.prompt, /Добавить hello/);
     assert.equal(input.prompt.split('Task description:\n')[1], description);
     assert.equal(JSON.parse(readFileSync(join(input.directory, 'input.json'), 'utf8')).description, description);

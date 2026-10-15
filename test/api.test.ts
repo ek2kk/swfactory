@@ -243,7 +243,7 @@ test('model settings, frozen config, start replay/version/ownership and report a
   const settingsUrl = `/api/projects/${project.id}/settings`;
   const defaults = (await app.inject({ url: settingsUrl, headers })).json();
   assert.equal(Object.keys(defaults.models).length, 6);
-  const config = { models: { ...defaults.models, spec: 'exact-model' }, instructions: 'Project instructions' };
+  const config = { models: { ...defaults.models, spec: 'exact-model' }, fast_modes: defaults.fast_modes, instructions: 'Project instructions' };
   const settings = { ...config, state_version: 1, request_id: randomUUID() };
   assert.equal((await app.inject({ method: 'PUT', url: settingsUrl, headers, payload: settings })).statusCode, 200);
   assert.equal((await app.inject({ method: 'PUT', url: settingsUrl, headers, payload: settings })).statusCode, 200);

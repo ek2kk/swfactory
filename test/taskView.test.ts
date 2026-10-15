@@ -32,7 +32,7 @@ function taskCard(api = async (..._args: any[]): Promise<any> => ({})) {
     './taskView.js': {}, './chat.js': { Composer() {}, Message() {}, RunConversation() {} },
     './output.js': { AgentOutput() {}, RunProgress() {} },
   };
-  runInNewContext(transformSync(source.replace(/createRoot\(document[^\n]+/, 'export { TaskCard, ArchivedTask, History, TaskResultsReset, ResetHistory, TaskDisposition, DependencyStatus };'), { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code, {
+  runInNewContext(transformSync(source.replace(/createRoot\(document[^\n]+/, 'export { TaskCard, ArchivedTask, History, TaskResultsReset, TaskResultsRestart, ResetHistory, TaskDisposition, DependencyStatus };'), { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code, {
     module, require(name: string) { assert.ok(Object.hasOwn(modules, name), name); return modules[name]; },
   });
   const props = {
@@ -196,39 +196,60 @@ test('overview omits reports while stage history retains access to them', () => 
   assert.equal(report.props.run.id, 'run');
 });
 
-test('reset confirmation explains deleted results and preserved requirements/Git, focuses cancel, then sends only an explicit reset', async () => {
-  const calls: any[][] = [], card = taskCard(async (...args) => { calls.push(args); });
+test('reset confirmation previews exact cascade, focuses cancel and performs only an explicit reset', async () => {
+  const plan = { state_version: 1, role: 'build', runs: [{ id: 'build-id', role: 'build' }, { id: 'review-id', role: 'review-code' }], restart: { role: 'build', reason: 'Новый worktree' } };
+  const calls: any[][] = [], card = taskCard(async (...args) => { calls.push(args); return plan; });
   Object.assign(card.props.task, { has_results: 1 });
-  const render = () => card.render('TaskResultsReset');
+  const render = () => card.render('TaskResultsReset', { role: 'build' });
   const button = (tree: unknown, label: string) => elements(tree).find(node => node.type === 'button' && node.props.children === label);
-  button(render().tree, 'Сбросить все результаты').props.onClick();
+  let returnedFocus = 0;
+  const opener = button(render().tree, 'Сбросить результаты этапа');
+  opener.props.ref.current = { focus() { returnedFocus++; } };
+  await opener.props.onClick();
   const view = render(), dialog = elements(view.tree).find(node => node.type === 'dialog');
   let opened = 0, closed = 0, focused = 0;
   dialog.props.ref.current = { showModal() { opened++; }, close() { closed++; } };
   button(view.tree, 'Отмена').props.ref.current = { focus() { focused++; } };
-  view.commit(); assert.equal(opened, 1); assert.equal(focused, 1); assert.deepEqual(calls, []);
+  view.commit(); assert.equal(opened, 1); assert.equal(focused, 1);
   const text = JSON.stringify(dialog.props.children);
-  for (const expected of ['Spec, Build, Review', 'Approve', 'PASS', 'sessions', 'Git worktrees', 'отдельный PR', 'GitHub issue', 'Markdown', 'автоматически', 'из чата']) assert.ok(text.includes(expected), expected);
-  button(view.tree, 'Отмена').props.onClick(); assert.equal(closed, 1); assert.deepEqual(calls, []);
-  button(render().tree, 'Сбросить все результаты').props.onClick();
+  for (const expected of ['build-id', 'review-id', 'PASS', 'sessions', 'Git worktrees', 'отдельный PR', 'GitHub issue', 'Markdown', 'автоматически', 'из чата']) assert.ok(text.includes(expected), expected);
+  assert.ok(calls.every(call => call.length === 1), 'preview never mutates state');
+  button(view.tree, 'Отмена').props.onClick(); assert.equal(closed, 1); assert.equal(returnedFocus, 1);
+  await button(render().tree, 'Сбросить результаты этапа').props.onClick();
   await button(render().tree, 'Подтвердить сброс').props.onClick();
-  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['/projects/project/tasks/task/reset-results', 'POST', { state_version: 1 }]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))), ['/projects/project/tasks/task/reset-results', 'POST', { state_version: 1, stage: 'build' }]);
   assert.ok(!elements(render().tree).some(node => node.type === 'dialog'));
 });
 
-test('reset UI explains archive/execution/publication barriers and invalidates a stale confirmation', () => {
+test('reset UI explains barriers and invalidates a stale cascade confirmation', async () => {
   const button = (tree: unknown) => elements(tree).find(node => node.type === 'button' && node.props.children === 'Сбросить все результаты');
   for (const flags of [{ archived: 1 }, { execution_unverified: 1 }, { stop_unverified: 1 }, { deletion_state: 'stopping' }, { run_state: 'running' }, { run_state: 'queued' }, { publication_status: 'unknown' }, { publication_status: 'pending' }]) {
     const card = taskCard(); Object.assign(card.props.task, { has_results: 1 }, flags);
     const tree = card.render('TaskResultsReset').tree;
     assert.equal(button(tree).props.disabled, true, JSON.stringify(flags));
-    const hint = elements(tree).find(node => node.props.id === 'reset-hint-task'); assert.ok(hint.props.children.length > 30);
+    const hint = elements(tree).find(node => node.props.id === 'reset-hint-task-all'); assert.ok(hint.props.children.length > 30);
   }
-  const card = taskCard(); Object.assign(card.props.task, { has_results: 1 });
-  button(card.render('TaskResultsReset').tree).props.onClick(); card.props.task.state_version++;
+  const card = taskCard(async () => ({ state_version: 1, role: 'spec', runs: [], restart: { reason: 'Spec required' } }));
+  Object.assign(card.props.task, { has_results: 1 });
+  await button(card.render('TaskResultsReset').tree).props.onClick(); card.props.task.state_version++;
   const tree = card.render('TaskResultsReset').tree;
   assert.equal(elements(tree).find(node => node.type === 'button' && node.props.children === 'Подтвердить сброс').props.disabled, true);
   assert.ok(elements(tree).some(node => node.props.role === 'status' && node.props.children.includes('Карточка изменилась')));
+});
+
+test('every populated stage offers reset; restart uses a separate action and respects execution pause', async () => {
+  const calls: any[][] = [], card = taskCard(async (...args) => { calls.push(args); });
+  Object.assign(card.props.task, { results_restart: { role: 'build', reason: 'Fresh worktree' } });
+  const resets = elements(card.render().tree).filter(node => node.type.name === 'TaskResultsReset' && node.props.role);
+  assert.equal(resets.length, 6);
+  assert.deepEqual(resets.filter(node => node.props.hasResults).map(node => node.props.role), ['build']);
+  const restart = taskCard(async (...args) => { calls.push(args); });
+  Object.assign(restart.props.task, { results_restart: { role: 'build', reason: 'Fresh worktree' } });
+  let tree = restart.render('TaskResultsRestart', { executionPaused: true }).tree;
+  assert.equal(elements(tree).find(node => node.type === 'button').props.disabled, true);
+  tree = restart.render('TaskResultsRestart', { executionPaused: false }).tree;
+  await elements(tree).find(node => node.type === 'button').props.onClick();
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['/projects/project/tasks/task/restart-results', 'POST', { state_version: 1 }]]);
 });
 
 test('Stop is a single explicit action without observations, separate from archive and remote warning', async () => {

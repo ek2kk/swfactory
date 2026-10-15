@@ -11,6 +11,7 @@ import { stageRoles, stageNames, stageTabStatus } from './stageHistory.js';
 import { TaskView, type DescriptionDraft } from './taskView.js';
 import { TaskMarkdown } from './TaskMarkdown.js';
 import { Modal, Toast, ActionIcon, type Notice } from './windows.js';
+import type { ResultsResetPlan } from '../resultsReset.js';
 
 applyTheme(readTheme());
 
@@ -21,13 +22,15 @@ function SourceIssue({ task }: { task: Task }) {
   return task.issue_url && <p className="meta"><a href={task.issue_url} target="_blank" rel="noreferrer">GitHub issue #{task.issue_number}</a></p>;
 }
 
-function TaskResultsReset({ task, refresh, notify }: { task: Task; refresh: () => Promise<void>; notify: (text: string, key?: string) => void }) {
+function TaskResultsReset({ task, refresh, notify, role, hasResults = !!task.has_results }: { task: Task; refresh: () => Promise<void>; notify: (text: string, key?: string) => void; role?: AgentRun['role']; hasResults?: boolean }) {
   const [confirming, setConfirming] = useState(false);
   const [version, setVersion] = useState(task.state_version);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [plan, setPlan] = useState<ResultsResetPlan | null>(null);
   const dialog = useRef<HTMLDialogElement>(null);
   const cancelButton = useRef<HTMLButtonElement>(null);
+  const resetButton = useRef<HTMLButtonElement>(null);
   const blocker = resultsResetBlocker(task);
   useEffect(() => {
     if (!confirming || !dialog.current) return;
@@ -35,26 +38,33 @@ function TaskResultsReset({ task, refresh, notify }: { task: Task; refresh: () =
     element.showModal(); cancelButton.current?.focus();
     return () => element.close();
   }, [confirming]);
-  function close() { dialog.current?.close(); setConfirming(false); }
+  function close() { dialog.current?.close(); setConfirming(false); resetButton.current?.focus(); }
   return <section className="results-reset" aria-label="Сброс результатов">
-    {!!(task.has_results || task.reset_pending) && <>
-      <button className="secondary" disabled={busy || !!blocker} aria-describedby={`reset-hint-${task.id}`} onClick={() => { setVersion(task.state_version); setConfirming(true); setError(''); }}>{task.reset_pending ? 'Повторить очистку результатов' : 'Сбросить все результаты'}</button>
-      <p id={`reset-hint-${task.id}`} className="hint">{blocker ?? (task.reset_pending ? 'Очистка не завершена. Новые действия заблокированы до её завершения.' : 'Требования и Git-результаты сохранятся. Новый запуск — отдельным действием.')}</p>
+    {!!(role || task.has_results || task.reset_pending) && <>
+      <button ref={resetButton} className="secondary" disabled={busy || !!blocker || !!role && !hasResults} aria-describedby={`reset-hint-${task.id}-${role ?? 'all'}`} onClick={async () => {
+        setBusy(true); setError('');
+        try {
+          const value = await api<ResultsResetPlan>(`${taskPath(task)}/reset-results/${role ?? 'spec'}`);
+          setPlan(value); setVersion(value.state_version); setConfirming(true);
+        } catch (error) { setError((error as Error).message); } finally { setBusy(false); }
+      }}>{task.reset_pending ? 'Повторить очистку результатов' : role ? 'Сбросить результаты этапа' : 'Сбросить все результаты'}</button>
+      <p id={`reset-hint-${task.id}-${role ?? 'all'}`} className="hint">{blocker ?? (task.reset_pending ? 'Очистка не завершена. Новые действия заблокированы до её завершения.' : role && !hasResults ? 'У этапа пока нет результатов для сброса.' : 'Требования и Git-результаты сохранятся. Новый запуск — отдельным действием.')}</p>
     </>}
     {!!task.archived && !task.has_results && <p className="hint">{blocker}</p>}
-    {task.reset_error && <p role="alert">{task.reset_error}</p>}
-    {confirming && <dialog ref={dialog} className="delete-confirmation" aria-labelledby={`reset-title-${task.id}`} onCancel={event => { event.preventDefault(); if (!busy) close(); }}>
-      <h4 id={`reset-title-${task.id}`}>Сбросить все результаты?</h4>
-      <p>Будут удалены результаты всех этапов: Spec, Build, Review (Code, Security, UI/UX) и Approve.</p>
-      <ul><li>Все runs, отчёты, логи и управляемые файлы результатов.</li><li>Решение Spec, планы Review и сохранённые PASS, циклы и счётчики доработок, решения Approve.</li><li>Конфигурации и sessions прежних runs, чат, вопросы и ответы человека.</li></ul>
+    {(task.reset_error || error && !confirming) && <p role="alert">{task.reset_error ?? error}</p>}
+    {confirming && <dialog ref={dialog} className="delete-confirmation" aria-labelledby={`reset-title-${task.id}-${role ?? 'all'}`} onCancel={event => { event.preventDefault(); if (!busy) close(); }}>
+      <h4 id={`reset-title-${task.id}-${role ?? 'all'}`}>{role ? `Сбросить ${stageNames[role]} и зависимые результаты?` : 'Сбросить все результаты?'}</h4>
+      <p>Выбранный этап: {stageNames[plan?.role ?? 'spec']}. Будут удалены следующие runs и их зависимые результаты:</p>
+      <ul>{plan?.runs.map(run => <li key={run.id}>{stageNames[run.role]} · {run.id}</li>)}</ul>
+      <p>Удаляются их отчёты, логи, управляемые файлы, sessions, чат, вопросы, ответы человека и зависимые решения/reuse PASS. Пригодные независимые результаты сохранятся.</p>
       <p>ID карточки, проект, название, исходный Markdown, revision и история требований, GitHub issue и настройки проекта сохранятся. Уже применённые из чата требования останутся в описании.</p>
       <p>Основной checkout, Git worktrees, branches и опубликованные PR сохранятся. Подтверждённый PR останется в истории сбросов. Новый цикл может создать отдельный PR; remote операции при сбросе не выполняются.</p>
-      <p>Задача вернётся в Backlog / idle. Агент не запустится автоматически.</p>
+      <p>{plan?.restart.reason} Агент не запустится автоматически. «Запустить заново» создаст новый run и session context.</p>
       {(!!blocker || version !== task.state_version) && <p role="status">{blocker ?? 'Карточка изменилась. Отмените подтверждение и откройте его снова.'}</p>}
       <div className="actions"><button disabled={busy || !!blocker || version !== task.state_version} onClick={async () => {
         setBusy(true); setError('');
         try {
-          await api(`${taskPath(task)}/reset-results`, 'POST', { state_version: version });
+          await api(`${taskPath(task)}/reset-results`, 'POST', { state_version: version, ...(role ? { stage: role } : {}) });
           close();
           await refresh();
         } catch (error) { setError((error as Error).message); await refresh().catch(() => {}); }
@@ -63,7 +73,21 @@ function TaskResultsReset({ task, refresh, notify }: { task: Task; refresh: () =
         <button ref={cancelButton} className="secondary" disabled={busy} onClick={close}>Отмена</button></div>
       {error && <p role="alert">{error}</p>}
     </dialog>}
-    <ResetHistory task={task} />
+    {!role && <ResetHistory task={task} />}
+  </section>;
+}
+
+function TaskResultsRestart({ task, refresh, executionPaused }: { task: Task; refresh: () => Promise<void>; executionPaused: boolean }) {
+  const [busy, setBusy] = useState(false), [error, setError] = useState('');
+  if (!task.results_restart || task.run_state !== 'idle') return null;
+  const blocker = resultsResetBlocker(task) ?? (executionPaused ? 'Исполнение глобально приостановлено.' : null);
+  return <section aria-label="Новый запуск после сброса"><p role="status">{task.results_restart.reason}</p>
+    <button disabled={busy || !!blocker || !!task.reset_pending} onClick={async () => {
+      setBusy(true); setError('');
+      try { await api(`${taskPath(task)}/restart-results`, 'POST', { state_version: task.state_version }); await refresh(); }
+      catch (error) { setError((error as Error).message); await refresh().catch(() => {}); } finally { setBusy(false); }
+    }}>{busy ? 'Ставим в очередь…' : `Запустить заново · ${stageNames[task.results_restart.role]}`}</button>
+    {blocker && <p role="status">{blocker}</p>}{error && <p role="alert">{error}</p>}
   </section>;
 }
 
@@ -290,6 +314,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
       })}</div>
     </div>
     <div role="tabpanel" id={`${task.id}-panel-overview`} aria-labelledby={`${task.id}-tab-overview`} hidden={tab !== 'overview'} tabIndex={0}>
+    <TaskResultsRestart task={task} refresh={refresh} executionPaused={executionPaused} />
     {!latest?.revoked && latest?.review_plan && <div aria-label="План Review">{latest.review_plan.checks.map(check => <p key={check.role} className="meta">{stageNames[check.role]}: {check.reuse_run_id ? 'Предыдущий PASS применим' : check.required ? 'Обязателен' : 'Не требуется'} — {check.reason}</p>)}</div>}
     {task.publication_status === 'pending' && <p role="status">Публикуем GitHub PR… Повторный запуск заблокирован.</p>}
     {task.publication_status === 'unknown' && <p role="alert">Исход публикации неизвестен. Нужна ручная сверка GitHub и source branch из отчёта (task marker: {task.id}). Слепой повтор запрещён; worktree сохранён.</p>}
@@ -308,7 +333,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
     {!editing && task.stage === 'backlog' && task.run_state === 'idle' && <label>Подготовка Spec <select value={specMode} disabled={busy} onChange={e => setSpecMode(e.target.value as typeof specMode)}>
       <option value="auto">Авто</option><option value="spec">Со Spec</option><option value="skip">Без Spec</option>
     </select></label>}
-    {!editing && ['backlog', 'build', 'review', 'approve'].includes(task.stage) && task.run_state === 'idle' && <button disabled={busy} onClick={async () => {
+    {!editing && !task.results_restart && ['backlog', 'build', 'review', 'approve'].includes(task.stage) && task.run_state === 'idle' && <button disabled={busy} onClick={async () => {
       setBusy(true); setError('');
       try { await api(`${taskPath(task)}/${task.stage === 'approve' ? 'approve' : task.stage === 'review' ? 'review' : task.stage === 'build' ? 'build' : 'start'}`, 'POST', { state_version: task.state_version, ...(task.stage === 'backlog' ? { spec_mode: specMode } : {}) }); await refresh(); }
       catch (error) { setError((error as Error).message); } finally { setBusy(false); }
@@ -337,6 +362,8 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
     {messages.map(message => <Message key={message.id} message={message} />)}
     </div>
     {taskRoles.map(role => <div key={role} role="tabpanel" id={`${task.id}-panel-${role}`} aria-labelledby={`${task.id}-tab-${role}`} hidden={tab !== role} tabIndex={0}>
+      <TaskResultsReset task={task} role={role} hasResults={runs.some(run => run.role === role)} refresh={refresh} notify={notify} />
+      <TaskResultsRestart task={task} refresh={refresh} executionPaused={executionPaused} />
       {runs.some(run => run.role === role) ? <RunConversation runs={runs} role={role} revision={task.revision} path={taskPath(task)} api={api} messages={messages} requests={questions} active={active && tab === role} report={run => <RunReport task={task} run={run} />} /> : <p className="empty">Этот этап ещё не запускался.</p>}
     </div>)}
     {tab !== 'overview' && messages.filter(message => !message.run_id).map(message => <Message key={message.id} message={message} />)}
@@ -482,7 +509,7 @@ function RunReport({ task, run }: { task: Task; run: AgentRun }) {
     <summary>{run.report ? 'Отчёт' : 'Диагностика'} · {run.outcome ?? run.status}{run.stale || run.description_revision !== task.revision ? ' · Неактуален' : ''}{run.finished_at && ` · ${new Date(run.finished_at).toLocaleString('ru')}`}</summary>
     <p className="meta">Версия требований: {run.description_revision} · Модель: {run.config.models[run.role]}</p>
     <p className="meta">Доработки: {run.repair_attempt}/2 · {run.round_id && `Раунд: ${run.round_id}`} {run.spec_run_id && `Spec: ${run.spec_run_id}`}<br />{run.base_sha && `Base: ${run.base_sha}`}<br />{run.head_sha && `Head: ${run.head_sha}`}<br />Branch: {run.branch}<br />{run.worktree}</p>
-    <p className="meta">Модели запуска: {allRoles.filter(role => run.config.models[role]).map(role => `${role}: ${run.config.models[role]} (${run.config.reasoning_efforts?.[role] ?? 'по умолчанию Codex'})`).join(' · ')}</p>
+    <p className="meta">Модели запуска: {allRoles.filter(role => run.config.models[role]).map(role => `${role}: ${run.config.models[role]} (${run.config.reasoning_efforts?.[role] ?? 'по умолчанию Codex'}; ${run.config.fast_modes?.[role] === undefined ? 'Fast наследуется' : run.config.fast_modes[role] ? 'Fast запрошен' : 'обычный режим'})`).join(' · ')}</p>
     <p className="meta">CLI: {run.diagnostic?.cli_version ?? 'неизвестна'} · Session: {run.diagnostic?.session_id ?? 'не предоставлен'}<br />
       Начало: {run.started_at ?? '—'} · Конец: {run.finished_at ?? '—'} · Duration: {run.started_at && run.finished_at ? `${Date.parse(run.finished_at) - Date.parse(run.started_at)} ms` : '—'}</p>
     {run.diagnostic?.usage && <p>Usage этого запуска: {JSON.stringify(run.diagnostic.usage)}. Это не остаток подписки.</p>}
@@ -499,6 +526,7 @@ function ModelSettings({ project, refresh }: { project: Project; refresh: () => 
   const [config, setConfig] = useState<Settings | null>(null);
   const [version, setVersion] = useState(project.state_version);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [catalog, setCatalog] = useState<import('../shared.js').ModelCatalog | null>(null);
   const [loading, setLoading] = useState(false);
@@ -512,20 +540,27 @@ function ModelSettings({ project, refresh }: { project: Project; refresh: () => 
   }
   useEffect(() => { void refreshCatalog(); }, [project.id]);
   async function reload() {
-    setConfig(await api<Settings>(`/projects/${project.id}/settings`));
-    setVersion(project.state_version);
+    const { state_version, ...saved } = await api<Settings & { state_version: number }>(`/projects/${project.id}/settings`);
+    setConfig(saved); setVersion(state_version); setError(''); setNotice('');
   }
   useEffect(() => { reload().catch(error => setError(error.message)); }, [project.id]);
-  return <details><summary>Модели и инструкции · {project.host}/{project.repository} · {project.checkout}</summary>
+  return <details className="model-settings" open><summary>Модели и инструкции · {project.host}/{project.repository} · {project.checkout}</summary>
     {config && <form onSubmit={async event => {
-      event.preventDefault(); if (submitting.current) return; submitting.current = true; setBusy(true); setError('');
-      try { await api(`/projects/${project.id}/settings`, 'PUT', { ...config, state_version: version }); setVersion(version + 1); await refresh(); }
+      event.preventDefault(); if (submitting.current) return; submitting.current = true; setBusy(true); setError(''); setNotice('');
+      try {
+        const saved = await api<Settings>(`/projects/${project.id}/settings`, 'PUT', { ...config, state_version: version });
+        setConfig(saved); setVersion(version + 1);
+        setNotice('Настройки сохранены.');
+        await refresh();
+      }
       catch (error) { setError((error as Error).message); } finally { submitting.current = false; setBusy(false); }
     }}>
+      <fieldset className="form-fields" disabled={busy}>
       <p role="status">{loading ? 'Получаем модели Codex…' : catalog ? `Источник: ${{ codex: 'Codex', cache: 'последний успешный каталог', defaults: 'встроенные настройки' }[catalog.source]}${catalog.updated_at ? ' · ' + new Date(catalog.updated_at).toLocaleString('ru') : ''}` : 'Каталог пока недоступен.'}</p>
       {(catalogError || catalog?.error) && <p role="alert">{catalogError || catalog?.error}</p>}
       <button type="button" className="secondary" disabled={loading} onClick={() => void refreshCatalog()}>Обновить список моделей</button>
-      <div className="fields">{roles.map(role => <div key={role}>
+      <div className="model-rows">{roles.map(role => <section className="model-row" key={role} aria-label={`Настройки роли ${role}`}>
+        <strong>{role === 'review-ui-ux' ? 'Review UI/UX' : role === 'review-code' ? 'Review Code' : role === 'review-security' ? 'Review Security' : role === 'spec' ? 'Spec' : role === 'build' ? 'Build' : 'Approve'}</strong>
         <ModelPicker role={role} value={config.models[role]!} catalog={catalog?.models ?? []} onChange={value => {
           const reasoning_efforts = { ...config.reasoning_efforts };
           if (value !== config.models[role]) delete reasoning_efforts[role];
@@ -536,13 +571,23 @@ function ModelSettings({ project, refresh }: { project: Project; refresh: () => 
           if (value) reasoning_efforts[role] = value; else delete reasoning_efforts[role];
           setConfig({ ...config, reasoning_efforts });
         }} />
-      </div>)}</div>
+        <div className="fast-setting">
+          <label><input type="checkbox" aria-label={`Fast · ${role}`} checked={config.fast_modes?.[role] === true}
+            disabled={config.fast_modes?.[role] !== true && (catalog?.source !== 'codex' || !catalog.models.find(model => model.id === config.models[role])?.fast?.supported)}
+            onChange={event => setConfig({ ...config, fast_modes: { ...config.fast_modes, [role]: event.target.checked } })} />Fast</label>
+          <p className="hint">{config.fast_modes?.[role] === undefined ? 'Наследуется настройка Codex; фактический режим неизвестен.' : config.fast_modes[role] ? 'Запрошен Fast; применение проверяется при запуске.' : 'Обычный режим (явно).'} </p>
+          {(catalog?.source !== 'codex' || !catalog.models.find(model => model.id === config.models[role])?.fast?.supported) && <p className="hint">{catalog?.source !== 'codex' ? 'Fast не подтверждён: актуальный каталог недоступен.' : catalog.models.find(model => model.id === config.models[role])?.fast?.reason ?? 'Fast не подтверждён для модели и аккаунта.'}</p>}
+          {config.fast_modes?.[role] === undefined && <button type="button" className="secondary" onClick={() => setConfig({ ...config, fast_modes: { ...config.fast_modes, [role]: false } })}>Обычный режим · {role}</button>}
+        </div>
+      </section>)}</div>
+      <p className="hint">Fast при входе через ChatGPT: расход включённых лимитов ×2,5; купленные credits и Enterprise pay-as-you-go ×2. При API key действует API token pricing; этот путь Fast пока не подтверждён. <a href="https://developers.openai.com/codex/speed" target="_blank" rel="noreferrer">Тарификация Codex</a></p>
       <label>Инструкции проекта<textarea maxLength={30000} value={config.instructions} onChange={event => setConfig({ ...config, instructions: event.target.value })} /></label>
       <p className="hint">Каталог Codex не гарантирует доступ к модели. Модель вне списка можно указать вручную. При смене модели глубина сбрасывается на «По умолчанию Codex». Конфигурация фиксируется при старте задачи; недоступная модель останавливает запуск без подмены.</p>
       {project.state_version !== version && <p role="status">Настройки изменились. Загрузите актуальную версию перед сохранением.</p>}
       <button disabled={busy || project.state_version !== version}>Сохранить настройки</button>{' '}
-      <button type="button" className="secondary" disabled={busy} onClick={() => reload().catch(error => setError(error.message))}>Загрузить актуальные</button>
-    </form>}{error && <p role="alert" className="error">{error}</p>}
+      <button type="button" className="secondary" disabled={busy} onClick={() => reload().catch(error => setError(error.message))}>Отменить / загрузить сохранённые</button>
+      </fieldset>
+    </form>}{notice && <p role="status">{notice}</p>}{!config && <button type="button" className="secondary" onClick={() => reload().catch(error => setError(error.message))}>Загрузить настройки</button>}{error && <p role="alert" className="error">{error}</p>}
   </details>;
 }
 
@@ -630,7 +675,6 @@ function App() {
   const [description, setDescription] = useState('');
   const [checkout, setCheckout] = useState('');
   const [windowName, setWindowName] = useState('');
-  const [settingsVisited, setSettingsVisited] = useState(false);
   const [projectError, setProjectError] = useState('');
   const [taskError, setTaskError] = useState('');
   const [deleteError, setDeleteError] = useState('');
@@ -645,7 +689,6 @@ function App() {
       setProjectId(filter || (snapshot.projects.some(project => project.id === projectId) ? projectId : snapshot.projects[0]?.id ?? ''));
       createDraftStarted.current = true;
     }
-    if (name === 'settings') setSettingsVisited(true);
     if (name === 'delete') { setDeleting(snapshot.projects.find(project => project.id === filter) ?? null); setDeleteError(''); }
     setWindowName(name);
   }
@@ -678,7 +721,7 @@ function App() {
           const payload = JSON.parse(change.payload) as { state_version?: number };
           setNotice('Карточка скрыта. Результат остановки и история доступны в архиве.', payload.state_version ? `archive:${change.task_id}:${payload.state_version}` : `event:${change.id}`);
         }
-        if (change.type === 'task.results-reset') setNotice('Все результаты сброшены. Задача в Backlog; новый запуск — отдельным действием.');
+        if (change.type === 'task.results-reset') setNotice('Выбранные и зависимые результаты сброшены. Новый запуск — отдельным действием.');
         if (change.type === 'task.restored') setNotice('Карточка возвращена на доску. Исполнение автоматически не возобновляется.');
       });
       events.onerror = () => setConnection('Live-обновления недоступны. Переподключаемся. Это само по себе не означает остановку задачи. Обновите страницу, чтобы получить актуальное состояние');
@@ -780,7 +823,7 @@ function App() {
     </Modal>
     <Modal open={windowName === 'settings'} title="Модели и инструкции" close={closeWindow}>
       {!snapshot.projects.length && <p>Сначала подключите проект.</p>}
-      {settingsVisited && snapshot.projects.map(project => <ModelSettings key={project.id} project={project} refresh={refresh} />)}
+      {windowName === 'settings' && snapshot.projects.map(project => <ModelSettings key={project.id} project={project} refresh={refresh} />)}
       <details className="projects"><summary>Подключённые проекты ({snapshot.projects.length})</summary>{snapshot.projects.map(p => <div key={p.id}>
         <strong>{p.host}/{p.repository}</strong>{' '}
         {p.hosting === 'github' && <IssueRefresh project={p} syncing={!!snapshot.issue_syncing?.includes(p.id)} />}

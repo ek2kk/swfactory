@@ -78,7 +78,7 @@ for (const scenario of ['edit', 'committed', 'committed-plus-edit', 'token-expre
   assert.throws(queue, /Spec/);
   writeFileSync(join(checkout, 'user-work'), 'untouched');
   const runner = controller(async input => {
-    assert.equal(input.model, 'selected-build'); assert.equal(input.reasoningEffort, 'high'); assert.match(input.prompt, /Keep it simple/); assert.match(input.prompt, /README says hello/); assert.match(input.prompt, /AGENTS.md/);
+    assert.equal(input.model, 'selected-build'); assert.equal(input.reasoningEffort, 'high'); assert.equal(input.fast, false); assert.match(input.prompt, /Keep it simple/); assert.match(input.prompt, /README says hello/); assert.match(input.prompt, /AGENTS.md/);
     assert.match(input.prompt, /Mode: initial/); assert.doesNotMatch(input.prompt, /Repair the existing implementation/);
     writeFileSync(join(input.cwd, 'README.md'), 'hello');
     if (scenario.endsWith('token-expressions')) writeFileSync(join(input.cwd, 'README.md'), [
@@ -307,4 +307,35 @@ for (const target of ['README.md', '../outside', '/etc/passwd', 'missing', '.git
   assert.equal(git(initial.worktree, 'ls-tree', 'HEAD', 'CLAUDE.md').slice(0, 6), '120000');
   rmSync(join(initial.worktree, 'CLAUDE.md')); symlinkSync('./README.md', join(initial.worktree, 'CLAUDE.md'));
   await assert.rejects(commitBuild(initial, { ...ready, changed_paths: ['README.md', 'CLAUDE.md'] }), /symlink/);
+});
+
+test('reset Build preserves Spec but new Build fetches current target into a fresh worktree and session', async t => {
+  const { store, directory, project, task, initial, checkout, git, queue, controller } = await fixture(t);
+  const old = queue();
+  const builder = controller(async input => { writeFileSync(join(input.cwd, 'README.md'), 'old implementation'); return ready; });
+  builder.enqueue(old); await builder.close();
+  const oldHead = git(old.worktree, 'rev-parse', 'HEAD');
+  store.db.prepare('UPDATE runs SET diagnostic = ? WHERE id = ?').run(JSON.stringify({ session_id: 'old-build-session', execution_finished: true }), old.id);
+  // Fixture Git commands have all exited; there are no agent subprocesses to reconcile.
+  store.db.prepare('UPDATE tasks SET stop_unverified = 0 WHERE id = ?').run(task.id);
+  const resetId = crypto.randomUUID();
+  store.mutate(resetId, 'build-reset', () => store.beginResultsReset(project.id, task.id, store.task(project.id, task.id).state_version, resetId, 'build'));
+  const cleaner = new SpecController(store, directory, () => {});
+  cleaner.completeResultsReset(task.id, resetId); await cleaner.close();
+  assert.throws(() => store.queueBuild(project.id, task.id, store.task(project.id, task.id).state_version), /нового worktree/);
+  writeFileSync(join(checkout, 'README.md'), 'current target'); git(checkout, 'add', '.'); git(checkout, 'commit', '-m', 'advance target'); git(checkout, 'push', 'origin', 'main');
+  const target = git(checkout, 'rev-parse', 'HEAD');
+  const fresh = store.queueResultsRestart(project.id, task.id, store.task(project.id, task.id).state_version, directory);
+  assert.equal(fresh.spec_run_id, initial.id); assert.equal(fresh.parent_run_id, null); assert.equal(fresh.base_sha, null);
+  assert.notEqual(fresh.worktree, old.worktree); assert.notEqual(fresh.branch, old.branch); assert.deepEqual(fresh.diagnostic, {});
+  let executed = 0;
+  const runner = controller(async input => {
+    executed++; assert.equal(readFileSync(join(input.cwd, 'README.md'), 'utf8'), 'current target');
+    assert.doesNotMatch(input.prompt, /old-build-session|old implementation/);
+    writeFileSync(join(input.cwd, 'README.md'), 'hello'); return ready;
+  });
+  runner.enqueue(fresh); await runner.close();
+  const saved = store.readRun(project.id, task.id, fresh.id);
+  assert.equal(saved.status, 'completed', saved.error ?? ''); assert.equal(saved.base_sha, target); assert.equal(executed, 1);
+  assert.equal(git(old.worktree, 'rev-parse', 'HEAD'), oldHead); assert.equal(readFileSync(join(old.worktree, 'README.md'), 'utf8'), 'old implementation');
 });

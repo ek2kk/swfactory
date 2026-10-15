@@ -310,7 +310,7 @@ for (const version of [11, 12]) for (const history of ['title', 'edited-title', 
   assert.equal(store.rawTask(project.id, task.id).deletion_state, 'deleted');
   await controller.close(); controller = undefined; store.close();
   store = new Store(directory);
-  assert.equal(store.db.pragma('user_version', { simple: true }), 21);
+  assert.equal(store.db.pragma('user_version', { simple: true }), 22);
   assert.equal(store.rawTask(project.id, task.id).stop_unverified, 0, 'migration must not repeat after reconciliation');
 });
 

@@ -7,6 +7,7 @@ import { transformSync } from 'esbuild';
 import * as jsx from 'react/jsx-runtime';
 import * as shared from '../src/shared.js';
 import * as stageHistory from '../src/client/stageHistory.js';
+import { ModelPicker, ReasoningPicker } from '../src/client/models.js';
 import { TaskMarkdown } from '../src/client/TaskMarkdown.js';
 
 // Exercise the real components with the same hook/module doubles as the other client tests.
@@ -41,9 +42,9 @@ function hooks() {
   }, dispose() { effects.forEach(effect => effect.cleanup?.()); } };
 }
 
-function load(name: 'main' | 'windows', modules: Record<string, unknown>, globals = {}) {
+function load(name: 'main' | 'windows' | 'models', modules: Record<string, unknown>, globals = {}) {
   const module = { exports: {} as any };
-  const code = transformSync(readFileSync(new URL(`../src/client/${name}.tsx`, import.meta.url), 'utf8'), { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code;
+  const code = transformSync(readFileSync(new URL(`../src/client/${name}.tsx`, import.meta.url), 'utf8') + (name === 'main' ? '\nexport { ModelSettings };' : ''), { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code;
   runInNewContext(code, { module, ...globals, require(name: string) {
     assert.ok(Object.hasOwn(modules, name), name); return modules[name];
   } });
@@ -230,4 +231,111 @@ test('toast expires at 5 seconds, pauses on hover/focus, and persistent notices 
       assert.equal(dismissed, notice.persistent ? 1 : 2, 'manual dismissal remains available');
     } finally { runtime.dispose(); }
   }
+});
+
+test('modal Tab wraps across visible enabled tab stops, including collapsed/expanded project details', () => {
+  const document = { activeElement: null as unknown };
+  const { Modal } = load('windows', {
+    react: { useRef: () => ({ current: null }), useId: () => 'dialog-title', useEffect() {} },
+    'react/jsx-runtime': jsx,
+  }, { document });
+  const control = (visible = true, disabled = false, tabIndex = 0) => ({
+    tabIndex, matches: () => disabled, getClientRects: () => [{}],
+    checkVisibility: () => visible, focus() { document.activeElement = this; },
+  });
+  const first = control(), summary = control(), projectButton = control(false);
+  const hidden = control(false), disabled = control(true, true), negativeTabIndex = control(true, false, -1);
+  const controls = [first, summary, projectButton, hidden, disabled, negativeTabIndex];
+  const dialog = Modal({ open: true, title: 'Модели и инструкции', close() {}, children: null });
+  const pressTab = (active: unknown, shiftKey: boolean) => {
+    document.activeElement = active;
+    let prevented = false;
+    dialog.props.onKeyDown({ key: 'Tab', shiftKey, currentTarget: { querySelectorAll: () => controls }, preventDefault() { prevented = true; } });
+    return prevented;
+  };
+  for (const expanded of [false, true]) {
+    projectButton.checkVisibility = () => expanded;
+    const last = expanded ? projectButton : summary;
+    assert.equal(pressTab(last, false), true);
+    assert.equal(document.activeElement, first);
+    assert.equal(pressTab(first, true), true);
+    assert.equal(document.activeElement, last);
+    assert.equal(pressTab(first, false), false, 'native Tab handles non-boundary controls');
+  }
+});
+
+
+test('settings drafts retain values on failure/conflict, guard duplicate sends and reset only the changed role', async t => {
+  const runtime = hooks(); t.after(() => runtime.dispose());
+  const initial = { models: { ...shared.defaultModels }, instructions: 'Original', reasoning_efforts: { spec: 'high', build: 'low' } };
+  let saved: shared.Settings = initial, state_version = 1, failure = '', sends = 0, release: (() => void) | undefined;
+  const api = async (path: string, method: string, payload: any) => {
+    if (path.endsWith('/models')) return { source: 'codex', updated_at: null, models: [] };
+    if (method !== 'PUT') return { ...saved, state_version };
+    sends++; await new Promise<void>(resolve => { release = resolve; });
+    if (failure) throw new Error(failure);
+    const { state_version: version, ...config } = payload;
+    assert.equal(version, state_version); saved = config; state_version++; return saved;
+  };
+  const { ModelSettings } = load('main', {
+    react: runtime.react, 'react/jsx-runtime': jsx, 'react-dom/client': { createRoot: () => ({ render() {} }) },
+    './api.js': { api }, './theme.js': { readTheme: () => 'system', applyTheme() {} },
+    '../shared.js': shared, './stageHistory.js': stageHistory, './TaskMarkdown.js': { TaskMarkdown },
+    './windows.js': {}, './models.js': { ModelPicker, ReasoningPicker }, './chat.js': {}, './output.js': {}, './taskView.js': {}, './style.css': {},
+  }, { document: { getElementById: () => ({}) } });
+  const current = project('one');
+  const render = () => runtime.render(() => ModelSettings({ project: current, refresh: async () => { current.state_version = state_version; } }));
+  render(); await setImmediate();
+  const picker = (role: string) => elements(render()).find(node => node.type === ModelPicker && node.props.role === role);
+  const effort = (role: string) => elements(render()).find(node => node.type === ReasoningPicker && node.props.role === role);
+  picker('spec').props.onChange('manual-model');
+  assert.equal(effort('spec').props.value, ''); assert.equal(effort('build').props.value, 'low');
+  effort('spec').props.onChange('medium');
+  elements(render()).find(node => node.props['aria-label'] === 'Fast · spec').props.onChange({ target: { checked: true } });
+  assert.equal(effort('spec').props.value, 'medium'); assert.equal(picker('spec').props.value, 'manual-model');
+  elements(render()).find(node => node.type === 'textarea').props.onChange({ target: { value: 'Draft \nunchanged' } });
+  failure = 'Network unavailable';
+  const pending = submit(render()); await submit(render()); assert.equal(sends, 1); release!(); await pending;
+  assert.equal(elements(render()).find(node => node.type === 'textarea').props.value, 'Draft \nunchanged');
+  assert.match(elements(render()).find(node => node.props.role === 'alert' && node.props.className === 'error').props.children, /Network/);
+  failure = 'Настройки изменились';
+  const conflicted = submit(render()); release!(); await conflicted;
+  assert.equal(effort('spec').props.value, 'medium');
+  current.state_version = 2; state_version = 2;
+  assert.equal(button(render(), 'Сохранить настройки').props.disabled, true);
+  await button(render(), 'Отменить / загрузить сохранённые').props.onClick();
+  assert.equal(picker('spec').props.value, initial.models.spec);
+  assert.equal(effort('spec').props.value, 'high');
+  assert.equal(elements(render()).find(node => node.props['aria-label'] === 'Fast · spec').props.checked, false);
+  assert.equal(button(render(), 'Сохранить настройки').props.disabled, false);
+  failure = '';
+  const successful = submit(render()); release!(); await successful;
+  assert.equal(saved.fast_modes, undefined, 'saving instructions must not materialize legacy false');
+  assert.equal(button(render(), 'Сохранить настройки').props.disabled, false);
+});
+
+test('effort stops contain only catalog states and expose current/default/unconfirmed values', () => {
+  for (const options of [undefined, [], [{ effort: 'medium', description: 'Only medium' }], [{ effort: 'low', description: '' }, { effort: 'max', description: 'Max' }]]) {
+    let selected = 'saved-unknown';
+    const tree = ReasoningPicker({ role: 'build', value: selected, model: { id: 'm', name: 'M', reasoning_efforts: options }, onChange: value => { selected = value; } });
+    const radios = elements(tree).filter(node => node.type === 'input');
+    assert.deepEqual(radios.map(radio => radio.props.value), ['', ...(options?.map(option => option.effort) ?? [])]);
+    assert.ok(radios.every(radio => radio.props['aria-label'].includes('build')));
+    assert.match(elements(tree).find(node => node.props['aria-live'] === 'polite').props.children.join(''), /saved-unknown/);
+    elements(tree).find(node => node.type === 'button').props.onClick(); assert.equal(selected, '');
+    radios.at(-1)!.props.onChange(); assert.equal(selected, options?.at(-1)?.effort ?? '');
+  }
+});
+
+
+test('manual Model ID uses a valid HTML Unicode Sets pattern', () => {
+  const runtime = hooks();
+  const { ModelPicker: Picker } = load('models', { react: runtime.react, 'react/jsx-runtime': jsx });
+  const render = () => runtime.render(() => Picker({ role: 'spec', value: 'custom/model-v1', catalog: [], onChange() {} }));
+  elements(render()).find(node => node.type === 'select').props.onChange({ target: { value: '' } });
+  const pattern = elements(render()).find(node => node.type === 'input').props.pattern;
+  const regex = new RegExp(`^(?:${pattern})$`, 'v');
+  assert.equal(regex.test('custom/model-v1:2026_10.15'), true);
+  for (const invalid of ['bad model', '-model', 'model?key=value']) assert.equal(regex.test(invalid), false);
+  runtime.dispose();
 });
