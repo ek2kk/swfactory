@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { publicationBlocksLocal, type AgentRun, type ChatMessage, type Task, type TranscriptEntry, type HumanRequest, type SavedEvent } from '../shared.js';
 
 import { HistoryFlow } from './taskView.js';
-import { stageTimeline } from './stageHistory.js';
+import { reviewSummary, stageTimeline } from './stageHistory.js';
 
 type Api = <T>(path: string, method?: string, body?: Record<string, unknown>) => Promise<T>;
 const delivery = { queued: 'Ожидает доставки', sending: 'Передаём в CLI', delivered: 'Принято активным turn', failed: 'Не доставлено', unknown: 'Доставка неизвестна — нужна сверка', applied: 'Требования применены · запустите новую Spec', revoked: 'Отозвано' };
@@ -70,10 +70,12 @@ export function RunConversation({ runs, role, revision, path, api, messages, req
     return () => { disposed = true; clearTimeout(timer); };
   }, [active, signature, path, retry]);
   const timeline = stageTimeline(runs, entries, messages, events, requests).filter(item => item.run?.role === role || item.message?.run_id && selected.some(run => run.id === item.message?.run_id));
+  const reviews = reviewSummary(runs, revision);
   return <section className="conversation" aria-label="История работы">
     <div ref={start} className="actions"><button className="secondary" onClick={() => start.current?.scrollIntoView({ block: 'start' })}>К последним сообщениям</button></div>
     <HistoryFlow>{timeline.map(item => <div key={item.id} data-history-id={item.id}>
-      {item.kind !== 'report' && item.run && (item.run.stale || item.run.description_revision !== revision) && <span className="meta">↺ Неактуально · Версия требований: {item.run.description_revision}</span>}
+      {item.kind !== 'report' && item.run && (item.run.revoked || item.run.stale || item.run.description_revision !== revision
+        || item.run.role.startsWith('review-') && !reviews?.entries.some(entry => entry.current && entry.run?.id === item.run?.id)) && <span className="meta">↺ Неактуально{item.run.role.startsWith('review-') ? ', не учитывается в текущем раунде' : ''} · Версия требований: {item.run.description_revision}</span>}
       {item.kind === 'message' ? <Message message={item.message!} /> : item.kind === 'report' ? report?.(item.run!) :
         <article className={`chat-message ${item.kind}-message${item.alert ? ' history-alert' : ''}`}>
           {item.kind === 'tool' ? <details><summary>{item.title}{item.status && ` · ${item.status}`} · {item.text.split('\n')[0]?.slice(0, 150) || 'Детали вызова'}</summary><pre>{item.text}</pre></details> : <>

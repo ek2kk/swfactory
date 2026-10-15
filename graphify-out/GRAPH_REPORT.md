@@ -1,16 +1,16 @@
-# Graph Report - swfactory-pr96-integration-20261015  (2026-10-15)
+# Graph Report - 6ddec96d-381f-4d1d-ac8d-0725464e059e  (2026-10-15)
 
 ## Corpus Check
-- 102 files · ~140,726 words
+- 102 files · ~142,389 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 689 nodes · 2336 edges · 25 communities (23 shown, 2 thin omitted)
-- Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 46 edges (avg confidence: 0.76)
+- 690 nodes · 2347 edges · 22 communities (20 shown, 2 thin omitted)
+- Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 47 edges (avg confidence: 0.76)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `37245f40`
+- Built from commit: `6a0ba3bf`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -34,10 +34,7 @@
 - Build Commits and Source Hashing
 - SSE and Results Reset
 - Task View and Scroll State
-- Model Discovery and Catalogs
 - Server TypeScript Build
-- Application Theme Settings
-- Agent Output Progress
 
 ## God Nodes (most connected - your core abstractions)
 1. `Store` - 97 edges
@@ -58,10 +55,10 @@
   test/taskMarkdown.test.ts → src/client/TaskMarkdown.tsx
 - `taskCard()` --indirect_call--> `TaskMarkdown()`  [INFERRED]
   test/taskView.test.ts → src/client/TaskMarkdown.tsx
+- `fixture()` --calls--> `createApp()`  [EXTRACTED]
+  test/projectDeletion.test.ts → src/server/app.ts
 - `app()` --indirect_call--> `TaskMarkdown()`  [INFERRED]
   test/windows.test.ts → src/client/TaskMarkdown.tsx
-- `fixture()` --calls--> `createApp()`  [EXTRACTED]
-  test/api.test.ts → src/server/app.ts
 
 ## Import Cycles
 - 4-file cycle: `src/server/diagnostics.ts -> src/server/store.ts -> src/server/processes.ts -> src/server/logging.ts -> src/server/diagnostics.ts`
@@ -70,11 +67,11 @@
 - **Requirements to reviewed GitHub publication** — readme_spec_modes, readme_review_plan, readme_github_publication, readme_source_integrity [EXTRACTED 1.00]
 - **Independent visibility stop evidence and capacity** — docs_task_deletion_visibility, docs_task_deletion_stop_verification, readme_fifo_scheduler [EXTRACTED 1.00]
 
-## Communities (25 total, 2 thin omitted)
+## Communities (22 total, 2 thin omitted)
 
 ### Community 0 - "Application and Spec Lifecycle"
-Cohesion: 0.09
-Nodes (17): createApp(), fetchBase(), preflight(), verifyRepository(), checkExecution(), ExecutionProcess, executionSignal(), SpecController (+9 more)
+Cohesion: 0.07
+Nodes (36): createApp(), equal(), object(), Chat, fetchBase(), preflight(), verifyRepository(), checkExecution() (+28 more)
 
 ### Community 1 - "Documentation and Agent Workflows"
 Cohesion: 0.08
@@ -85,96 +82,84 @@ Cohesion: 0.05
 Nodes (41): better-sqlite3, fastify, @fastify/static, dependencies, better-sqlite3, fastify, @fastify/static, react (+33 more)
 
 ### Community 3 - "Review Planning and Shared Types"
-Cohesion: 0.08
-Nodes (15): errorKind(), loggerOptions(), context, processCensus(), ProcessLog, ProcessRow, ProcessScope, resolveLog() (+7 more)
+Cohesion: 0.14
+Nodes (4): ExecutionProcess, ProcessScope, resolveLog(), Titles
 
 ### Community 4 - "GitHub Issue Synchronization"
-Cohesion: 0.14
-Nodes (19): ModelSettings(), applicableReview(), planResultsReset(), ResultsResetPlan, ResultsRestart, makeReviewPlan(), reviewImpact(), ResultsCleanup (+11 more)
+Cohesion: 0.15
+Nodes (21): ModelSettings(), applicableReview(), planResultsReset(), ResultsResetPlan, ResultsRestart, makeReviewPlan(), reviewImpact(), ResultsCleanup (+13 more)
 
 ### Community 5 - "Codex Execution and Failures"
-Cohesion: 0.05
-Nodes (82): base, root, directory, root, repo, blocked(), commitBuild(), fileContent() (+74 more)
+Cohesion: 0.07
+Nodes (48): base, root, directory, root, AgentOutput(), RunProgress(), approveSchema, CodexInput (+40 more)
 
 ### Community 6 - "Dependency Validation and Schemas"
-Cohesion: 0.21
-Nodes (16): Settings, fixture(), fixture(), fixture(), application(), repository(), until(), fixture() (+8 more)
+Cohesion: 0.16
+Nodes (19): blocked(), commitBuild(), fileContent(), paths(), safePath(), sourceHash(), buildSchema, reviewSchema (+11 more)
 
 ### Community 7 - "Client API and Task Controls"
-Cohesion: 0.15
-Nodes (26): api(), pendingRequests, Composer(), ArchivedTask(), DependencyStatus(), History(), HumanDecision(), HumanQuestions() (+18 more)
+Cohesion: 0.06
+Nodes (51): api(), pendingRequests, Api, Composer(), delivery, Message(), RunConversation(), App() (+43 more)
 
 ### Community 8 - "Scheduling and Process Logging"
-Cohesion: 0.18
-Nodes (3): TaskMarkdown(), render(), taskCard()
+Cohesion: 0.21
+Nodes (12): saveArtifact(), inspectProject(), remoteIdentity(), Run, context, exec(), processCensus(), ProcessLog (+4 more)
 
 ### Community 9 - "Chat and Stage History"
-Cohesion: 0.13
-Nodes (18): Api, delivery, Message(), RunConversation(), eventTitles, HistoryItem, stageNames, stageStatus() (+10 more)
+Cohesion: 0.21
+Nodes (8): artifactDirectory(), readLog(), Problem, readTranscript(), transcriptEntry(), TranscriptEntry, needsInput, projectInput
 
 ### Community 10 - "Git Operations and Publication"
-Cohesion: 0.15
-Nodes (8): app(), button(), elements(), hooks(), load(), modal(), render(), submit()
+Cohesion: 0.05
+Nodes (18): ModelPicker(), ReasoningPicker(), TaskMarkdown(), ModelOption, card(), control(), elements(), Source (+10 more)
 
 ### Community 11 - "Application Setup and Validation"
-Cohesion: 0.06
-Nodes (35): headers, Action, description, equal(), object(), text, uuid, version (+27 more)
+Cohesion: 0.12
+Nodes (16): Action, description, text, uuid, version, readReport(), chooseProjectFolder(), exec (+8 more)
 
 ### Community 12 - "Process Shutdown and Titles"
-Cohesion: 0.22
-Nodes (3): card(), control(), elements()
+Cohesion: 0.18
+Nodes (15): removeResultArtifacts(), ConditionResult, dependenciesSchema, DiagnoseDependencies, text, VerifyCondition, classifySpec(), schema (+7 more)
 
 ### Community 13 - "TypeScript and Vite Configuration"
 Cohesion: 0.11
 Nodes (17): DOM, ES2023, node, src, test, vite.config.ts, compilerOptions, esModuleInterop (+9 more)
 
 ### Community 14 - "Agent Output and Validation"
-Cohesion: 0.31
-Nodes (4): subscribe(), Snapshot, fixture(), Response
-
-### Community 15 - "Artifacts and Conversation Storage"
-Cohesion: 0.21
-Nodes (8): ModelCatalogs, normalizeModels(), defaultModels, ModelCatalog, roles, model, ready, models
+Cohesion: 0.17
+Nodes (11): BuildResult, ReviewResult, SpecResult, ready, spec, approved(), pass, ready (+3 more)
 
 ### Community 16 - "Build Commits and Source Hashing"
-Cohesion: 0.50
-Nodes (3): ModelPicker(), ReasoningPicker(), ModelOption
+Cohesion: 0.33
+Nodes (5): repo, generateTitle(), parseTitle(), titleToolRestrictions, Task
 
 ### Community 17 - "SSE and Results Reset"
-Cohesion: 0.11
-Nodes (15): githubIssueCommand(), GithubIssues, ImportFailure, ImportLoop, IssueCommand, parseIssue(), GithubIssue, Project (+7 more)
-
-### Community 18 - "Task View and Scroll State"
-Cohesion: 0.18
-Nodes (4): DescriptionDraft, HistoryFlow, Props, TaskView
+Cohesion: 0.09
+Nodes (18): githubIssueCommand(), GithubIssues, ImportFailure, ImportLoop, IssueCommand, parseIssue(), subscribe(), GithubIssue (+10 more)
 
 ### Community 23 - "Server TypeScript Build"
 Cohesion: 0.22
 Nodes (8): src/server, src/shared.ts, ./tsconfig.json, compilerOptions, outDir, rootDir, extends, include
 
-### Community 25 - "Application Theme Settings"
-Cohesion: 0.43
-Nodes (4): App(), applyTheme(), readTheme(), Theme
-
 ## Knowledge Gaps
-- **118 isolated node(s):** `name`, `version`, `private`, `type`, `node` (+113 more)
+- **117 isolated node(s):** `name`, `version`, `private`, `type`, `node` (+112 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **2 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `createApp()` connect `Application and Spec Lifecycle` to `Review Planning and Shared Types`, `GitHub Issue Synchronization`, `Codex Execution and Failures`, `Dependency Validation and Schemas`, `Application Setup and Validation`, `Agent Output and Validation`, `Artifacts and Conversation Storage`, `SSE and Results Reset`?**
-  _High betweenness centrality (0.077) - this node is a cross-community bridge._
-- **Why does `Store` connect `Application and Spec Lifecycle` to `Review Planning and Shared Types`, `GitHub Issue Synchronization`, `Codex Execution and Failures`, `Dependency Validation and Schemas`, `Application Setup and Validation`, `Agent Output and Validation`, `Artifacts and Conversation Storage`, `SSE and Results Reset`, `Agent Output Progress`?**
+- **Why does `createApp()` connect `Application and Spec Lifecycle` to `Review Planning and Shared Types`, `GitHub Issue Synchronization`, `Codex Execution and Failures`, `Dependency Validation and Schemas`, `Scheduling and Process Logging`, `Chat and Stage History`, `Application Setup and Validation`, `SSE and Results Reset`, `Task View and Scroll State`?**
+  _High betweenness centrality (0.076) - this node is a cross-community bridge._
+- **Why does `Store` connect `Application and Spec Lifecycle` to `Review Planning and Shared Types`, `GitHub Issue Synchronization`, `Codex Execution and Failures`, `Dependency Validation and Schemas`, `Scheduling and Process Logging`, `Chat and Stage History`, `Application Setup and Validation`, `Process Shutdown and Titles`, `Agent Output and Validation`, `Build Commits and Source Hashing`, `SSE and Results Reset`?**
   _High betweenness centrality (0.073) - this node is a cross-community bridge._
-- **Why does `AgentRun` connect `Application and Spec Lifecycle` to `Review Planning and Shared Types`, `GitHub Issue Synchronization`, `Codex Execution and Failures`, `Client API and Task Controls`, `Chat and Stage History`, `Application Setup and Validation`, `Agent Output Progress`?**
-  _High betweenness centrality (0.057) - this node is a cross-community bridge._
+- **Why does `AgentRun` connect `Application and Spec Lifecycle` to `GitHub Issue Synchronization`, `Codex Execution and Failures`, `Dependency Validation and Schemas`, `Client API and Task Controls`, `Scheduling and Process Logging`, `Chat and Stage History`, `Application Setup and Validation`, `Process Shutdown and Titles`?**
+  _High betweenness centrality (0.056) - this node is a cross-community bridge._
 - **Are the 3 inferred relationships involving `createApp()` (e.g. with `.run()` and `.events()`) actually correct?**
   _`createApp()` has 3 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `name`, `version`, `private` to the rest of the system?**
-  _118 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _117 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Application and Spec Lifecycle` be split into smaller, more focused modules?**
-  _Cohesion score 0.08604954367666232 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.06740481740481741 - nodes in this community are weakly interconnected._
 - **Should `Documentation and Agent Workflows` be split into smaller, more focused modules?**
   _Cohesion score 0.07610993657505286 - nodes in this community are weakly interconnected._

@@ -12,6 +12,7 @@ import { publishGithub } from '../src/server/publication.js';
 import { run as command } from '../src/server/git.js';
 import { executeReview, validateReview, type ExecuteBuild, type ExecuteReview } from '../src/server/codex.js';
 import type { BuildResult, SpecResult, ReviewResult } from '../src/shared.js';
+import { reviewSummary } from '../src/client/stageHistory.js';
 
 const spec: SpecResult = { title: 'Hello', outcome: 'READY', summary: 'Implement hello', requirements: ['Say hello'], acceptance_criteria: ['README says hello'], assumptions: [], out_of_scope: [], questions: [] };
 const ready: BuildResult = { outcome: 'READY', summary: 'Implemented', changed_paths: ['README.md'], actions: ['Edited README'], checks: ['Read README: hello'], questions: [] };
@@ -50,6 +51,22 @@ function visualResult(result: ReviewResult, role?: string): ReviewResult {
   return role === 'review-ui-ux' ? { ...result, ui: { summary: result.summary, findings: result.findings, evidence: result.evidence }, ux: { summary: 'UX checked', findings: [], evidence: result.evidence } } : result;
 }
 const pass: ReviewResult = { outcome: 'PASS', summary: 'Looks good', findings: [], evidence: ['Inspected change'], applicable: true, applicability: '', questions: [] };
+test('four-role snapshot gate and UI agree on current Code CHANGES despite previous PASS and exhausted repairs', async t => {
+  const { store, build } = await fixture(t);
+  const config = structuredClone(build.config);
+  delete config.models['review-ui-ux'];
+  const old = { ...build, config, review_plan: undefined, id: 'previous-code', role: 'review-code' as const, status: 'completed' as const, outcome: 'PASS' as const, round_id: 'previous', head_sha: 'af36e71f' };
+  const current = (['review-code', 'review-security', 'review-ui', 'review-ux'] as const).map(role => ({ ...old,
+    id: role, role, round_id: build.id, head_sha: 'f21c38c4', repair_attempt: 2, outcome: role === 'review-code' ? 'CHANGES' as const : 'PASS' as const }));
+  const snapshot = [old, ...current];
+  const gate = { runs: () => snapshot, reviewPlan: () => undefined } as unknown as Store;
+  assert.equal(Store.prototype.reviewPasses.call(gate, current.at(-1)!), false);
+  assert.deepEqual(reviewSummary(snapshot, 1)!.blockers.map(entry => entry.role), ['review-code']);
+  current[0].outcome = 'PASS';
+  assert.equal(Store.prototype.reviewPasses.call(gate, current.at(-1)!), true);
+  assert.equal(reviewSummary(snapshot, 1)!.passed, true);
+  assert.equal(store.runs().filter(run => run.role === 'approve').length, 0);
+});
 test('interrupted Review preserves work and permits an explicit retry only after execution stops', async t => {
   const { store, project, task, queue, controller, root } = await fixture(t);
   const run = queue();
@@ -671,7 +688,11 @@ for (const changes of [false, true]) test(`legacy frozen configs survive restart
     if (changes) {
       const repair = restored.queueRepair(project.id, task.id, restored.task(project.id, task.id).state_version, true);
       assert.deepEqual(repair.config, legacy);
-    } else assert.equal(restored.publicationRun(project.id, task.id).role, 'approve');
+    } else {
+      assert.equal(last.repair_attempt, 2);
+      assert.equal(restored.reviewPasses(last), true);
+      assert.equal(restored.publicationRun(project.id, task.id).role, 'approve');
+    }
   } finally { restored.close(); }
 });
 

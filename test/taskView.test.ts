@@ -32,7 +32,7 @@ function taskCard(api = async (..._args: any[]): Promise<any> => ({})) {
     './taskView.js': {}, './chat.js': { Composer() {}, Message() {}, RunConversation() {} },
     './output.js': { AgentOutput() {}, RunProgress() {} },
   };
-  runInNewContext(transformSync(source.replace(/createRoot\(document[^\n]+/, 'export { TaskCard, ArchivedTask, History, TaskResultsReset, TaskResultsRestart, ResetHistory, TaskDisposition, DependencyStatus };'), { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code, {
+  runInNewContext(transformSync(source.replace(/createRoot\(document[^\n]+/, 'export { TaskCard, ArchivedTask, History, TaskResultsReset, TaskResultsRestart, ResetHistory, TaskDisposition, DependencyStatus, RunReport };'), { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code, {
     module, require(name: string) { assert.ok(Object.hasOwn(modules, name), name); return modules[name]; },
   });
   const props = {
@@ -443,7 +443,7 @@ test('partial CHANGES names blocking reviewer and exposes report and manual repa
   const card = taskCard();
   Object.assign(card.props.task, { stage: 'needs-human', run_state: 'interrupted' });
   const run = card.props.runs[0];
-  Object.assign(run, { role: 'review-code', outcome: 'CHANGES', repair_attempt: 2, report: 1, stale: 0 });
+  Object.assign(run, { role: 'review-code', outcome: 'CHANGES', round_id: 'round', repair_attempt: 2, report: 1, stale: 0 });
   const nodes = elements(card.render().tree);
   assert.ok(nodes.some(n => n.type === 'p' && JSON.stringify(n.props.children).includes('Review · Code')));
   assert.ok(nodes.some(n => n.type?.name === 'RunReport' && n.props.run === run));
@@ -452,6 +452,59 @@ test('partial CHANGES names blocking reviewer and exposes report and manual repa
     Object.assign(run, { outcome });
     assert.ok(!elements(card.render().tree).some(n => n.type === 'button' && n.props.children === 'Доработать: новый цикл (до двух доработок)'));
   }
+});
+
+test('last UX PASS names current Code CHANGES, separates the repair limit and marks historical PASS', () => {
+  const card = taskCard();
+  Object.assign(card.props.task, { stage: 'needs-human', run_state: 'interrupted' });
+  const config = { models: { ...shared.defaultModels, 'review-ui': 'ui', 'review-ux': 'ux' }, instructions: '' };
+  delete config.models['review-ui-ux'];
+  const old = { ...card.props.runs[0], config, id: 'old-code', role: 'review-code', outcome: 'PASS', round_id: 'old', head_sha: 'af36e71f' };
+  const current = shared.legacyReviewRoles.map(role => ({ ...old, id: role, role, round_id: 'current', head_sha: 'f21c38c4', repair_attempt: 2,
+    outcome: role === 'review-code' ? 'CHANGES' : 'PASS' }));
+  card.props.runs = [old, ...current];
+  let nodes = elements(card.render().tree);
+  const summary = nodes.find(n => n.props['aria-label'] === 'Результаты текущего Review');
+  const text = JSON.stringify(summary.props.children);
+  assert.match(text, /Review Code требует доработок/); assert.doesNotMatch(text, /Review UX требует доработок/);
+  assert.match(text, /f21c38c4/); assert.doesNotMatch(text, /af36e71f/);
+  assert.equal(elements(summary).filter(n => n.type === 'li').length, 4);
+  assert.ok(nodes.some(n => n.type === 'p' && JSON.stringify(n.props.children).includes('лимит двух доработок исчерпан')));
+  const blockerReport = elements(summary).find(n => n.type?.name === 'RunReport');
+  assert.equal(blockerReport.props.run.id, 'review-code'); assert.equal(blockerReport.props.preview, true);
+  const codeHistory = nodes.find(n => n.type?.name === 'RunConversation' && n.props.role === 'review-code');
+  assert.equal(codeHistory.props.report(old).props.historical, true);
+  assert.equal(codeHistory.props.report(current[0]).props.historical, false);
+  for (const outcome of ['NEEDS_INPUT', 'BLOCKED', null]) {
+    const stopped = { ...current.at(-1)! };
+    Object.assign(stopped, { outcome });
+    card.props.runs = [old, ...current.slice(0, -1), stopped];
+    assert.ok(!elements(card.render().tree).some(n => n.type === 'button' && n.props.children === 'Доработать: новый цикл (до двух доработок)'));
+  }
+  card.props.runs = [old, ...current];
+  current[0].outcome = 'PASS';
+  nodes = elements(card.render().tree);
+  assert.match(JSON.stringify(nodes.find(n => n.props['aria-label'] === 'Результаты текущего Review').props.children), /Все обязательные Review имеют актуальный PASS/);
+  assert.ok(!nodes.some(n => n.type === 'button' && n.props.children === 'Доработать: новый цикл (до двух доработок)'));
+  assert.doesNotMatch(JSON.stringify(nodes.map(n => n.type === 'p' ? n.props.children : '')), /Approve не запущен|лимит двух доработок исчерпан/);
+});
+
+test('blocking report loads a short finding before expansion and preserves full report access and errors', async () => {
+  const calls: string[] = [];
+  const finding = 'P2: Failed attempts must retain stderr.log and CLI/session diagnostics.';
+  const card = taskCard(async path => { calls.push(path); return { text: `Summary\n\nOutcome: CHANGES\n\n## Findings\n${finding}\n\n## Evidence\nInspected stageHistory.ts` }; });
+  const props = { run: { ...card.props.runs[0], role: 'review-code', outcome: 'CHANGES', report: 1 }, preview: true };
+  card.render('RunReport', props).commit(); await new Promise(resolve => setImmediate(resolve));
+  let nodes = elements(card.render('RunReport', props).tree);
+  assert.equal(calls[0], '/projects/project/tasks/task/runs/run/report');
+  assert.ok(nodes.some(n => n.type === 'p' && n.props.children === finding));
+  assert.ok(nodes.some(n => n.type === 'summary' && JSON.stringify(n.props.children).includes('Отчёт')));
+  nodes.find(n => n.type === 'details').props.onToggle({ currentTarget: { open: true } });
+  nodes = elements(card.render('RunReport', props).tree);
+  assert.ok(nodes.some(n => n.type === 'pre' && n.props.children.includes('## Evidence')));
+  const failed = taskCard(async () => { throw new Error('Отчёт недоступен'); });
+  failed.render('RunReport', props).commit(); await new Promise(resolve => setImmediate(resolve));
+  assert.ok(elements(failed.render('RunReport', props).tree).some(n => n.type === 'p' && n.props.children === 'Отчёт недоступен'));
 });
 
 test('pending Stop keeps its keyboard target and ignores a second activation', async () => {

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { stageRoles, stageNames, stageStatus, stageTabStatus, stageTimeline } from '../src/client/stageHistory.js';
-import { defaultModels, roles, type AgentRun, type ChatMessage, type HumanRequest, type SavedEvent, type TranscriptEntry } from '../src/shared.js';
+import { reviewSummary, stageRoles, stageNames, stageStatus, stageTabStatus, stageTimeline } from '../src/client/stageHistory.js';
+import { defaultModels, legacyReviewRoles, roles, type AgentRun, type ChatMessage, type HumanRequest, type SavedEvent, type TranscriptEntry } from '../src/shared.js';
 
 const run = (id: string, changes: Partial<AgentRun> = {}): AgentRun => ({
   id, task_id: 'task', project_id: 'project', role: 'spec', description_revision: 1, status: 'completed', outcome: 'READY',
@@ -13,6 +13,49 @@ const event = (id: number, type: string, payload: object, at = '2026-10-14T10:00
   id, type, payload: JSON.stringify(payload), task_id: 'task', created_at: at,
 });
 const entry = (id: string, at: string, kind: TranscriptEntry['kind'] = 'agent'): TranscriptEntry => ({ id, at, kind, title: kind, text: id });
+
+test('Review summary uses latest results for one round and source, never old PASS or superseded CHANGES', () => {
+  const config = { models: { ...defaultModels, 'review-ui': 'ui', 'review-ux': 'ux' }, instructions: '' };
+  delete config.models['review-ui-ux'];
+  const old = run('old-code', { config, role: 'review-code', round_id: 'old', head_sha: 'af36e71f', outcome: 'PASS' });
+  const current = legacyReviewRoles.map(role => run(role, { config, role, round_id: 'current', head_sha: 'f21c38c4', source_hash: 'source', repair_attempt: 2,
+    outcome: role === 'review-code' ? 'CHANGES' : 'PASS' }));
+  const history = [old, ...current];
+  const summary = reviewSummary(history, 1)!;
+  assert.equal(summary.round, 'current'); assert.equal(summary.passed, false);
+  assert.deepEqual(summary.blockers.map(entry => entry.role), ['review-code']);
+  assert.deepEqual(summary.entries.map(entry => entry.run?.outcome), ['CHANGES', 'PASS', 'PASS', 'PASS']);
+  assert.ok(summary.entries.every(entry => entry.current));
+  const fixed = { ...current[0], id: 'fixed-code', outcome: 'PASS' as const };
+  assert.equal(reviewSummary([...history, fixed], 1)!.passed, true);
+  assert.equal(reviewSummary([...history, { ...fixed, status: 'failed', outcome: null }], 1)!.passed, false);
+  for (const change of [{ head_sha: 'other' }, { source_hash: 'other' }, { spec_run_id: 'other' }, { base_sha: 'other' },
+    { project_version: 2 }, { config: { ...config, instructions: 'changed' } }, { stale: 1 }, { revoked: 1 }, { description_revision: 0 }]) {
+    const changed = current.map(r => r.role === 'review-code' ? { ...r, ...change, outcome: 'PASS' as const } : r);
+    assert.equal(reviewSummary([old, ...changed], 1)!.entries[0].current, false, JSON.stringify(change));
+  }
+  const missing = reviewSummary([old, ...current.slice(1)], 1)!;
+  assert.equal(missing.entries[0].run?.id, old.id); assert.equal(missing.entries[0].current, false);
+  assert.deepEqual(missing.blockers.map(entry => entry.role), ['review-code']);
+});
+
+test('Review summary distinguishes explicit reused PASS and optional reviews from current results', () => {
+  const old = run('old', { role: 'review-security', round_id: 'previous', outcome: 'PASS', head_sha: 'previous' });
+  const build = run('build', { role: 'build', head_sha: 'head', source_hash: 'source', review_plan: {
+    policy_version: 2, build_id: 'build', revision: 1, head_sha: 'head', source_hash: 'source', diff_base: 'previous',
+    checks: [{ role: 'review-code', required: false, reason: 'CSS only' },
+      { role: 'review-security', required: true, reuse_run_id: old.id, reason: 'Unchanged' },
+      { role: 'review-ui-ux', required: true, reason: 'Layout' }],
+  } });
+  const ui = { ...build, id: 'ui', role: 'review-ui-ux' as const, round_id: build.id, outcome: 'PASS' as const };
+  const summary = reviewSummary([old, build, ui], 1)!;
+  assert.equal(summary.passed, true); assert.equal(summary.entries[0].required, false);
+  assert.equal(summary.entries[1].reused, true); assert.equal(summary.entries[1].current, true);
+  assert.equal(reviewSummary([{ ...old, stale: 1 }, build, ui], 1)!.passed, false);
+  assert.equal(reviewSummary([old, build, { ...ui, stale: 1 }], 1)!.passed, false);
+  assert.equal(reviewSummary([old, { ...build, stale: 1 }, ui], 1)!.passed, false);
+  assert.equal(reviewSummary([old, ui], 1)!.passed, false);
+});
 
 test('review tabs select the current Build round before Review and after reload', () => {
   const old = run('old-security', { role: 'review-security', outcome: 'PASS', round_id: 'old-build' });

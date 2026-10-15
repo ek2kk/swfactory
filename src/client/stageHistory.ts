@@ -1,6 +1,34 @@
 import { allRoles, reviewRoles, reviewsFor, type AgentRun, type ChatMessage, type HumanRequest, type SavedEvent, type TranscriptEntry } from '../shared.js';
 
 export const stageNames = { spec: 'Spec', build: 'Build', 'review-code': 'Review · Code', 'review-security': 'Review · Security', 'review-ui-ux': 'Review · UI/UX', 'review-ui': 'Review · UI', 'review-ux': 'Review · UX', approve: 'Approve' };
+export function reviewSummary(runs: AgentRun[], revision: number) {
+  const source = runs.at(-1);
+  const round = source?.round_id ?? (source?.role === 'build' ? source.id : undefined);
+  if (!source || !round) return null;
+  const plan = source.review_plan;
+  const build = plan && runs.find(run => run.id === plan.build_id && run.task_id === source.task_id && run.role === 'build');
+  const validSource = !source.revoked && !source.stale && source.description_revision === revision
+    && (!plan || plan.policy_version === 2 && plan.revision === revision && plan.head_sha === source.head_sha && plan.source_hash === source.source_hash
+      && !!build && !build.revoked && !build.stale && build.status === 'completed' && build.outcome === 'READY'
+      && build.head_sha === source.head_sha && build.source_hash === source.source_hash && build.base_sha === source.base_sha
+      && build.spec_run_id === source.spec_run_id && build.description_revision === revision
+      && build.project_version === source.project_version && JSON.stringify(build.config) === JSON.stringify(source.config));
+  const entries = reviewsFor(source.config).map(role => {
+    const check = plan?.checks.find(check => check.role === role);
+    const history = runs.filter(run => run.task_id === source.task_id && run.role === role);
+    const run = check?.reuse_run_id ? history.find(run => run.id === check.reuse_run_id)
+      : history.findLast(run => run.round_id === round) ?? history.at(-1);
+    const reused = !!check?.reuse_run_id;
+    const current = !!run && validSource && !run.revoked && !run.stale && run.description_revision === revision
+      && run.spec_run_id === source.spec_run_id && run.base_sha === source.base_sha
+      && run.project_version === source.project_version && JSON.stringify(run.config) === JSON.stringify(source.config)
+      && (reused ? run.status === 'completed' && run.outcome === 'PASS'
+        : run.round_id === round && run.head_sha === source.head_sha && run.source_hash === source.source_hash);
+    return { role, run, current, reused, required: check?.required ?? true };
+  });
+  const blockers = entries.filter(entry => entry.required && !(entry.current && entry.run?.status === 'completed' && entry.run.outcome === 'PASS'));
+  return { source, round, entries, blockers, passed: validSource && blockers.length === 0 };
+}
 export function stageRoles(runs: AgentRun[]) {
   const latest = runs.at(-1);
   const current: readonly string[] = latest ? reviewsFor(latest.config) : reviewRoles;

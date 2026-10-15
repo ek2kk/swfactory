@@ -546,8 +546,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "scripts_smoke_github",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 18,
+      "community_name": "Task View and Scroll State",
       "norm_label": "smoke-github.ts"
     },
     {
@@ -557,8 +557,8 @@
       "source_location": "L12",
       "_origin": "ast",
       "id": "scripts_smoke_github_headers",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 18,
+      "community_name": "Task View and Scroll State",
       "norm_label": "headers"
     },
     {
@@ -568,8 +568,8 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "scripts_smoke_github_post",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 18,
+      "community_name": "Task View and Scroll State",
       "norm_label": "post()"
     },
     {
@@ -579,8 +579,8 @@
       "source_location": "L25",
       "_origin": "ast",
       "id": "scripts_smoke_github_settled",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 18,
+      "community_name": "Task View and Scroll State",
       "norm_label": "settled()"
     },
     {
@@ -623,8 +623,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "scripts_title_smoke",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 16,
+      "community_name": "Build Commits and Source Hashing",
       "norm_label": "title-smoke.ts"
     },
     {
@@ -634,8 +634,8 @@
       "source_location": "L8",
       "_origin": "ast",
       "id": "scripts_title_smoke_repo",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 16,
+      "community_name": "Build Commits and Source Hashing",
       "norm_label": "repo"
     },
     {
@@ -645,8 +645,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_client_taskmarkdown",
-      "community": 8,
-      "community_name": "Scheduling and Process Logging",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "taskmarkdown.tsx"
     },
     {
@@ -656,8 +656,8 @@
       "source_location": "L4",
       "_origin": "ast",
       "id": "src_client_taskmarkdown_taskmarkdown",
-      "community": 8,
-      "community_name": "Scheduling and Process Logging",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "taskmarkdown()"
     },
     {
@@ -700,8 +700,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_client_chat",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "chat.tsx"
     },
     {
@@ -711,8 +711,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "src_client_chat_api",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "api"
     },
     {
@@ -722,8 +722,8 @@
       "source_location": "L8",
       "_origin": "ast",
       "id": "src_client_chat_delivery",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "delivery"
     },
     {
@@ -733,8 +733,8 @@
       "source_location": "L9",
       "_origin": "ast",
       "id": "src_client_chat_message",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "message()"
     },
     {
@@ -744,15 +744,15 @@
       "source_location": "L14",
       "_origin": "ast",
       "id": "src_client_chat_runconversation",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "runconversation()"
     },
     {
       "label": "Composer()",
       "file_type": "code",
       "source_file": "src/client/chat.tsx",
-      "source_location": "L90",
+      "source_location": "L92",
       "_origin": "ast",
       "id": "src_client_chat_composer",
       "community": 7,
@@ -873,7 +873,7 @@
       "label": "DependencyStatus()",
       "file_type": "code",
       "source_file": "src/client/main.tsx",
-      "source_location": "L376",
+      "source_location": "L392",
       "_origin": "ast",
       "id": "src_client_main_dependencystatus",
       "community": 7,
@@ -884,7 +884,7 @@
       "label": "HumanDecision()",
       "file_type": "code",
       "source_file": "src/client/main.tsx",
-      "source_location": "L427",
+      "source_location": "L443",
       "_origin": "ast",
       "id": "src_client_main_humandecision",
       "community": 7,
@@ -895,7 +895,7 @@
       "label": "HumanQuestions()",
       "file_type": "code",
       "source_file": "src/client/main.tsx",
-      "source_location": "L454",
+      "source_location": "L470",
       "_origin": "ast",
       "id": "src_client_main_humanquestions",
       "community": 7,
@@ -906,7 +906,7 @@
       "label": "History()",
       "file_type": "code",
       "source_file": "src/client/main.tsx",
-      "source_location": "L484",
+      "source_location": "L500",
       "_origin": "ast",
       "id": "src_client_main_history",
       "community": 7,
@@ -917,7 +917,7 @@
       "label": "RunReport()",
       "file_type": "code",
       "source_file": "src/client/main.tsx",
-      "source_location": "L494",
+      "source_location": "L510",
       "_origin": "ast",
       "id": "src_client_main_runreport",
       "community": 7,
@@ -928,7 +928,7 @@
       "label": "ModelSettings()",
       "file_type": "code",
       "source_file": "src/client/main.tsx",
-      "source_location": "L525",
+      "source_location": "L544",
       "_origin": "ast",
       "id": "src_client_main_modelsettings",
       "community": 4,
@@ -939,7 +939,7 @@
       "label": "IssueRefresh()",
       "file_type": "code",
       "source_file": "src/client/main.tsx",
-      "source_location": "L594",
+      "source_location": "L613",
       "_origin": "ast",
       "id": "src_client_main_issuerefresh",
       "community": 7,
@@ -950,11 +950,11 @@
       "label": "App()",
       "file_type": "code",
       "source_file": "src/client/main.tsx",
-      "source_location": "L611",
+      "source_location": "L630",
       "_origin": "ast",
       "id": "src_client_main_app",
-      "community": 25,
-      "community_name": "Application Theme Settings",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "app()"
     },
     {
@@ -964,8 +964,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_client_models",
-      "community": 16,
-      "community_name": "Build Commits and Source Hashing",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "models.tsx"
     },
     {
@@ -975,8 +975,8 @@
       "source_location": "L4",
       "_origin": "ast",
       "id": "src_client_models_modelpicker",
-      "community": 16,
-      "community_name": "Build Commits and Source Hashing",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "modelpicker()"
     },
     {
@@ -986,8 +986,8 @@
       "source_location": "L21",
       "_origin": "ast",
       "id": "src_client_models_reasoningpicker",
-      "community": 16,
-      "community_name": "Build Commits and Source Hashing",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "reasoningpicker()"
     },
     {
@@ -997,8 +997,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_client_output",
-      "community": 29,
-      "community_name": "Agent Output Progress",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "output.tsx"
     },
     {
@@ -1008,8 +1008,8 @@
       "source_location": "L4",
       "_origin": "ast",
       "id": "src_client_output_runprogress",
-      "community": 29,
-      "community_name": "Agent Output Progress",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "runprogress()"
     },
     {
@@ -1019,8 +1019,8 @@
       "source_location": "L25",
       "_origin": "ast",
       "id": "src_client_output_agentoutput",
-      "community": 29,
-      "community_name": "Agent Output Progress",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "agentoutput()"
     },
     {
@@ -1030,8 +1030,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_client_stagehistory",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "stagehistory.ts"
     },
     {
@@ -1041,15 +1041,26 @@
       "source_location": "L3",
       "_origin": "ast",
       "id": "src_client_stagehistory_stagenames",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "stagenames"
+    },
+    {
+      "label": "reviewSummary()",
+      "file_type": "code",
+      "source_file": "src/client/stageHistory.ts",
+      "source_location": "L4",
+      "_origin": "ast",
+      "id": "src_client_stagehistory_reviewsummary",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
+      "norm_label": "reviewsummary()"
     },
     {
       "label": "stageRoles()",
       "file_type": "code",
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L4",
+      "source_location": "L32",
       "_origin": "ast",
       "id": "src_client_stagehistory_stageroles",
       "community": 7,
@@ -1060,77 +1071,77 @@
       "label": "states",
       "file_type": "code",
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L9",
+      "source_location": "L37",
       "_origin": "ast",
       "id": "src_client_stagehistory_states",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "states"
     },
     {
       "label": "stageTabStatus()",
       "file_type": "code",
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L17",
+      "source_location": "L45",
       "_origin": "ast",
       "id": "src_client_stagehistory_stagetabstatus",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "stagetabstatus()"
     },
     {
       "label": "stageStatus()",
       "file_type": "code",
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L32",
+      "source_location": "L60",
       "_origin": "ast",
       "id": "src_client_stagehistory_stagestatus",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "stagestatus()"
     },
     {
       "label": "HistoryItem",
       "file_type": "code",
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L48",
+      "source_location": "L76",
       "_origin": "ast",
       "id": "src_client_stagehistory_historyitem",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "historyitem"
     },
     {
       "label": "time()",
       "file_type": "code",
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L53",
+      "source_location": "L81",
       "_origin": "ast",
       "id": "src_client_stagehistory_time",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "time()"
     },
     {
       "label": "eventTitles",
       "file_type": "code",
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L54",
+      "source_location": "L82",
       "_origin": "ast",
       "id": "src_client_stagehistory_eventtitles",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "eventtitles"
     },
     {
       "label": "stageTimeline()",
       "file_type": "code",
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L65",
+      "source_location": "L93",
       "_origin": "ast",
       "id": "src_client_stagehistory_stagetimeline",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "stagetimeline()"
     },
     {
@@ -1140,8 +1151,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_client_taskview",
-      "community": 18,
-      "community_name": "Task View and Scroll State",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "taskview.tsx"
     },
     {
@@ -1151,8 +1162,8 @@
       "source_location": "L3",
       "_origin": "ast",
       "id": "src_client_taskview_descriptiondraft",
-      "community": 18,
-      "community_name": "Task View and Scroll State",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "descriptiondraft"
     },
     {
@@ -1162,8 +1173,8 @@
       "source_location": "L4",
       "_origin": "ast",
       "id": "src_client_taskview_props",
-      "community": 18,
-      "community_name": "Task View and Scroll State",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "props"
     },
     {
@@ -1173,8 +1184,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "src_client_taskview_taskview",
-      "community": 18,
-      "community_name": "Task View and Scroll State",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "taskview"
     },
     {
@@ -1184,8 +1195,8 @@
       "source_location": "L10",
       "_origin": "ast",
       "id": "src_client_taskview_taskview_getsnapshotbeforeupdate",
-      "community": 18,
-      "community_name": "Task View and Scroll State",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": ".getsnapshotbeforeupdate()"
     },
     {
@@ -1195,8 +1206,8 @@
       "source_location": "L20",
       "_origin": "ast",
       "id": "src_client_taskview_taskview_componentdidupdate",
-      "community": 18,
-      "community_name": "Task View and Scroll State",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": ".componentdidupdate()"
     },
     {
@@ -1206,8 +1217,8 @@
       "source_location": "L26",
       "_origin": "ast",
       "id": "src_client_taskview_taskview_render",
-      "community": 18,
-      "community_name": "Task View and Scroll State",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": ".render()"
     },
     {
@@ -1217,8 +1228,8 @@
       "source_location": "L32",
       "_origin": "ast",
       "id": "src_client_taskview_historyflow",
-      "community": 18,
-      "community_name": "Task View and Scroll State",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "historyflow"
     },
     {
@@ -1228,8 +1239,8 @@
       "source_location": "L34",
       "_origin": "ast",
       "id": "src_client_taskview_historyflow_getsnapshotbeforeupdate",
-      "community": 18,
-      "community_name": "Task View and Scroll State",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": ".getsnapshotbeforeupdate()"
     },
     {
@@ -1239,8 +1250,8 @@
       "source_location": "L43",
       "_origin": "ast",
       "id": "src_client_taskview_historyflow_componentdidupdate",
-      "community": 18,
-      "community_name": "Task View and Scroll State",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": ".componentdidupdate()"
     },
     {
@@ -1250,8 +1261,8 @@
       "source_location": "L48",
       "_origin": "ast",
       "id": "src_client_taskview_historyflow_render",
-      "community": 18,
-      "community_name": "Task View and Scroll State",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": ".render()"
     },
     {
@@ -1261,8 +1272,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_client_theme",
-      "community": 25,
-      "community_name": "Application Theme Settings",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "theme.ts"
     },
     {
@@ -1272,8 +1283,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_client_theme_theme",
-      "community": 25,
-      "community_name": "Application Theme Settings",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "theme"
     },
     {
@@ -1283,8 +1294,8 @@
       "source_location": "L3",
       "_origin": "ast",
       "id": "src_client_theme_readtheme",
-      "community": 25,
-      "community_name": "Application Theme Settings",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "readtheme()"
     },
     {
@@ -1294,8 +1305,8 @@
       "source_location": "L11",
       "_origin": "ast",
       "id": "src_client_theme_applytheme",
-      "community": 25,
-      "community_name": "Application Theme Settings",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "applytheme()"
     },
     {
@@ -1481,8 +1492,8 @@
       "source_location": "L27",
       "_origin": "ast",
       "id": "src_server_app_object",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "object()"
     },
     {
@@ -1492,8 +1503,8 @@
       "source_location": "L30",
       "_origin": "ast",
       "id": "src_server_app_equal",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "equal()"
     },
     {
@@ -1525,8 +1536,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_artifacts",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 9,
+      "community_name": "Chat and Stage History",
       "norm_label": "artifacts.ts"
     },
     {
@@ -1536,8 +1547,8 @@
       "source_location": "L5",
       "_origin": "ast",
       "id": "src_server_artifacts_removeresultartifacts",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "removeresultartifacts()"
     },
     {
@@ -1547,8 +1558,8 @@
       "source_location": "L17",
       "_origin": "ast",
       "id": "src_server_artifacts_artifactdirectory",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 9,
+      "community_name": "Chat and Stage History",
       "norm_label": "artifactdirectory()"
     },
     {
@@ -1558,8 +1569,8 @@
       "source_location": "L25",
       "_origin": "ast",
       "id": "src_server_artifacts_saveartifact",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "saveartifact()"
     },
     {
@@ -1580,8 +1591,8 @@
       "source_location": "L43",
       "_origin": "ast",
       "id": "src_server_artifacts_readlog",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 9,
+      "community_name": "Chat and Stage History",
       "norm_label": "readlog()"
     },
     {
@@ -1591,8 +1602,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_build",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "build.ts"
     },
     {
@@ -1602,8 +1613,8 @@
       "source_location": "L8",
       "_origin": "ast",
       "id": "src_server_build_paths",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "paths()"
     },
     {
@@ -1613,8 +1624,8 @@
       "source_location": "L9",
       "_origin": "ast",
       "id": "src_server_build_blocked",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "blocked()"
     },
     {
@@ -1624,8 +1635,8 @@
       "source_location": "L10",
       "_origin": "ast",
       "id": "src_server_build_safepath",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "safepath()"
     },
     {
@@ -1635,8 +1646,8 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "src_server_build_filecontent",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "filecontent()"
     },
     {
@@ -1646,8 +1657,8 @@
       "source_location": "L39",
       "_origin": "ast",
       "id": "src_server_build_sourcehash",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "sourcehash()"
     },
     {
@@ -1657,8 +1668,8 @@
       "source_location": "L60",
       "_origin": "ast",
       "id": "src_server_build_commitbuild",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "commitbuild()"
     },
     {
@@ -1668,8 +1679,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_chat",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 9,
+      "community_name": "Chat and Stage History",
       "norm_label": "chat.ts"
     },
     {
@@ -1679,8 +1690,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "src_server_chat_chat",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "chat"
     },
     {
@@ -1690,8 +1701,8 @@
       "source_location": "L11",
       "_origin": "ast",
       "id": "src_server_chat_chat_constructor",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".constructor()"
     },
     {
@@ -1701,8 +1712,8 @@
       "source_location": "L12",
       "_origin": "ast",
       "id": "src_server_chat_chat_haswork",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".haswork()"
     },
     {
@@ -1712,8 +1723,8 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "src_server_chat_chat_cancel",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".cancel()"
     },
     {
@@ -1745,8 +1756,8 @@
       "source_location": "L20",
       "_origin": "ast",
       "id": "src_server_chat_chat_add",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".add()"
     },
     {
@@ -1899,8 +1910,8 @@
       "source_location": "L130",
       "_origin": "ast",
       "id": "src_server_codex_buildschema",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "buildschema"
     },
     {
@@ -1921,8 +1932,8 @@
       "source_location": "L151",
       "_origin": "ast",
       "id": "src_server_codex_reviewschema",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "reviewschema"
     },
     {
@@ -2009,8 +2020,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_dependencies",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "dependencies.ts"
     },
     {
@@ -2020,8 +2031,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "src_server_dependencies_text",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "text"
     },
     {
@@ -2031,8 +2042,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "src_server_dependencies_dependenciesschema",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "dependenciesschema"
     },
     {
@@ -2042,8 +2053,8 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "src_server_dependencies_githublink",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "githublink()"
     },
     {
@@ -2053,8 +2064,8 @@
       "source_location": "L22",
       "_origin": "ast",
       "id": "src_server_dependencies_validatedependencies",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "validatedependencies()"
     },
     {
@@ -2064,8 +2075,8 @@
       "source_location": "L38",
       "_origin": "ast",
       "id": "src_server_dependencies_diagnosedependencies",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "diagnosedependencies"
     },
     {
@@ -2075,8 +2086,8 @@
       "source_location": "L54",
       "_origin": "ast",
       "id": "src_server_dependencies_conditionresult",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "conditionresult"
     },
     {
@@ -2086,8 +2097,8 @@
       "source_location": "L55",
       "_origin": "ast",
       "id": "src_server_dependencies_verifycondition",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "verifycondition"
     },
     {
@@ -2097,8 +2108,8 @@
       "source_location": "L121",
       "_origin": "ast",
       "id": "src_server_dependencies_dependencyquestion",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "dependencyquestion()"
     },
     {
@@ -2108,8 +2119,8 @@
       "source_location": "L126",
       "_origin": "ast",
       "id": "src_server_dependencies_verifydependencies",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "verifydependencies()"
     },
     {
@@ -2240,8 +2251,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_git",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "git.ts"
     },
     {
@@ -2251,8 +2262,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "src_server_git_run",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "run"
     },
     {
@@ -2262,8 +2273,8 @@
       "source_location": "L28",
       "_origin": "ast",
       "id": "src_server_git_remoteidentity",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "remoteidentity()"
     },
     {
@@ -2273,8 +2284,8 @@
       "source_location": "L50",
       "_origin": "ast",
       "id": "src_server_git_inspectproject",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "inspectproject()"
     },
     {
@@ -2471,8 +2482,8 @@
       "source_location": "L55",
       "_origin": "ast",
       "id": "src_server_issues_githubissues_start",
-      "community": 17,
-      "community_name": "SSE and Results Reset",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".start()"
     },
     {
@@ -2581,8 +2592,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_logging",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 11,
+      "community_name": "Application Setup and Validation",
       "norm_label": "server/logging.ts"
     },
     {
@@ -2592,8 +2603,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "src_server_logging_errorkind",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 11,
+      "community_name": "Application Setup and Validation",
       "norm_label": "errorkind()"
     },
     {
@@ -2603,8 +2614,8 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "src_server_logging_loggeroptions",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 11,
+      "community_name": "Application Setup and Validation",
       "norm_label": "loggeroptions()"
     },
     {
@@ -2636,8 +2647,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_models",
-      "community": 15,
-      "community_name": "Artifacts and Conversation Storage",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "models.ts"
     },
     {
@@ -2647,8 +2658,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "src_server_models_normalizemodels",
-      "community": 15,
-      "community_name": "Artifacts and Conversation Storage",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "normalizemodels()"
     },
     {
@@ -2680,8 +2691,8 @@
       "source_location": "L121",
       "_origin": "ast",
       "id": "src_server_models_modelcatalogs",
-      "community": 15,
-      "community_name": "Artifacts and Conversation Storage",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "modelcatalogs"
     },
     {
@@ -2691,8 +2702,8 @@
       "source_location": "L123",
       "_origin": "ast",
       "id": "src_server_models_modelcatalogs_constructor",
-      "community": 15,
-      "community_name": "Artifacts and Conversation Storage",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": ".constructor()"
     },
     {
@@ -2702,8 +2713,8 @@
       "source_location": "L124",
       "_origin": "ast",
       "id": "src_server_models_modelcatalogs_get",
-      "community": 15,
-      "community_name": "Artifacts and Conversation Storage",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": ".get()"
     },
     {
@@ -2713,8 +2724,8 @@
       "source_location": "L130",
       "_origin": "ast",
       "id": "src_server_models_modelcatalogs_load",
-      "community": 15,
-      "community_name": "Artifacts and Conversation Storage",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": ".load()"
     },
     {
@@ -2757,8 +2768,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_processes",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "processes.ts"
     },
     {
@@ -2768,8 +2779,8 @@
       "source_location": "L8",
       "_origin": "ast",
       "id": "src_server_processes_processlog",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "processlog"
     },
     {
@@ -2790,8 +2801,8 @@
       "source_location": "L10",
       "_origin": "ast",
       "id": "src_server_processes_executionprocess",
-      "community": 0,
-      "community_name": "Application and Spec Lifecycle",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "executionprocess"
     },
     {
@@ -2801,8 +2812,8 @@
       "source_location": "L11",
       "_origin": "ast",
       "id": "src_server_processes_processrow",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "processrow"
     },
     {
@@ -2812,8 +2823,8 @@
       "source_location": "L12",
       "_origin": "ast",
       "id": "src_server_processes_processcensus",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "processcensus()"
     },
     {
@@ -2823,8 +2834,8 @@
       "source_location": "L22",
       "_origin": "ast",
       "id": "src_server_processes_context",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "context"
     },
     {
@@ -2889,8 +2900,8 @@
       "source_location": "L48",
       "_origin": "ast",
       "id": "src_server_processes_processscope_run",
-      "community": 0,
-      "community_name": "Application and Spec Lifecycle",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": ".run()"
     },
     {
@@ -3065,8 +3076,8 @@
       "source_location": "L207",
       "_origin": "ast",
       "id": "src_server_processes_spawn",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "spawn"
     },
     {
@@ -3076,8 +3087,8 @@
       "source_location": "L212",
       "_origin": "ast",
       "id": "src_server_processes_exec",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "exec()"
     },
     {
@@ -3087,8 +3098,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_publication",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "publication.ts"
     },
     {
@@ -3098,8 +3109,8 @@
       "source_location": "L9",
       "_origin": "ast",
       "id": "src_server_publication_publishgithub",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "publishgithub()"
     },
     {
@@ -3142,8 +3153,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_scheduler",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 11,
+      "community_name": "Application Setup and Validation",
       "norm_label": "scheduler.ts"
     },
     {
@@ -3153,8 +3164,8 @@
       "source_location": "L4",
       "_origin": "ast",
       "id": "src_server_scheduler_job",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 11,
+      "community_name": "Application Setup and Validation",
       "norm_label": "job"
     },
     {
@@ -3164,8 +3175,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 15,
+      "community_name": "Artifacts and Conversation Storage",
       "norm_label": "scheduler"
     },
     {
@@ -3175,8 +3186,8 @@
       "source_location": "L15",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler_constructor",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 15,
+      "community_name": "Artifacts and Conversation Storage",
       "norm_label": ".constructor()"
     },
     {
@@ -3186,8 +3197,8 @@
       "source_location": "L16",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler_isactive",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 15,
+      "community_name": "Artifacts and Conversation Storage",
       "norm_label": ".isactive()"
     },
     {
@@ -3197,8 +3208,8 @@
       "source_location": "L17",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler_haswork",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 15,
+      "community_name": "Artifacts and Conversation Storage",
       "norm_label": ".haswork()"
     },
     {
@@ -3208,8 +3219,8 @@
       "source_location": "L18",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler_cancel",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 15,
+      "community_name": "Artifacts and Conversation Storage",
       "norm_label": ".cancel()"
     },
     {
@@ -3219,8 +3230,8 @@
       "source_location": "L26",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler_wake",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 15,
+      "community_name": "Artifacts and Conversation Storage",
       "norm_label": ".wake()"
     },
     {
@@ -3230,8 +3241,8 @@
       "source_location": "L27",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler_close",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 15,
+      "community_name": "Artifacts and Conversation Storage",
       "norm_label": ".close()"
     },
     {
@@ -3241,8 +3252,8 @@
       "source_location": "L36",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler_retain",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 15,
+      "community_name": "Artifacts and Conversation Storage",
       "norm_label": ".retain()"
     },
     {
@@ -3252,8 +3263,8 @@
       "source_location": "L43",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler_enqueue",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 15,
+      "community_name": "Artifacts and Conversation Storage",
       "norm_label": ".enqueue()"
     },
     {
@@ -3263,8 +3274,8 @@
       "source_location": "L51",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler_load",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 15,
+      "community_name": "Artifacts and Conversation Storage",
       "norm_label": ".load()"
     },
     {
@@ -3274,8 +3285,8 @@
       "source_location": "L60",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler_drain",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 15,
+      "community_name": "Artifacts and Conversation Storage",
       "norm_label": ".drain()"
     },
     {
@@ -3285,8 +3296,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_spec",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "spec.ts"
     },
     {
@@ -3307,8 +3318,8 @@
       "source_location": "L37",
       "_origin": "ast",
       "id": "src_server_spec_speccontroller_constructor",
-      "community": 0,
-      "community_name": "Application and Spec Lifecycle",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": ".constructor()"
     },
     {
@@ -3362,8 +3373,8 @@
       "source_location": "L106",
       "_origin": "ast",
       "id": "src_server_spec_speccontroller_blockedreason",
-      "community": 0,
-      "community_name": "Application and Spec Lifecycle",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": ".blockedreason()"
     },
     {
@@ -3582,8 +3593,8 @@
       "source_location": "L454",
       "_origin": "ast",
       "id": "src_server_spec_speccontroller_close",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".close()"
     },
     {
@@ -3692,8 +3703,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_specdecision",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "specdecision.ts"
     },
     {
@@ -3703,8 +3714,8 @@
       "source_location": "L5",
       "_origin": "ast",
       "id": "src_server_specdecision_schema",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "schema"
     },
     {
@@ -3714,8 +3725,8 @@
       "source_location": "L9",
       "_origin": "ast",
       "id": "src_server_specdecision_validatedecision",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "validatedecision()"
     },
     {
@@ -3725,8 +3736,8 @@
       "source_location": "L18",
       "_origin": "ast",
       "id": "src_server_specdecision_classifyspec",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "classifyspec()"
     },
     {
@@ -3736,8 +3747,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_sse",
-      "community": 14,
-      "community_name": "Agent Output and Validation",
+      "community": 17,
+      "community_name": "SSE and Results Reset",
       "norm_label": "sse.ts"
     },
     {
@@ -3747,8 +3758,8 @@
       "source_location": "L5",
       "_origin": "ast",
       "id": "src_server_sse_subscribe",
-      "community": 14,
-      "community_name": "Agent Output and Validation",
+      "community": 17,
+      "community_name": "SSE and Results Reset",
       "norm_label": "subscribe()"
     },
     {
@@ -3802,8 +3813,8 @@
       "source_location": "L26",
       "_origin": "ast",
       "id": "src_server_store_problem",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 9,
+      "community_name": "Chat and Stage History",
       "norm_label": "problem"
     },
     {
@@ -3813,8 +3824,8 @@
       "source_location": "L27",
       "_origin": "ast",
       "id": "src_server_store_problem_constructor",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 9,
+      "community_name": "Chat and Stage History",
       "norm_label": ".constructor()"
     },
     {
@@ -3857,8 +3868,8 @@
       "source_location": "L221",
       "_origin": "ast",
       "id": "src_server_store_store_close",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".close()"
     },
     {
@@ -3912,8 +3923,8 @@
       "source_location": "L246",
       "_origin": "ast",
       "id": "src_server_store_store_mutate",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".mutate()"
     },
     {
@@ -3923,8 +3934,8 @@
       "source_location": "L255",
       "_origin": "ast",
       "id": "src_server_store_store_addproject",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".addproject()"
     },
     {
@@ -4033,8 +4044,8 @@
       "source_location": "L351",
       "_origin": "ast",
       "id": "src_server_store_store_executionprocesses",
-      "community": 0,
-      "community_name": "Application and Spec Lifecycle",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": ".executionprocesses()"
     },
     {
@@ -4044,8 +4055,8 @@
       "source_location": "L354",
       "_origin": "ast",
       "id": "src_server_store_store_recordprocess",
-      "community": 0,
-      "community_name": "Application and Spec Lifecycle",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": ".recordprocess()"
     },
     {
@@ -4110,8 +4121,8 @@
       "source_location": "L469",
       "_origin": "ast",
       "id": "src_server_store_store_createtask",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".createtask()"
     },
     {
@@ -4187,8 +4198,8 @@
       "source_location": "L555",
       "_origin": "ast",
       "id": "src_server_store_store_settings",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".settings()"
     },
     {
@@ -4198,8 +4209,8 @@
       "source_location": "L566",
       "_origin": "ast",
       "id": "src_server_store_store_savesettings",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".savesettings()"
     },
     {
@@ -4396,8 +4407,8 @@
       "source_location": "L745",
       "_origin": "ast",
       "id": "src_server_store_store_queuespec",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".queuespec()"
     },
     {
@@ -4594,8 +4605,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_title",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 16,
+      "community_name": "Build Commits and Source Hashing",
       "norm_label": "title.ts"
     },
     {
@@ -4605,8 +4616,8 @@
       "source_location": "L12",
       "_origin": "ast",
       "id": "src_server_title_titletoolrestrictions",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 16,
+      "community_name": "Build Commits and Source Hashing",
       "norm_label": "titletoolrestrictions"
     },
     {
@@ -4616,8 +4627,8 @@
       "source_location": "L17",
       "_origin": "ast",
       "id": "src_server_title_parsetitle",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 16,
+      "community_name": "Build Commits and Source Hashing",
       "norm_label": "parsetitle()"
     },
     {
@@ -4627,8 +4638,8 @@
       "source_location": "L25",
       "_origin": "ast",
       "id": "src_server_title_generatetitle",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 16,
+      "community_name": "Build Commits and Source Hashing",
       "norm_label": "generatetitle()"
     },
     {
@@ -4638,8 +4649,8 @@
       "source_location": "L33",
       "_origin": "ast",
       "id": "src_server_title_generatetext",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "generatetext()"
     },
     {
@@ -4682,8 +4693,8 @@
       "source_location": "L80",
       "_origin": "ast",
       "id": "src_server_title_titles_kick",
-      "community": 0,
-      "community_name": "Application and Spec Lifecycle",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": ".kick()"
     },
     {
@@ -4737,8 +4748,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_transcript",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 9,
+      "community_name": "Chat and Stage History",
       "norm_label": "transcript.ts"
     },
     {
@@ -4748,8 +4759,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "src_server_transcript_transcriptentry",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 9,
+      "community_name": "Chat and Stage History",
       "norm_label": "transcriptentry()"
     },
     {
@@ -4759,8 +4770,8 @@
       "source_location": "L24",
       "_origin": "ast",
       "id": "src_server_transcript_readtranscript",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 9,
+      "community_name": "Chat and Stage History",
       "norm_label": "readtranscript()"
     },
     {
@@ -4814,8 +4825,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "src_shared_specmode",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 4,
+      "community_name": "GitHub Issue Synchronization",
       "norm_label": "specmode"
     },
     {
@@ -4836,8 +4847,8 @@
       "source_location": "L9",
       "_origin": "ast",
       "id": "src_shared_task",
-      "community": 4,
-      "community_name": "GitHub Issue Synchronization",
+      "community": 16,
+      "community_name": "Build Commits and Source Hashing",
       "norm_label": "task"
     },
     {
@@ -4880,8 +4891,8 @@
       "source_location": "L35",
       "_origin": "ast",
       "id": "src_shared_savedevent",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "savedevent"
     },
     {
@@ -4891,8 +4902,8 @@
       "source_location": "L36",
       "_origin": "ast",
       "id": "src_shared_snapshot",
-      "community": 14,
-      "community_name": "Agent Output and Validation",
+      "community": 17,
+      "community_name": "SSE and Results Reset",
       "norm_label": "snapshot"
     },
     {
@@ -4902,8 +4913,8 @@
       "source_location": "L38",
       "_origin": "ast",
       "id": "src_shared_roles",
-      "community": 15,
-      "community_name": "Artifacts and Conversation Storage",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "roles"
     },
     {
@@ -4913,8 +4924,8 @@
       "source_location": "L39",
       "_origin": "ast",
       "id": "src_shared_legacyreviewroles",
-      "community": 4,
-      "community_name": "GitHub Issue Synchronization",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "legacyreviewroles"
     },
     {
@@ -4924,8 +4935,8 @@
       "source_location": "L40",
       "_origin": "ast",
       "id": "src_shared_allroles",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "allroles"
     },
     {
@@ -4946,8 +4957,8 @@
       "source_location": "L42",
       "_origin": "ast",
       "id": "src_shared_defaultmodels",
-      "community": 15,
-      "community_name": "Artifacts and Conversation Storage",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "defaultmodels"
     },
     {
@@ -4957,8 +4968,8 @@
       "source_location": "L43",
       "_origin": "ast",
       "id": "src_shared_settings",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "settings"
     },
     {
@@ -4968,8 +4979,8 @@
       "source_location": "L44",
       "_origin": "ast",
       "id": "src_shared_specresult",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 14,
+      "community_name": "Agent Output and Validation",
       "norm_label": "specresult"
     },
     {
@@ -4979,8 +4990,8 @@
       "source_location": "L48",
       "_origin": "ast",
       "id": "src_shared_buildresult",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 14,
+      "community_name": "Agent Output and Validation",
       "norm_label": "buildresult"
     },
     {
@@ -4990,8 +5001,8 @@
       "source_location": "L52",
       "_origin": "ast",
       "id": "src_shared_reviewroles",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "reviewroles"
     },
     {
@@ -5034,8 +5045,8 @@
       "source_location": "L57",
       "_origin": "ast",
       "id": "src_shared_reviewresult",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 14,
+      "community_name": "Agent Output and Validation",
       "norm_label": "reviewresult"
     },
     {
@@ -5045,8 +5056,8 @@
       "source_location": "L63",
       "_origin": "ast",
       "id": "src_shared_approveresult",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 4,
+      "community_name": "GitHub Issue Synchronization",
       "norm_label": "approveresult"
     },
     {
@@ -5067,8 +5078,8 @@
       "source_location": "L67",
       "_origin": "ast",
       "id": "src_shared_dependency",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "dependency"
     },
     {
@@ -5078,8 +5089,8 @@
       "source_location": "L72",
       "_origin": "ast",
       "id": "src_shared_dependencystate",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "dependencystate"
     },
     {
@@ -5144,8 +5155,8 @@
       "source_location": "L96",
       "_origin": "ast",
       "id": "src_shared_reviewplan",
-      "community": 0,
-      "community_name": "Application and Spec Lifecycle",
+      "community": 4,
+      "community_name": "GitHub Issue Synchronization",
       "norm_label": "reviewplan"
     },
     {
@@ -5155,8 +5166,8 @@
       "source_location": "L97",
       "_origin": "ast",
       "id": "src_shared_requiredreviews",
-      "community": 7,
-      "community_name": "Client API and Task Controls",
+      "community": 4,
+      "community_name": "GitHub Issue Synchronization",
       "norm_label": "requiredreviews()"
     },
     {
@@ -5177,8 +5188,8 @@
       "source_location": "L113",
       "_origin": "ast",
       "id": "src_shared_question",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "question"
     },
     {
@@ -5188,8 +5199,8 @@
       "source_location": "L114",
       "_origin": "ast",
       "id": "src_shared_humanrequest",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "humanrequest"
     },
     {
@@ -5199,8 +5210,8 @@
       "source_location": "L119",
       "_origin": "ast",
       "id": "src_shared_chatmessage",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "chatmessage"
     },
     {
@@ -5221,8 +5232,8 @@
       "source_location": "L127",
       "_origin": "ast",
       "id": "src_shared_modeloption",
-      "community": 16,
-      "community_name": "Build Commits and Source Hashing",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "modeloption"
     },
     {
@@ -5232,8 +5243,8 @@
       "source_location": "L128",
       "_origin": "ast",
       "id": "src_shared_modelcatalog",
-      "community": 15,
-      "community_name": "Artifacts and Conversation Storage",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "modelcatalog"
     },
     {
@@ -5243,8 +5254,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_api_test",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 9,
+      "community_name": "Chat and Stage History",
       "norm_label": "api.test.ts"
     },
     {
@@ -5254,8 +5265,8 @@
       "source_location": "L15",
       "_origin": "ast",
       "id": "test_api_test_fixture",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "fixture()"
     },
     {
@@ -5265,8 +5276,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_build_test",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 14,
+      "community_name": "Agent Output and Validation",
       "norm_label": "build.test.ts"
     },
     {
@@ -5276,8 +5287,8 @@
       "source_location": "L14",
       "_origin": "ast",
       "id": "test_build_test_spec",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 14,
+      "community_name": "Agent Output and Validation",
       "norm_label": "spec"
     },
     {
@@ -5287,8 +5298,8 @@
       "source_location": "L15",
       "_origin": "ast",
       "id": "test_build_test_ready",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 14,
+      "community_name": "Agent Output and Validation",
       "norm_label": "ready"
     },
     {
@@ -5298,8 +5309,8 @@
       "source_location": "L16",
       "_origin": "ast",
       "id": "test_build_test_fixture",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "fixture()"
     },
     {
@@ -5309,8 +5320,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_chat_test",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 9,
+      "community_name": "Chat and Stage History",
       "norm_label": "chat.test.ts"
     },
     {
@@ -5320,8 +5331,8 @@
       "source_location": "L19",
       "_origin": "ast",
       "id": "test_chat_test_conversationpolling",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 9,
+      "community_name": "Chat and Stage History",
       "norm_label": "conversationpolling()"
     },
     {
@@ -5331,8 +5342,8 @@
       "source_location": "L92",
       "_origin": "ast",
       "id": "test_chat_test_fixture",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "fixture()"
     },
     {
@@ -5364,8 +5375,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_deletion_test",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "deletion.test.ts"
     },
     {
@@ -5375,8 +5386,8 @@
       "source_location": "L20",
       "_origin": "ast",
       "id": "test_deletion_test_projectinput",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "projectinput"
     },
     {
@@ -5386,8 +5397,8 @@
       "source_location": "L21",
       "_origin": "ast",
       "id": "test_deletion_test_fixture",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "fixture()"
     },
     {
@@ -5397,8 +5408,8 @@
       "source_location": "L29",
       "_origin": "ast",
       "id": "test_deletion_test_apifixture",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "apifixture()"
     },
     {
@@ -5430,8 +5441,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_dependencies_test",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "dependencies.test.ts"
     },
     {
@@ -5441,8 +5452,8 @@
       "source_location": "L19",
       "_origin": "ast",
       "id": "test_dependencies_test_dependency",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "dependency"
     },
     {
@@ -5452,8 +5463,8 @@
       "source_location": "L20",
       "_origin": "ast",
       "id": "test_dependencies_test_blocked",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "blocked"
     },
     {
@@ -5463,8 +5474,8 @@
       "source_location": "L21",
       "_origin": "ast",
       "id": "test_dependencies_test_spec",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "spec"
     },
     {
@@ -5474,8 +5485,8 @@
       "source_location": "L22",
       "_origin": "ast",
       "id": "test_dependencies_test_signal",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "signal()"
     },
     {
@@ -5496,8 +5507,8 @@
       "source_location": "L40",
       "_origin": "ast",
       "id": "test_dependencies_test_github",
-      "community": 17,
-      "community_name": "SSE and Results Reset",
+      "community": 6,
+      "community_name": "Dependency Validation and Schemas",
       "norm_label": "github()"
     },
     {
@@ -5529,8 +5540,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_diagnostics_test",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 9,
+      "community_name": "Chat and Stage History",
       "norm_label": "diagnostics.test.ts"
     },
     {
@@ -5540,8 +5551,8 @@
       "source_location": "L11",
       "_origin": "ast",
       "id": "test_diagnostics_test_fixture",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "fixture()"
     },
     {
@@ -5551,8 +5562,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_fast_test",
-      "community": 15,
-      "community_name": "Artifacts and Conversation Storage",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "fast.test.ts"
     },
     {
@@ -5562,8 +5573,8 @@
       "source_location": "L14",
       "_origin": "ast",
       "id": "test_fast_test_ready",
-      "community": 15,
-      "community_name": "Artifacts and Conversation Storage",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "ready"
     },
     {
@@ -5573,8 +5584,8 @@
       "source_location": "L15",
       "_origin": "ast",
       "id": "test_fast_test_model",
-      "community": 15,
-      "community_name": "Artifacts and Conversation Storage",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "model"
     },
     {
@@ -5584,8 +5595,8 @@
       "source_location": "L97",
       "_origin": "ast",
       "id": "test_fast_test_control",
-      "community": 15,
-      "community_name": "Artifacts and Conversation Storage",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "control()"
     },
     {
@@ -5606,8 +5617,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_git_test",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "git.test.ts"
     },
     {
@@ -5617,8 +5628,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_helpers_logging",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 11,
+      "community_name": "Application Setup and Validation",
       "norm_label": "helpers/logging.ts"
     },
     {
@@ -5628,8 +5639,8 @@
       "source_location": "L5",
       "_origin": "ast",
       "id": "test_helpers_logging_capturelogs",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 11,
+      "community_name": "Application Setup and Validation",
       "norm_label": "capturelogs()"
     },
     {
@@ -5683,8 +5694,8 @@
       "source_location": "L15",
       "_origin": "ast",
       "id": "test_issues_test_fixture",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "fixture()"
     },
     {
@@ -5738,8 +5749,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_liveconnection_test",
-      "community": 12,
-      "community_name": "Process Shutdown and Titles",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "liveconnection.test.ts"
     },
     {
@@ -5749,8 +5760,8 @@
       "source_location": "L20",
       "_origin": "ast",
       "id": "test_liveconnection_test_usestate",
-      "community": 12,
-      "community_name": "Process Shutdown and Titles",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "usestate()"
     },
     {
@@ -5760,8 +5771,8 @@
       "source_location": "L25",
       "_origin": "ast",
       "id": "test_liveconnection_test_useref",
-      "community": 12,
-      "community_name": "Process Shutdown and Titles",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "useref()"
     },
     {
@@ -5771,8 +5782,8 @@
       "source_location": "L26",
       "_origin": "ast",
       "id": "test_liveconnection_test_useeffect",
-      "community": 12,
-      "community_name": "Process Shutdown and Titles",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "useeffect()"
     },
     {
@@ -5782,8 +5793,8 @@
       "source_location": "L37",
       "_origin": "ast",
       "id": "test_liveconnection_test_require",
-      "community": 12,
-      "community_name": "Process Shutdown and Titles",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "require()"
     },
     {
@@ -5793,8 +5804,8 @@
       "source_location": "L41",
       "_origin": "ast",
       "id": "test_liveconnection_test_elements",
-      "community": 12,
-      "community_name": "Process Shutdown and Titles",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "elements()"
     },
     {
@@ -5804,8 +5815,8 @@
       "source_location": "L49",
       "_origin": "ast",
       "id": "test_liveconnection_test_card",
-      "community": 12,
-      "community_name": "Process Shutdown and Titles",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "card()"
     },
     {
@@ -5815,8 +5826,8 @@
       "source_location": "L62",
       "_origin": "ast",
       "id": "test_liveconnection_test_preventdefault",
-      "community": 12,
-      "community_name": "Process Shutdown and Titles",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "preventdefault()"
     },
     {
@@ -5826,8 +5837,8 @@
       "source_location": "L116",
       "_origin": "ast",
       "id": "test_liveconnection_test_source",
-      "community": 19,
-      "community_name": "Model Discovery and Catalogs",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "source"
     },
     {
@@ -5837,8 +5848,8 @@
       "source_location": "L120",
       "_origin": "ast",
       "id": "test_liveconnection_test_source_constructor",
-      "community": 19,
-      "community_name": "Model Discovery and Catalogs",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": ".constructor()"
     },
     {
@@ -5848,8 +5859,8 @@
       "source_location": "L121",
       "_origin": "ast",
       "id": "test_liveconnection_test_source_addeventlistener",
-      "community": 19,
-      "community_name": "Model Discovery and Catalogs",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": ".addeventlistener()"
     },
     {
@@ -5859,8 +5870,8 @@
       "source_location": "L122",
       "_origin": "ast",
       "id": "test_liveconnection_test_source_close",
-      "community": 19,
-      "community_name": "Model Discovery and Catalogs",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": ".close()"
     },
     {
@@ -5870,8 +5881,8 @@
       "source_location": "L149",
       "_origin": "ast",
       "id": "test_liveconnection_test_addeventlistener",
-      "community": 12,
-      "community_name": "Process Shutdown and Titles",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "addeventlistener()"
     },
     {
@@ -5881,8 +5892,8 @@
       "source_location": "L149",
       "_origin": "ast",
       "id": "test_liveconnection_test_removeeventlistener",
-      "community": 12,
-      "community_name": "Process Shutdown and Titles",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "removeeventlistener()"
     },
     {
@@ -5892,8 +5903,8 @@
       "source_location": "L220",
       "_origin": "ast",
       "id": "test_liveconnection_test_control",
-      "community": 12,
-      "community_name": "Process Shutdown and Titles",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "control()"
     },
     {
@@ -5903,8 +5914,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_logging_test",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 11,
+      "community_name": "Application Setup and Validation",
       "norm_label": "logging.test.ts"
     },
     {
@@ -5914,8 +5925,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_models_test",
-      "community": 15,
-      "community_name": "Artifacts and Conversation Storage",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "models.test.ts"
     },
     {
@@ -5925,8 +5936,8 @@
       "source_location": "L11",
       "_origin": "ast",
       "id": "test_models_test_models",
-      "community": 15,
-      "community_name": "Artifacts and Conversation Storage",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "models"
     },
     {
@@ -5936,8 +5947,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_optionalspec_test",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "optionalspec.test.ts"
     },
     {
@@ -5947,8 +5958,8 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "test_optionalspec_test_ready",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "ready"
     },
     {
@@ -5958,8 +5969,8 @@
       "source_location": "L14",
       "_origin": "ast",
       "id": "test_optionalspec_test_spec",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 12,
+      "community_name": "Process Shutdown and Titles",
       "norm_label": "spec"
     },
     {
@@ -5969,8 +5980,8 @@
       "source_location": "L16",
       "_origin": "ast",
       "id": "test_optionalspec_test_fixture",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "fixture()"
     },
     {
@@ -5991,8 +6002,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_output_test",
-      "community": 29,
-      "community_name": "Agent Output Progress",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "output.test.ts"
     },
     {
@@ -6002,8 +6013,8 @@
       "source_location": "L14",
       "_origin": "ast",
       "id": "test_output_test_fixture",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "fixture()"
     },
     {
@@ -6035,8 +6046,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_projects_test",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "projects.test.ts"
     },
     {
@@ -6046,8 +6057,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_resetresults_test",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 9,
+      "community_name": "Chat and Stage History",
       "norm_label": "resetresults.test.ts"
     },
     {
@@ -6057,8 +6068,8 @@
       "source_location": "L19",
       "_origin": "ast",
       "id": "test_resetresults_test_projectinput",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 9,
+      "community_name": "Chat and Stage History",
       "norm_label": "projectinput"
     },
     {
@@ -6068,8 +6079,8 @@
       "source_location": "L20",
       "_origin": "ast",
       "id": "test_resetresults_test_needsinput",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 9,
+      "community_name": "Chat and Stage History",
       "norm_label": "needsinput"
     },
     {
@@ -6079,8 +6090,8 @@
       "source_location": "L22",
       "_origin": "ast",
       "id": "test_resetresults_test_fixture",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "fixture()"
     },
     {
@@ -6090,8 +6101,8 @@
       "source_location": "L41",
       "_origin": "ast",
       "id": "test_resetresults_test_seed",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "seed()"
     },
     {
@@ -6101,8 +6112,8 @@
       "source_location": "L263",
       "_origin": "ast",
       "id": "test_resetresults_test_subscribe",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 9,
+      "community_name": "Chat and Stage History",
       "norm_label": "subscribe()"
     },
     {
@@ -6112,8 +6123,8 @@
       "source_location": "L338",
       "_origin": "ast",
       "id": "test_resetresults_test_stageseed",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "stageseed()"
     },
     {
@@ -6123,85 +6134,85 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_review_test",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 14,
+      "community_name": "Agent Output and Validation",
       "norm_label": "review.test.ts"
     },
     {
       "label": "spec",
       "file_type": "code",
       "source_file": "test/review.test.ts",
-      "source_location": "L16",
+      "source_location": "L17",
       "_origin": "ast",
       "id": "test_review_test_spec",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 14,
+      "community_name": "Agent Output and Validation",
       "norm_label": "spec"
     },
     {
       "label": "ready",
       "file_type": "code",
       "source_file": "test/review.test.ts",
-      "source_location": "L17",
+      "source_location": "L18",
       "_origin": "ast",
       "id": "test_review_test_ready",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 14,
+      "community_name": "Agent Output and Validation",
       "norm_label": "ready"
     },
     {
       "label": "fixture()",
       "file_type": "code",
       "source_file": "test/review.test.ts",
-      "source_location": "L18",
+      "source_location": "L19",
       "_origin": "ast",
       "id": "test_review_test_fixture",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "fixture()"
     },
     {
       "label": "approved()",
       "file_type": "code",
       "source_file": "test/review.test.ts",
-      "source_location": "L48",
+      "source_location": "L49",
       "_origin": "ast",
       "id": "test_review_test_approved",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 14,
+      "community_name": "Agent Output and Validation",
       "norm_label": "approved()"
     },
     {
       "label": "visualResult()",
       "file_type": "code",
       "source_file": "test/review.test.ts",
-      "source_location": "L49",
+      "source_location": "L50",
       "_origin": "ast",
       "id": "test_review_test_visualresult",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 14,
+      "community_name": "Agent Output and Validation",
       "norm_label": "visualresult()"
     },
     {
       "label": "pass",
       "file_type": "code",
       "source_file": "test/review.test.ts",
-      "source_location": "L52",
+      "source_location": "L53",
       "_origin": "ast",
       "id": "test_review_test_pass",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 14,
+      "community_name": "Agent Output and Validation",
       "norm_label": "pass"
     },
     {
       "label": "settled()",
       "file_type": "code",
       "source_file": "test/review.test.ts",
-      "source_location": "L92",
+      "source_location": "L109",
       "_origin": "ast",
       "id": "test_review_test_settled",
-      "community": 0,
-      "community_name": "Application and Spec Lifecycle",
+      "community": 14,
+      "community_name": "Agent Output and Validation",
       "norm_label": "settled()"
     },
     {
@@ -6222,8 +6233,8 @@
       "source_location": "L20",
       "_origin": "ast",
       "id": "test_reviewplan_test_fixture",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "fixture()"
     },
     {
@@ -6255,8 +6266,8 @@
       "source_location": "L18",
       "_origin": "ast",
       "id": "test_spec_test_fixture",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "fixture()"
     },
     {
@@ -6288,8 +6299,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_sse_test",
-      "community": 14,
-      "community_name": "Agent Output and Validation",
+      "community": 17,
+      "community_name": "SSE and Results Reset",
       "norm_label": "sse.test.ts"
     },
     {
@@ -6299,8 +6310,8 @@
       "source_location": "L8",
       "_origin": "ast",
       "id": "test_sse_test_response",
-      "community": 14,
-      "community_name": "Agent Output and Validation",
+      "community": 17,
+      "community_name": "SSE and Results Reset",
       "norm_label": "response"
     },
     {
@@ -6310,8 +6321,8 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "test_sse_test_response_write",
-      "community": 14,
-      "community_name": "Agent Output and Validation",
+      "community": 17,
+      "community_name": "SSE and Results Reset",
       "norm_label": ".write()"
     },
     {
@@ -6321,8 +6332,8 @@
       "source_location": "L18",
       "_origin": "ast",
       "id": "test_sse_test_response_destroy",
-      "community": 14,
-      "community_name": "Agent Output and Validation",
+      "community": 17,
+      "community_name": "SSE and Results Reset",
       "norm_label": ".destroy()"
     },
     {
@@ -6332,8 +6343,8 @@
       "source_location": "L20",
       "_origin": "ast",
       "id": "test_sse_test_fixture",
-      "community": 14,
-      "community_name": "Agent Output and Validation",
+      "community": 17,
+      "community_name": "SSE and Results Reset",
       "norm_label": "fixture()"
     },
     {
@@ -6343,8 +6354,8 @@
       "source_location": "L34",
       "_origin": "ast",
       "id": "test_sse_test_frames",
-      "community": 14,
-      "community_name": "Agent Output and Validation",
+      "community": 17,
+      "community_name": "SSE and Results Reset",
       "norm_label": "frames()"
     },
     {
@@ -6354,8 +6365,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_stagehistory_test",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "stagehistory.test.ts"
     },
     {
@@ -6365,8 +6376,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "test_stagehistory_test_run",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "run()"
     },
     {
@@ -6376,8 +6387,8 @@
       "source_location": "L12",
       "_origin": "ast",
       "id": "test_stagehistory_test_event",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "event()"
     },
     {
@@ -6387,8 +6398,8 @@
       "source_location": "L15",
       "_origin": "ast",
       "id": "test_stagehistory_test_entry",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "entry()"
     },
     {
@@ -6398,8 +6409,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_stop_test",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "stop.test.ts"
     },
     {
@@ -6409,8 +6420,8 @@
       "source_location": "L18",
       "_origin": "ast",
       "id": "test_stop_test_projectinput",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "projectinput"
     },
     {
@@ -6420,8 +6431,8 @@
       "source_location": "L19",
       "_origin": "ast",
       "id": "test_stop_test_fixture",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "fixture()"
     },
     {
@@ -6431,8 +6442,8 @@
       "source_location": "L27",
       "_origin": "ast",
       "id": "test_stop_test_waitfor",
-      "community": 11,
-      "community_name": "Application Setup and Validation",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "waitfor()"
     },
     {
@@ -6453,8 +6464,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_taskmarkdown_test",
-      "community": 8,
-      "community_name": "Scheduling and Process Logging",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "taskmarkdown.test.ts"
     },
     {
@@ -6464,8 +6475,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "test_taskmarkdown_test_render",
-      "community": 8,
-      "community_name": "Scheduling and Process Logging",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "render()"
     },
     {
@@ -6475,8 +6486,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_taskview_test",
-      "community": 8,
-      "community_name": "Scheduling and Process Logging",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "taskview.test.ts"
     },
     {
@@ -6486,8 +6497,8 @@
       "source_location": "L12",
       "_origin": "ast",
       "id": "test_taskview_test_taskcard",
-      "community": 8,
-      "community_name": "Scheduling and Process Logging",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "taskcard()"
     },
     {
@@ -6497,8 +6508,8 @@
       "source_location": "L52",
       "_origin": "ast",
       "id": "test_taskview_test_elements",
-      "community": 8,
-      "community_name": "Scheduling and Process Logging",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "elements()"
     },
     {
@@ -6508,8 +6519,8 @@
       "source_location": "L126",
       "_origin": "ast",
       "id": "test_taskview_test_preventdefault",
-      "community": 8,
-      "community_name": "Scheduling and Process Logging",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "preventdefault()"
     },
     {
@@ -6519,8 +6530,8 @@
       "source_location": "L150",
       "_origin": "ast",
       "id": "test_taskview_test_focus",
-      "community": 8,
-      "community_name": "Scheduling and Process Logging",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "focus()"
     },
     {
@@ -6530,8 +6541,8 @@
       "source_location": "L211",
       "_origin": "ast",
       "id": "test_taskview_test_showmodal",
-      "community": 8,
-      "community_name": "Scheduling and Process Logging",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "showmodal()"
     },
     {
@@ -6541,8 +6552,8 @@
       "source_location": "L211",
       "_origin": "ast",
       "id": "test_taskview_test_close",
-      "community": 8,
-      "community_name": "Scheduling and Process Logging",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "close()"
     },
     {
@@ -6552,8 +6563,8 @@
       "source_location": "L291",
       "_origin": "ast",
       "id": "test_taskview_test_isconnected",
-      "community": 8,
-      "community_name": "Scheduling and Process Logging",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "isconnected()"
     },
     {
@@ -6563,8 +6574,8 @@
       "source_location": "L294",
       "_origin": "ast",
       "id": "test_taskview_test_activeelement",
-      "community": 8,
-      "community_name": "Scheduling and Process Logging",
+      "community": 10,
+      "community_name": "Git Operations and Publication",
       "norm_label": "activeelement()"
     },
     {
@@ -6574,8 +6585,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_theme_test",
-      "community": 25,
-      "community_name": "Application Theme Settings",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "theme.test.ts"
     },
     {
@@ -6585,8 +6596,8 @@
       "source_location": "L12",
       "_origin": "ast",
       "id": "test_theme_test_get",
-      "community": 25,
-      "community_name": "Application Theme Settings",
+      "community": 7,
+      "community_name": "Client API and Task Controls",
       "norm_label": "get()"
     },
     {
@@ -6596,8 +6607,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_title_test",
-      "community": 4,
-      "community_name": "GitHub Issue Synchronization",
+      "community": 16,
+      "community_name": "Build Commits and Source Hashing",
       "norm_label": "title.test.ts"
     },
     {
@@ -6607,8 +6618,8 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "test_title_test_fixture",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "fixture()"
     },
     {
@@ -6618,8 +6629,8 @@
       "source_location": "L165",
       "_origin": "ast",
       "id": "test_title_test_waitfor",
-      "community": 4,
-      "community_name": "GitHub Issue Synchronization",
+      "community": 16,
+      "community_name": "Build Commits and Source Hashing",
       "norm_label": "waitfor()"
     },
     {
@@ -8630,7 +8641,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/client/main.tsx",
-      "source_location": "L709",
+      "source_location": "L728",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_app",
@@ -8654,7 +8665,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/client/main.tsx",
-      "source_location": "L412",
+      "source_location": "L428",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_dependencystatus",
@@ -8666,7 +8677,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/client/main.tsx",
-      "source_location": "L488",
+      "source_location": "L504",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_history",
@@ -8678,7 +8689,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/client/main.tsx",
-      "source_location": "L435",
+      "source_location": "L451",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_humandecision",
@@ -8690,7 +8701,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/client/main.tsx",
-      "source_location": "L463",
+      "source_location": "L479",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_humanquestions",
@@ -8702,7 +8713,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/client/main.tsx",
-      "source_location": "L602",
+      "source_location": "L621",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_issuerefresh",
@@ -8726,7 +8737,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/client/main.tsx",
-      "source_location": "L503",
+      "source_location": "L519",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_runreport",
@@ -8738,7 +8749,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/client/main.tsx",
-      "source_location": "L246",
+      "source_location": "L249",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_taskcard",
@@ -8807,7 +8818,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/client/chat.tsx",
-      "source_location": "L90",
+      "source_location": "L92",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_chat",
@@ -8857,6 +8868,18 @@
       "_origin": "ast",
       "source": "src_client_chat",
       "target": "src_client_stagehistory",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "src/client/chat.tsx",
+      "source_location": "L5",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_client_chat",
+      "target": "src_client_stagehistory_reviewsummary",
       "confidence_score": 1.0
     },
     {
@@ -8997,6 +9020,18 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/client/chat.tsx",
+      "source_location": "L73",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_client_chat_runconversation",
+      "target": "src_client_stagehistory_reviewsummary"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/client/chat.tsx",
       "source_location": "L72",
       "weight": 1.0,
       "_origin": "ast",
@@ -9033,7 +9068,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/client/chat.tsx",
-      "source_location": "L95",
+      "source_location": "L97",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_chat_composer",
@@ -9055,7 +9090,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/client/main.tsx",
-      "source_location": "L611",
+      "source_location": "L630",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main",
@@ -9077,7 +9112,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/client/main.tsx",
-      "source_location": "L376",
+      "source_location": "L392",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main",
@@ -9088,7 +9123,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/client/main.tsx",
-      "source_location": "L484",
+      "source_location": "L500",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main",
@@ -9099,7 +9134,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/client/main.tsx",
-      "source_location": "L427",
+      "source_location": "L443",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main",
@@ -9110,7 +9145,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/client/main.tsx",
-      "source_location": "L454",
+      "source_location": "L470",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main",
@@ -9121,7 +9156,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/client/main.tsx",
-      "source_location": "L594",
+      "source_location": "L613",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main",
@@ -9143,7 +9178,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/client/main.tsx",
-      "source_location": "L525",
+      "source_location": "L544",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main",
@@ -9165,7 +9200,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/client/main.tsx",
-      "source_location": "L494",
+      "source_location": "L510",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main",
@@ -9296,6 +9331,18 @@
       "_origin": "ast",
       "source": "src_client_main",
       "target": "src_client_stagehistory",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "src/client/main.tsx",
+      "source_location": "L10",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_client_main",
+      "target": "src_client_stagehistory_reviewsummary",
       "confidence_score": 1.0
     },
     {
@@ -9711,7 +9758,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/client/main.tsx",
-      "source_location": "L412",
+      "source_location": "L428",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_dependencystatus",
@@ -9723,7 +9770,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/client/main.tsx",
-      "source_location": "L488",
+      "source_location": "L504",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_history",
@@ -9735,7 +9782,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/client/main.tsx",
-      "source_location": "L435",
+      "source_location": "L451",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_humandecision",
@@ -9747,7 +9794,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/client/main.tsx",
-      "source_location": "L463",
+      "source_location": "L479",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_humanquestions",
@@ -9771,7 +9818,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/client/main.tsx",
-      "source_location": "L503",
+      "source_location": "L519",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_runreport",
@@ -9783,7 +9830,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/client/main.tsx",
-      "source_location": "L246",
+      "source_location": "L249",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_taskcard",
@@ -9856,7 +9903,19 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/client/main.tsx",
-      "source_location": "L239",
+      "source_location": "L238",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_client_main_taskcard",
+      "target": "src_client_stagehistory_reviewsummary"
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/client/main.tsx",
+      "source_location": "L242",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_taskcard",
@@ -9868,7 +9927,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/client/main.tsx",
-      "source_location": "L312",
+      "source_location": "L315",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_taskcard",
@@ -9880,7 +9939,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/client/main.tsx",
-      "source_location": "L281",
+      "source_location": "L284",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_taskcard",
@@ -9892,7 +9951,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/client/main.tsx",
-      "source_location": "L341",
+      "source_location": "L358",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_taskcard",
@@ -9904,7 +9963,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/client/main.tsx",
-      "source_location": "L387",
+      "source_location": "L403",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_dependencystatus",
@@ -9916,7 +9975,7 @@
       "deferred": true,
       "confidence": "EXTRACTED",
       "source_file": "src/client/main.tsx",
-      "source_location": "L531",
+      "source_location": "L550",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_modelsettings",
@@ -9929,7 +9988,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/client/main.tsx",
-      "source_location": "L740",
+      "source_location": "L759",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_app",
@@ -9941,7 +10000,7 @@
       "confidence": "INFERRED",
       "confidence_score": 0.8,
       "source_file": "src/client/main.tsx",
-      "source_location": "L612",
+      "source_location": "L631",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_main_app",
@@ -10091,7 +10150,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L54",
+      "source_location": "L82",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_stagehistory",
@@ -10102,11 +10161,22 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L48",
+      "source_location": "L76",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_stagehistory",
       "target": "src_client_stagehistory_historyitem",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/client/stageHistory.ts",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_client_stagehistory",
+      "target": "src_client_stagehistory_reviewsummary",
       "confidence_score": 1.0
     },
     {
@@ -10124,7 +10194,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L4",
+      "source_location": "L32",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_stagehistory",
@@ -10135,7 +10205,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L32",
+      "source_location": "L60",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_stagehistory",
@@ -10146,7 +10216,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L17",
+      "source_location": "L45",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_stagehistory",
@@ -10157,7 +10227,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L65",
+      "source_location": "L93",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_stagehistory",
@@ -10168,7 +10238,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L9",
+      "source_location": "L37",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_stagehistory",
@@ -10179,7 +10249,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L53",
+      "source_location": "L81",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_stagehistory",
@@ -10322,6 +10392,18 @@
       "relation": "imports_from",
       "context": "import",
       "confidence": "EXTRACTED",
+      "source_file": "test/review.test.ts",
+      "source_location": "L15",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_review_test",
+      "target": "src_client_stagehistory",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports_from",
+      "context": "import",
+      "confidence": "EXTRACTED",
       "source_file": "test/stageHistory.test.ts",
       "source_location": "L3",
       "weight": 1.0,
@@ -10367,12 +10449,60 @@
       "confidence_score": 1.0
     },
     {
+      "relation": "indirect_call",
+      "context": "collection",
+      "confidence": "INFERRED",
+      "confidence_score": 0.8,
+      "source_file": "src/client/stageHistory.ts",
+      "source_location": "L27",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_client_stagehistory_reviewsummary",
+      "target": "src_server_processes_processscope_run"
+    },
+    {
       "relation": "calls",
       "context": "call",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L6",
+      "source_location": "L16",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_client_stagehistory_reviewsummary",
+      "target": "src_shared_reviewsfor"
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "test/review.test.ts",
+      "source_location": "L15",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_review_test",
+      "target": "src_client_stagehistory_reviewsummary",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "test/stageHistory.test.ts",
+      "source_location": "L3",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_stagehistory_test",
+      "target": "src_client_stagehistory_reviewsummary",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "src/client/stageHistory.ts",
+      "source_location": "L34",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_stagehistory_stageroles",
@@ -10395,7 +10525,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L19",
+      "source_location": "L47",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_stagehistory_stagetabstatus",
@@ -10431,7 +10561,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L73",
+      "source_location": "L101",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_stagehistory_stagetimeline",
@@ -10444,7 +10574,7 @@
       "confidence": "INFERRED",
       "confidence_score": 0.8,
       "source_file": "src/client/stageHistory.ts",
-      "source_location": "L67",
+      "source_location": "L95",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_client_stagehistory_stagetimeline",
@@ -24027,7 +24157,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "test/review.test.ts",
-      "source_location": "L33",
+      "source_location": "L34",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test_fixture",
@@ -24195,7 +24325,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "test/review.test.ts",
-      "source_location": "L33",
+      "source_location": "L34",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test_fixture",
@@ -27272,7 +27402,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "test/review.test.ts",
-      "source_location": "L26",
+      "source_location": "L27",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test_fixture",
@@ -27440,7 +27570,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "test/review.test.ts",
-      "source_location": "L94",
+      "source_location": "L111",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test_settled",
@@ -28100,7 +28230,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "test/review.test.ts",
-      "source_location": "L27",
+      "source_location": "L28",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test_fixture",
@@ -28928,7 +29058,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "test/review.test.ts",
-      "source_location": "L34",
+      "source_location": "L35",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test_fixture",
@@ -29264,7 +29394,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "test/review.test.ts",
-      "source_location": "L30",
+      "source_location": "L31",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test_fixture",
@@ -29492,7 +29622,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "test/review.test.ts",
-      "source_location": "L28",
+      "source_location": "L29",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test_fixture",
@@ -29528,7 +29658,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "test/review.test.ts",
-      "source_location": "L29",
+      "source_location": "L30",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test_fixture",
@@ -30392,7 +30522,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "test/review.test.ts",
-      "source_location": "L31",
+      "source_location": "L32",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test_fixture",
@@ -30464,7 +30594,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "test/review.test.ts",
-      "source_location": "L34",
+      "source_location": "L35",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test_fixture",
@@ -30500,7 +30630,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "test/review.test.ts",
-      "source_location": "L42",
+      "source_location": "L43",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test_fixture",
@@ -32218,6 +32348,18 @@
       "relation": "imports",
       "context": "import",
       "confidence": "EXTRACTED",
+      "source_file": "test/stageHistory.test.ts",
+      "source_location": "L4",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_stagehistory_test",
+      "target": "src_shared_legacyreviewroles",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
       "source_file": "test/fast.test.ts",
       "source_location": "L10",
       "weight": 1.0,
@@ -33431,7 +33573,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "test/review.test.ts",
-      "source_location": "L48",
+      "source_location": "L49",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test",
@@ -33442,7 +33584,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "test/review.test.ts",
-      "source_location": "L18",
+      "source_location": "L19",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test",
@@ -33453,7 +33595,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "test/review.test.ts",
-      "source_location": "L52",
+      "source_location": "L53",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test",
@@ -33464,7 +33606,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "test/review.test.ts",
-      "source_location": "L17",
+      "source_location": "L18",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test",
@@ -33475,7 +33617,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "test/review.test.ts",
-      "source_location": "L92",
+      "source_location": "L109",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test",
@@ -33486,7 +33628,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "test/review.test.ts",
-      "source_location": "L16",
+      "source_location": "L17",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test",
@@ -33497,7 +33639,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "test/review.test.ts",
-      "source_location": "L49",
+      "source_location": "L50",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test",
@@ -33509,7 +33651,7 @@
       "context": "argument",
       "confidence": "INFERRED",
       "source_file": "test/review.test.ts",
-      "source_location": "L35",
+      "source_location": "L36",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test_fixture",
@@ -33521,7 +33663,7 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "test/review.test.ts",
-      "source_location": "L43",
+      "source_location": "L44",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_review_test_fixture",
@@ -35129,5 +35271,5 @@
       "source_file": "docs/task-deletion.md"
     }
   ],
-  "built_at_commit": "37245f40699e7204b83ce65abf91d00a42a36d9e"
+  "built_at_commit": "6a0ba3bffe4cd0454649d4634de3696b9b666c97"
 }

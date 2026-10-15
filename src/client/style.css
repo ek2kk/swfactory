@@ -109,6 +109,7 @@ input::placeholder,textarea::placeholder{color:var(--muted);opacity:1}
 
 .task-page .card .task-controls{border:0;padding:0;margin:0}
 .card-actions{justify-content:flex-end;margin-top:-8px}
+.review-summary{border:1px solid var(--border);border-radius:7px;padding:12px;margin:16px 0}.review-summary h4{margin:0}.review-summary ul{padding-left:20px;font-size:13px;line-height:1.8}
 .archive-button{position:relative;padding:7px;display:inline-flex;align-items:center}
 .action-tooltip{display:none;position:absolute;right:0;top:calc(100% + 8px);padding:6px 10px;background:var(--text);color:var(--surface);border-radius:5px;z-index:1;white-space:nowrap}
 .archive-button:hover .action-tooltip,.archive-button:focus .action-tooltip{display:block}
