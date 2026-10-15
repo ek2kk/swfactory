@@ -507,6 +507,31 @@ test('blocking report loads a short finding before expansion and preserves full 
   assert.ok(elements(failed.render('RunReport', props).tree).some(n => n.type === 'p' && n.props.children === 'Отчёт недоступен'));
 });
 
+test('blocking report clears a failed preview after a successful retry and keeps the finding when collapsed', async () => {
+  let calls = 0;
+  const finding = 'P2: Keep failed attempt diagnostics accessible.';
+  const report = `Summary\n\n## Findings\n${finding}\n\n## Evidence\nChecked diagnostics`;
+  const card = taskCard(async () => {
+    if (++calls === 1) throw new Error('Отчёт недоступен');
+    return { text: report };
+  });
+  const props = { run: { ...card.props.runs[0], role: 'review-code', outcome: 'CHANGES', report: 1 }, preview: true };
+  card.render('RunReport', props).commit(); await new Promise(resolve => setImmediate(resolve));
+  let nodes = elements(card.render('RunReport', props).tree);
+  assert.ok(nodes.some(n => n.type === 'p' && n.props.children === 'Отчёт недоступен'));
+  nodes.find(n => n.type === 'details').props.onToggle({ currentTarget: { open: true } });
+  card.render('RunReport', props).commit(); await new Promise(resolve => setImmediate(resolve));
+  nodes = elements(card.render('RunReport', props).tree);
+  assert.ok(nodes.some(n => n.type === 'pre' && n.props.children === report));
+  assert.ok(nodes.some(n => n.type === 'p' && n.props.children === finding));
+  assert.ok(!nodes.some(n => n.props.role === 'alert'));
+  nodes.find(n => n.type === 'details').props.onToggle({ currentTarget: { open: false } });
+  nodes = elements(card.render('RunReport', props).tree);
+  assert.ok(nodes.some(n => n.type === 'p' && n.props.children === finding));
+  assert.ok(!nodes.some(n => n.props.role === 'alert'));
+  assert.equal(calls, 2);
+});
+
 test('pending Stop keeps its keyboard target and ignores a second activation', async () => {
   let finish!: (value: unknown) => void, calls = 0;
   const pending = new Promise(resolve => { finish = resolve; });

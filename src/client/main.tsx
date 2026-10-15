@@ -517,7 +517,7 @@ function RunReport({ task, run, preview = false, historical = false }: { task: T
     if ((!open && !preview) || !run.report) return;
     let active = true;
     api<{ text: string }>(`${taskPath(task)}/runs/${run.id}/report`)
-      .then(value => { if (active) setReport(value.text); })
+      .then(value => { if (active) { setReport(value.text); setError(''); } })
       .catch(error => { if (active) setError(error.message); });
     return () => { active = false; };
   }, [open, preview, run.id, run.report, task.id]);
