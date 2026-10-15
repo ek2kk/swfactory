@@ -8,7 +8,7 @@ import './style.css';
 import { Composer, Message, RunConversation } from './chat.js';
 import { AgentOutput, RunProgress } from './output.js';
 import { applyTheme, readTheme, type Theme } from './theme.js';
-import { stageRoles, stageNames, stageTabStatus } from './stageHistory.js';
+import { reviewSummary, stageRoles, stageNames, stageTabStatus } from './stageHistory.js';
 import { TaskView, type DescriptionDraft } from './taskView.js';
 import { TaskMarkdown } from './TaskMarkdown.js';
 import { Modal, Toast, ActionIcon, type Notice } from './windows.js';
@@ -236,7 +236,10 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
   const [revisions, setRevisions] = useState<Revision[] | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const latest = runs.at(-1);
-  const blockingReview = runs.findLast(run => run.round_id === latest?.round_id && run.outcome === 'CHANGES' && !run.revoked && !run.stale && run.description_revision === task.revision);
+  const reviews = reviewSummary(runs, task.revision);
+  const blockingReviews = reviews?.blockers.filter(entry => entry.current && entry.run?.status === 'completed' && entry.run.outcome === 'CHANGES') ?? [];
+  const report = (run: AgentRun, preview = false) => <RunReport task={task} run={run} preview={preview}
+    historical={run.role.startsWith('review-') && !reviews?.entries.some(entry => entry.current && entry.run?.id === run.id)} />;
   const taskRoles = stageRoles(runs);
   const [tab, setTab] = useState<string>('overview');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -317,6 +320,20 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
     <div role="tabpanel" id={`${task.id}-panel-overview`} aria-labelledby={`${task.id}-tab-overview`} hidden={tab !== 'overview'} tabIndex={0}>
     <TaskStatistics runs={runs} active={active && tab === 'overview'} />
     <TaskResultsRestart task={task} refresh={refresh} executionPaused={executionPaused} />
+    {reviews && <section className="review-summary" aria-label="Результаты текущего Review">
+      <h4>Текущий раунд Review</h4>
+      <p className="meta">Раунд: {reviews.round} · HEAD: {latest?.head_sha ?? 'неизвестен'} · Версия требований: {task.revision}</p>
+      <ul>{reviews.entries.map(entry => <li key={entry.role}>
+        <strong>{stageNames[entry.role]}</strong>: {!entry.required ? 'Не требуется' : !entry.run ? 'Ещё не запускался'
+          : !entry.current ? `${entry.run.outcome ?? entry.run.status} · Неактуальный результат, не учитывается`
+          : entry.reused ? 'Предыдущий PASS применим по плану Review'
+          : `${entry.run.outcome ?? entry.run.status} · текущий результат`}
+      </li>)}</ul>
+      {!reviews.passed && ['review', 'needs-human', 'approve'].includes(task.stage) && <p role="status">Approve не запущен: {reviews.blockers.length ? reviews.blockers.map(entry =>
+        `${stageNames[entry.role].replace(' · ', ' ')} ${entry.current && entry.run?.status === 'completed' && entry.run.outcome === 'CHANGES' ? 'требует доработок' : 'не имеет актуального PASS'}`).join('; ') : 'версия реализации или план Review неактуальны'}.</p>}
+      {reviews.passed && <p role="status">Все обязательные Review имеют актуальный PASS. Лимит доработок не препятствует Approve.</p>}
+      {blockingReviews.map(entry => <div key={entry.run!.id}><p><strong>{stageNames[entry.role]} — замечание</strong></p>{report(entry.run!, true)}</div>)}
+    </section>}
     {!latest?.revoked && latest?.review_plan && <div aria-label="План Review">{latest.review_plan.checks.map(check => <p key={check.role} className="meta">{stageNames[check.role]}: {check.reuse_run_id ? 'Предыдущий PASS применим' : check.required ? 'Обязателен' : 'Не требуется'} — {check.reason}</p>)}</div>}
     {task.publication_status === 'pending' && <p role="status">Публикуем GitHub PR… Повторный запуск заблокирован.</p>}
     {task.publication_status === 'unknown' && <p role="alert">Исход публикации неизвестен. Нужна ручная сверка GitHub и source branch из отчёта (task marker: {task.id}). Слепой повтор запрещён; worktree сохранён.</p>}
@@ -341,9 +358,8 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
       catch (error) { setError((error as Error).message); } finally { setBusy(false); }
     }}>{busy ? 'Ставим в очередь…' : task.stage === 'approve' ? 'Запустить Approve' : task.stage === 'review' ? 'Продолжить Review' : task.stage === 'build' ? 'Запустить Build' : 'Приступить к реализации'}</button>}
     {!editing && task.stage === 'needs-human' && task.run_state === 'interrupted' && latest && requiredReviews(latest).includes(latest.role as ReviewRole)
-      && runs.at(-1)?.status === 'completed' && !runs.at(-1)?.stale && ['PASS', 'CHANGES'].includes(runs.at(-1)?.outcome ?? '') && <>
-      <p>Approve не запущен: {stageNames[(blockingReview ?? latest).role]} требует доработок. Выполнено доработок: {latest.repair_attempt}/2.</p>
-      <RunReport task={task} run={blockingReview ?? latest} />
+      && latest.status === 'completed' && !latest.stale && ['PASS', 'CHANGES'].includes(latest.outcome ?? '') && blockingReviews.length > 0 && <>
+      <p>{latest.repair_attempt >= 2 ? 'Автоматические исправления остановлены: лимит двух доработок исчерпан.' : 'Автоматические исправления остановлены.'} Выполнено доработок: {latest.repair_attempt}/2.</p>
       <button disabled={busy} onClick={async () => {
         setBusy(true); setError('');
         try { await api(`${taskPath(task)}/repair`, 'POST', { state_version: task.state_version }); await refresh(); }
@@ -366,7 +382,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
     {taskRoles.map(role => <div key={role} role="tabpanel" id={`${task.id}-panel-${role}`} aria-labelledby={`${task.id}-tab-${role}`} hidden={tab !== role} tabIndex={0}>
       <TaskResultsReset task={task} role={role} hasResults={runs.some(run => run.role === role)} refresh={refresh} notify={notify} />
       <TaskResultsRestart task={task} refresh={refresh} executionPaused={executionPaused} />
-      {runs.some(run => run.role === role) ? <RunConversation runs={runs} role={role} revision={task.revision} path={taskPath(task)} api={api} messages={messages} requests={questions} active={active && tab === role} report={run => <RunReport task={task} run={run} />} /> : <p className="empty">Этот этап ещё не запускался.</p>}
+      {runs.some(run => run.role === role) ? <RunConversation runs={runs} role={role} revision={task.revision} path={taskPath(task)} api={api} messages={messages} requests={questions} active={active && tab === role} report={report} /> : <p className="empty">Этот этап ещё не запускался.</p>}
     </div>)}
     {tab !== 'overview' && messages.filter(message => !message.run_id).map(message => <Message key={message.id} message={message} />)}
     {chatError && <p role="alert">{chatError}</p>}
@@ -493,22 +509,25 @@ function History({ task, revisions, setRevisions }: { task: Task; revisions: Rev
   return <>{error && <p role="alert">{error}</p>}{revisions ? revisions.map(r => <div key={r.revision}><p className="meta">Версия требований: {r.revision} · {new Date(r.created_at).toLocaleString('ru')}</p><TaskMarkdown>{r.description}</TaskMarkdown></div>) : <p role="status">Загружаем историю…</p>}</>;
 }
 
-function RunReport({ task, run }: { task: Task; run: AgentRun }) {
+function RunReport({ task, run, preview = false, historical = false }: { task: Task; run: AgentRun; preview?: boolean; historical?: boolean }) {
   const [report, setReport] = useState('');
   const [log, setLog] = useState<{ text: string; next_offset: number; more: boolean }>({ text: '', next_offset: 0, more: true });
   const [logName, setLogName] = useState('events.jsonl');
   const [error, setError] = useState('');
   const [open, setOpen] = useState(false);
   useEffect(() => {
-    if (!open || !run.report) return;
+    if ((!open && !preview) || !run.report) return;
     let active = true;
     api<{ text: string }>(`${taskPath(task)}/runs/${run.id}/report`)
-      .then(value => { if (active) setReport(value.text); })
+      .then(value => { if (active) { setReport(value.text); setError(''); } })
       .catch(error => { if (active) setError(error.message); });
     return () => { active = false; };
-  }, [open, run.id, run.report, task.id]);
-  return <details onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary>{run.report ? 'Отчёт' : 'Диагностика'} · {run.outcome ?? run.status}{run.stale || run.description_revision !== task.revision ? ' · Неактуален' : ''}{run.finished_at && ` · ${new Date(run.finished_at).toLocaleString('ru')}`}</summary>
+  }, [open, preview, run.id, run.report, task.id]);
+  const excerpt = (report.split('\n\n## Findings\n')[1]?.split('\n\n')[0] ?? report.split('\n\n')[0]).trim();
+  return <>
+    {preview && <p>{error || (excerpt ? `${excerpt.slice(0, 360)}${excerpt.length > 360 ? '…' : ''}` : run.report ? 'Загружаем замечание…' : 'Сохранённый отчёт отсутствует; доступна диагностика.')}</p>}
+    <details onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary>{run.report ? 'Отчёт' : 'Диагностика'} · {run.outcome ?? run.status}{historical || run.revoked || run.stale || run.description_revision !== task.revision ? ' · Неактуален, не учитывается в текущем раунде' : ''}{run.finished_at && ` · ${new Date(run.finished_at).toLocaleString('ru')}`}</summary>
     <p className="meta">Версия требований: {run.description_revision} · Модель: {run.config.models[run.role]}</p>
     <p className="meta">Доработки: {run.repair_attempt}/2 · {run.round_id && `Раунд: ${run.round_id}`} {run.spec_run_id && `Spec: ${run.spec_run_id}`}<br />{run.base_sha && `Base: ${run.base_sha}`}<br />{run.head_sha && `Head: ${run.head_sha}`}<br />Branch: {run.branch}<br />{run.worktree}</p>
     <p className="meta">Модели запуска: {allRoles.filter(role => run.config.models[role]).map(role => `${role}: ${run.config.models[role]} (${run.config.reasoning_efforts?.[role] ?? 'по умолчанию Codex'}; ${run.config.fast_modes?.[role] === undefined ? 'Fast наследуется' : run.config.fast_modes[role] ? 'Fast запрошен' : 'обычный режим'})`).join(' · ')}</p>
@@ -522,7 +541,7 @@ function RunReport({ task, run }: { task: Task; run: AgentRun }) {
     {run.error && <pre role="alert" className="error">{run.error}</pre>}
     {error && <p role="alert">{error}</p>}
     {!!run.report && <pre>{report || 'Загружаем сохранённый отчёт…'}</pre>}
-  </details>;
+  </details></>;
 }
 function ModelSettings({ project, refresh }: { project: Project; refresh: () => Promise<void> }) {
   const [config, setConfig] = useState<Settings | null>(null);
