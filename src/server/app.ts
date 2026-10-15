@@ -285,11 +285,12 @@ export async function createApp(options: {
     publish(); return result;
   });
   app.get<{ Params: { projectId: string; taskId: string } }>('/api/projects/:projectId/tasks/:taskId/revisions', { schema: { params: taskParams } }, async request => store.revisions(request.params.projectId, request.params.taskId));
-  app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/settings', { schema: { params: projectParams } }, async request => store.settings(request.params.projectId));
+  app.get<{ Params: { projectId: string } }>('/api/projects/:projectId/settings', { schema: { params: projectParams } }, async request => ({ ...store.settings(request.params.projectId), state_version: store.project(request.params.projectId).state_version }));
   app.put<{ Params: { projectId: string }; Body: Settings & { request_id: string; state_version: number } }>('/api/projects/:projectId/settings', {
     schema: { params: projectParams, body: { ...object({ request_id: uuid, state_version: version,
       instructions: { type: 'string', maxLength: 30000 },
       models: { ...object(Object.fromEntries(allRoles.map(role => [role, { type: 'string', minLength: 1, maxLength: 128, pattern: '^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$' }]))), required: roles },
+      fast_modes: { ...object(Object.fromEntries(allRoles.map(role => [role, { type: 'boolean' }]))), required: [] },
       reasoning_efforts: { ...object(Object.fromEntries(allRoles.map(role => [role, { type: 'string', minLength: 1, maxLength: 64, pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]*$' }]))), required: [] },
     }), required: ['request_id', 'state_version', 'instructions', 'models'] } },
   }, async request => {
@@ -309,6 +310,14 @@ export async function createApp(options: {
         if (!catalog.models.find(model => model.id === config.models[role])?.reasoning_efforts?.some(option => option.effort === config.reasoning_efforts![role])) {
           throw new Problem(422, `Глубина рассуждений для ${role} не подтверждена каталогом Codex. Обновите список или выберите «По умолчанию Codex».`);
         }
+      }
+    }
+    const fastChanged = roles.filter(role => config.fast_modes?.[role] === true && (saved.fast_modes?.[role] !== true || saved.models[role] !== config.models[role]));
+    if (fastChanged.length) {
+      const catalog = await catalogs.get(projectId, project.checkout);
+      for (const role of fastChanged) {
+        const fast = catalog.models.find(model => model.id === config.models[role])?.fast;
+        if (catalog.source !== 'codex' || !fast?.supported) throw new Problem(422, `Fast для ${role} не подтверждён. ${fast?.reason ?? 'Обновите каталог; модель и авторизация должны поддерживать Fast.'}`);
       }
     }
     const result = store.mutate(request_id, fingerprint, () => store.saveSettings(projectId, config, state_version));

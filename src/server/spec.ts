@@ -513,7 +513,7 @@ ${JSON.stringify(context)}`;
       prompt += this.chatContext(run);
       saveArtifact(directory, 'input.json', JSON.stringify({ run, mode, description: task.description, specification, feedback, previousBuild, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'build', 'running'); this.stateLog(run); this.publish();
-      const result = await this.agentResult(run, directory, () => this.build({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), interrupt: stop => this.registerInterrupt(run, stop), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.build, reasoningEffort: run.config.reasoning_efforts?.build, prompt }), validateBuild);
+      const result = await this.agentResult(run, directory, () => this.build({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), interrupt: stop => this.registerInterrupt(run, stop), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.build, fast: run.config.fast_modes?.build, reasoningEffort: run.config.reasoning_efforts?.build, prompt }), validateBuild);
       await verifyRepository(project, run.worktree, this.command);
       run.head_sha = result.outcome === 'READY' ? await commitBuild(run, result, this.command)
         : await this.command('git', ['rev-parse', 'HEAD'], run.worktree);
@@ -627,7 +627,7 @@ ${JSON.stringify(context)}`;
       prompt += this.chatContext(run);
       saveArtifact(directory, 'input.json', JSON.stringify({ run, specification, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'review', 'running'); this.stateLog(run); this.publish();
-      const result = await this.agentResult(run, directory, () => this.review({ reviewRole: run.role as ReviewRole, cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), interrupt: stop => this.registerInterrupt(run, stop), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models[run.role]!, reasoningEffort: run.config.reasoning_efforts?.[run.role], prompt }), value => validateReview(value, run.role as ReviewRole));
+      const result = await this.agentResult(run, directory, () => this.review({ reviewRole: run.role as ReviewRole, cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), interrupt: stop => this.registerInterrupt(run, stop), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models[run.role]!, fast: run.config.fast_modes?.[run.role], reasoningEffort: run.config.reasoning_efforts?.[run.role], prompt }), value => validateReview(value, run.role as ReviewRole));
       await this.verifyReviewSource(run);
       saveArtifact(directory, 'result.json', JSON.stringify({ schema_version: run.role === 'review-ui-ux' ? 2 : 1, task_id: task.id, run_id: run.id, role: run.role,
         round_id: run.round_id, description_revision: run.description_revision, spec_revision: run.spec_run_id,
@@ -690,7 +690,7 @@ Context: ${JSON.stringify({ review_plan: run.review_plan, run, description: task
       prompt += this.chatContext(run);
       saveArtifact(directory, 'input.json', JSON.stringify({ run, specification, reports, prompt }, null, 2));
       run.status = 'running'; this.store.updateRun(run, 'approve', 'running'); this.stateLog(run); this.publish();
-      const result = await this.agentResult(run, directory, () => this.approve({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), interrupt: stop => this.registerInterrupt(run, stop), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.approve, reasoningEffort: run.config.reasoning_efforts?.approve, prompt }), validateApprove);
+      const result = await this.agentResult(run, directory, () => this.approve({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), interrupt: stop => this.registerInterrupt(run, stop), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.approve, fast: run.config.fast_modes?.approve, reasoningEffort: run.config.reasoning_efforts?.approve, prompt }), validateApprove);
       await this.verifyReviewSource(run);
       if (!this.store.reviewPasses(run)) throw new Problem(409, 'Review устарел.');
       saveArtifact(directory, 'result.json', JSON.stringify({ schema_version: 1, run_id: run.id, task_id: task.id,
@@ -768,7 +768,7 @@ ${context.length ? `Previous Spec results and human answers (same revision):\n${
       this.store.updateRun(run, 'spec', 'running');
       this.stateLog(run);
       this.publish();
-      const result = await this.agentResult(run, directory, () => this.execute({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), interrupt: stop => this.registerInterrupt(run, stop), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.spec, reasoningEffort: run.config.reasoning_efforts?.spec, prompt }), validateSpec);
+      const result = await this.agentResult(run, directory, () => this.execute({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), interrupt: stop => this.registerInterrupt(run, stop), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.spec, fast: run.config.fast_modes?.spec, reasoningEffort: run.config.reasoning_efforts?.spec, prompt }), validateSpec);
       const head = await this.verifyWorktree(run);
       const report = [result.summary, ...[
         ['Требования', result.requirements], ['Acceptance criteria', result.acceptance_criteria],

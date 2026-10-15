@@ -78,7 +78,7 @@ for (const scenario of ['edit', 'committed', 'committed-plus-edit', 'token-expre
   assert.throws(queue, /Spec/);
   writeFileSync(join(checkout, 'user-work'), 'untouched');
   const runner = controller(async input => {
-    assert.equal(input.model, 'selected-build'); assert.equal(input.reasoningEffort, 'high'); assert.match(input.prompt, /Keep it simple/); assert.match(input.prompt, /README says hello/); assert.match(input.prompt, /AGENTS.md/);
+    assert.equal(input.model, 'selected-build'); assert.equal(input.reasoningEffort, 'high'); assert.equal(input.fast, false); assert.match(input.prompt, /Keep it simple/); assert.match(input.prompt, /README says hello/); assert.match(input.prompt, /AGENTS.md/);
     assert.match(input.prompt, /Mode: initial/); assert.doesNotMatch(input.prompt, /Repair the existing implementation/);
     writeFileSync(join(input.cwd, 'README.md'), 'hello');
     if (scenario.endsWith('token-expressions')) writeFileSync(join(input.cwd, 'README.md'), [

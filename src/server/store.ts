@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync, chmodSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { dependencyActionBlocker, type DependencyCheck, resultsResetBlocker, defaultModels, reviewsFor, requiredReviews, type ReviewRole, type ReviewPlan, type SpecMode, type SpecDecision, type ApproveResult, type ReviewResult, type BuildResult, type HumanRequest, type SpecResult, type Settings, type AgentRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision, type ExecutionPause } from '../shared.js';
+import { dependencyActionBlocker, type DependencyCheck, resultsResetBlocker, defaultModels, roles, reviewsFor, requiredReviews, type ReviewRole, type ReviewPlan, type SpecMode, type SpecDecision, type ApproveResult, type ReviewResult, type BuildResult, type HumanRequest, type SpecResult, type Settings, type AgentRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision, type ExecutionPause } from '../shared.js';
 
 const taskSelect = `SELECT t.*, g.issue_number, g.issue_url,
   (t.spec_decision IS NOT NULL OR t.publication_status IS NOT NULL
@@ -241,6 +241,7 @@ export class Store {
     const saved = { ...project, id: randomUUID(), state_version: 1 };
     this.db.prepare(`INSERT INTO projects VALUES (@id, @checkout, @common_dir, @remote, @remote_url,
       @hosting, @host, @repository, @target_branch, @state_version)`).run(saved);
+    this.db.prepare('INSERT INTO project_settings VALUES (?, ?)').run(saved.id, JSON.stringify({ models: { ...defaultModels }, fast_modes: Object.fromEntries(roles.map(role => [role, false])), instructions: '' }));
     this.event('project.connected', null, { project_id: saved.id });
     return saved;
   }
@@ -478,9 +479,10 @@ export class Store {
   saveSettings(projectId: string, config: Settings, version: number) {
     if (this.project(projectId).state_version !== version) throw new Problem(409, 'Настройки изменились. Загрузите актуальную версию.');
     const saved = this.settings(projectId);
-    config = { ...config, models: { ...config.models } };
+    config = { ...config, models: { ...config.models }, ...(config.fast_modes === undefined && saved.fast_modes !== undefined ? { fast_modes: { ...saved.fast_modes } } : {}) };
     for (const role of ['review-ui', 'review-ux'] as const) {
       if (saved.models[role]) config.models[role] = saved.models[role];
+      if (saved.fast_modes?.[role] !== undefined) config.fast_modes = { ...config.fast_modes, [role]: saved.fast_modes[role] };
       if (saved.reasoning_efforts?.[role]) config.reasoning_efforts = { ...config.reasoning_efforts, [role]: saved.reasoning_efforts[role] };
     }
     this.db.prepare('INSERT INTO project_settings VALUES (?, ?) ON CONFLICT(project_id) DO UPDATE SET config = excluded.config').run(projectId, JSON.stringify(config));

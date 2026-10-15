@@ -43,6 +43,13 @@ export function classifyFailure(value: unknown): CodexFailure {
     : /authentication|unauthorized|invalid_api_key|not authenticated|please (?:log|sign) in/i.test(text) ? 'authentication'
     : /model.{0,100}(?:not available|not supported|does not exist)/i.test(text) ? 'model_unavailable'
     : /rate_limit_exceeded|usage_limit_reached|rate limit (?:reached|exceeded)|(?:hit|reached|exceeded) (?:your |the )?(?:usage|rate) limit|usage limit (?:reached|exceeded)|quota exceeded/i.test(text) ? 'rate_limit' : 'protocol_error';
+  if (kind !== 'rate_limit' && /service[_ ]?tier|fast mode/i.test(code + ' ' + text)) {
+    const error = new CodexFailure(kind);
+    error.message = /account|plan|not allowed|permission|workspace/i.test(text) ? 'Codex отклонил Fast: режим недоступен аккаунту или workspace. Запуск остановлен без fallback.'
+      : /model/i.test(text) ? 'Codex отклонил Fast: модель не поддерживает выбранный режим. Запуск остановлен без fallback.'
+      : 'Codex отклонил service tier: версия CLI или конфигурация не поддерживает выбранный режим. Запуск остановлен без fallback.';
+    return error;
+  }
   const reset = nested.reset_at;
   const time = typeof reset === 'number' ? reset * 1000 : typeof reset === 'string' ? Date.parse(reset) : NaN;
   const retry = nested.retry_after;

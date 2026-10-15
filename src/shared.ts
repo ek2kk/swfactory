@@ -34,7 +34,7 @@ export const legacyReviewRoles = ['review-code', 'review-security', 'review-ui',
 export const allRoles = ['spec', 'build', 'review-code', 'review-security', 'review-ui-ux', 'review-ui', 'review-ux', 'approve'] as const;
 export type Models = Record<'spec' | 'build' | 'review-code' | 'review-security' | 'approve', string> & Partial<Record<'review-ui-ux' | 'review-ui' | 'review-ux', string>>;
 export const defaultModels: Models = Object.fromEntries(roles.map(role => [role, 'gpt-6.1-sol'])) as Models;
-export type Settings = { models: Models; reasoning_efforts?: Partial<Models>; instructions: string };
+export type Settings = { models: Models; reasoning_efforts?: Partial<Models>; fast_modes?: Partial<Record<typeof allRoles[number], boolean>>; instructions: string };
 export type SpecResult = {
   outcome: 'READY' | 'NEEDS_INPUT'; title: string; summary: string; requirements: string[];
   acceptance_criteria: string[]; assumptions: string[]; out_of_scope: string[]; questions: Question[];
@@ -117,5 +117,5 @@ export type ChatMessage = {
 };
 export type TranscriptEntry = { id: string; kind: 'agent' | 'tool' | 'event'; title: string; text: string; at: string; status?: string };
 
-export type ModelOption = { id: string; name: string; reasoning_efforts?: { effort: string; description: string }[]; default_reasoning_effort?: string };
+export type ModelOption = { id: string; name: string; reasoning_efforts?: { effort: string; description: string }[]; default_reasoning_effort?: string; fast?: { supported: boolean; reason: string; auth: 'chatgpt' | 'apiKey' | 'unknown' } };
 export type ModelCatalog = { models: ModelOption[]; source: 'codex' | 'cache' | 'defaults'; updated_at: string | null; error?: string };

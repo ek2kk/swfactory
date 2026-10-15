@@ -1,3 +1,4 @@
+import { prepareFast } from './fast.js';
 import { dependenciesSchema, validateDependencies } from './dependencies.js';
 import { executeInteractive, type Steer } from './interactive.js';
 import { execFile, spawn } from './processes.js';
@@ -42,7 +43,7 @@ export function validateSpec(value: unknown): SpecResult {
   catch { throw new Problem(422, 'Codex вернул невалидный заголовок Spec. Переход заблокирован.'); }
   return { ...result, title: result.title.trim() };
 }
-export type CodexInput = { reviewRole?: ReviewRole; signal?: AbortSignal; interrupt?: (interrupt: (() => void) | null) => void; control?: (steer: Steer | null) => void; cwd: string; directory: string; model: string; reasoningEffort?: string; prompt: string; output?: (text: string) => void; metadata?: (value: RunDiagnostic) => void };
+export type CodexInput = { reviewRole?: ReviewRole; signal?: AbortSignal; interrupt?: (interrupt: (() => void) | null) => void; control?: (steer: Steer | null) => void; cwd: string; directory: string; model: string; reasoningEffort?: string; fast?: boolean; prompt: string; output?: (text: string) => void; metadata?: (value: RunDiagnostic) => void };
 export type ExecuteSpec = (input: CodexInput) => Promise<SpecResult>;
 
 export function executeSpec(input: CodexInput, executable = 'codex') {
@@ -59,6 +60,7 @@ async function executeResult<T>(input: CodexInput, schema: object, validate: (va
     child.stdin?.end();
   });
   input.metadata?.({ cli_version: version });
+  const fastArgs = await prepareFast(input, version, executable);
   saveArtifact(input.directory, 'schema.json', JSON.stringify(schema));
   const stdout = openSync(join(input.directory, 'events.jsonl'), 'wx', 0o600);
   let stderr: number;
@@ -66,7 +68,7 @@ async function executeResult<T>(input: CodexInput, schema: object, validate: (va
   catch (error) { closeSync(stdout); throw error; }
   try {
     return await new Promise<T>((resolve, reject) => {
-      const child = spawn(executable, ['exec', '--json', '--dangerously-bypass-approvals-and-sandbox',
+      const child = spawn(executable, ['exec', ...fastArgs, '--json', '--dangerously-bypass-approvals-and-sandbox',
         '--model', input.model, ...(input.reasoningEffort ? ['-c', `model_reasoning_effort=${JSON.stringify(input.reasoningEffort)}`] : []), '--output-schema', join(input.directory, 'schema.json'), '--color', 'never', '-'],
       { cwd: input.cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
       let stderrBuffer = '', stderrTail = '';
