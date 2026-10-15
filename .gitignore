@@ -2,3 +2,9 @@ node_modules/
 dist/
 *.tsbuildinfo
 .DS_Store
+
+# Keep shared graph data; ignore generated views and local state.
+/graphify-out/*
+!/graphify-out/graph.json
+!/graphify-out/GRAPH_REPORT.md
+!/graphify-out/.graphify_labels.json
