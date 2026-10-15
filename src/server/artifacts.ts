@@ -1,6 +1,18 @@
-import { constants, mkdirSync, realpathSync, writeFileSync, renameSync, openSync, readFileSync, closeSync, fstatSync, readSync } from 'node:fs';
+import { constants, mkdirSync, realpathSync, writeFileSync, renameSync, openSync, readFileSync, closeSync, fstatSync, readSync, lstatSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { Problem } from './store.js';
+
+export function removeResultArtifacts(directory: string, runIds: string[]) {
+  const root = join(realpathSync(directory), 'artifacts');
+  try { lstatSync(root); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+  if (realpathSync(root) !== root) throw new Problem(422, 'Каталог artifacts не должен быть symlink. Исправьте путь и повторите очистку.');
+  for (const id of runIds) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) throw new Problem(422, 'Небезопасный ID каталога результатов.');
+    // rm removes symlinks themselves, never their targets (including old worktrees).
+    rmSync(join(root, id), { recursive: true, force: true });
+  }
+}
 
 export function artifactDirectory(directory: string, runId: string) {
   const root = join(realpathSync(directory), 'artifacts');

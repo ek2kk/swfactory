@@ -6,7 +6,9 @@ import { DeliveryError, type Steer } from './interactive.js';
 export class Chat {
   error: string | null = null;
   private controls = new Map<string, { run: AgentRun; steer: Steer }>();
+  private deliveries = new Map<string, number>();
   constructor(private store: Store, private publish: () => void) {}
+  hasWork(taskId: string) { return this.controls.has(taskId) || !!this.deliveries.get(taskId); }
   cancel(taskId: string) { this.controls.delete(taskId); }
   messages(taskId: string): ChatMessage[] {
     return this.store.db.prepare('SELECT * FROM chat_messages WHERE task_id = ? ORDER BY rowid').all(taskId) as ChatMessage[];
@@ -28,7 +30,7 @@ export class Chat {
     return { id };
   }
   control(run: AgentRun, steer: Steer | null) {
-    if (this.store.blocked(run.task_id)) return;
+    if (this.store.blocked(run.task_id) || !this.store.hasRun(run)) return;
     if (steer) { this.controls.set(run.task_id, { run, steer }); this.flush(run.task_id); }
     else if (this.controls.get(run.task_id)?.run.id === run.id) this.controls.delete(run.task_id);
   }
@@ -42,14 +44,17 @@ export class Chat {
         this.store.event('chat.sending', taskId, { message_id: message.id });
       })();
       this.publish();
+      this.deliveries.set(taskId, (this.deliveries.get(taskId) ?? 0) + 1);
       void active.steer(message.id, `User guidance for this task revision (does not replace the Spec, required questions, role boundaries or publication approval):\n${message.text}`).then(
         () => this.finish(message, 'delivered', null),
         error => this.finish(message, error instanceof DeliveryError ? error.status : 'unknown', error instanceof DeliveryError ? error.message : 'Неизвестный результат доставки. Нужна ручная сверка.'),
-      ).catch(() => { this.error = 'Не удалось сохранить подтверждение чата. Новые этапы остановлены; нужна ручная сверка доставки перед restart.'; this.publish(); });
+      ).catch(() => { this.error = 'Не удалось сохранить подтверждение чата. Новые этапы остановлены; нужна ручная сверка доставки перед restart.'; this.publish(); })
+        .finally(() => { const remaining = this.deliveries.get(taskId)! - 1; if (remaining) this.deliveries.set(taskId, remaining); else this.deliveries.delete(taskId); });
     }
   }
   private finish(message: ChatMessage, status: ChatMessage['status'], error: string | null) {
     if (this.store.blocked(message.task_id)) return;
+    if (!this.store.db.prepare('SELECT 1 FROM chat_messages WHERE id = ?').get(message.id)) return;
     this.store.db.transaction(() => {
       this.store.db.prepare("UPDATE chat_messages SET status = ?, error = ?, delivered_at = ? WHERE id = ? AND status = 'sending'")
         .run(status, error, status === 'delivered' ? new Date().toISOString() : null, message.id);

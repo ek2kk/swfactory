@@ -26,6 +26,7 @@ export class ProcessScope {
   }
   // shortcut: ps cannot recover orphan ancestry; deletion also requires persisted human reconciliation.
   knownGroupsStopped() { return [...this.groups].every(pid => !this.alive(pid)); }
+  hasWork() { return this.jobs.size > 0 || !this.knownGroupsStopped(); }
   check() { if (this.cancelled) throw new Error('Task execution aborted'); this.controller.signal.throwIfAborted(); }
   track(child: ChildProcess) {
     if (!child.pid) return;

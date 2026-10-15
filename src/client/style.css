@@ -99,6 +99,9 @@ input::placeholder,textarea::placeholder{color:var(--muted);opacity:1}
 .task-controls { border: 0; padding: 0; margin: 0; min-width: 0; }
 .delete-confirmation { border: 1px solid currentColor; padding: 1rem; max-width: min(42rem, 90vw); color: inherit; background: var(--surface); }
 .delete-confirmation::backdrop { background: rgb(0 0 0 / 55%); }
+.results-reset{margin:16px 0;font-size:13px;line-height:1.6}
+.results-reset button{max-width:100%;white-space:normal}
+.results-reset .delete-confirmation{max-height:85vh;overflow-y:auto;overflow-wrap:anywhere}
 
 .task-page .card .task-controls{border:0;padding:0;margin:0}
 .card-actions{justify-content:flex-end;margin-top:-8px}

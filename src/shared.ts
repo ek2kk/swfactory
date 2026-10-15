@@ -7,6 +7,7 @@ export type ProjectInput = Pick<Project, 'checkout' | 'remote' | 'hosting' | 'ta
 export type SpecMode = 'auto' | 'spec' | 'skip';
 export type SpecDecision = { revision: number; mode: SpecMode; required: boolean | null; reason: string; missing: string[] };
 export type Task = {
+  has_results?: number; reset_pending?: number; reset_error?: string | null;
   spec_decision?: SpecDecision | null;
   issue_number?: number | null; issue_url?: string | null;
   id: string; project_id: string; description: string; title: string | null;
@@ -17,6 +18,13 @@ export type Task = {
   state_version: number; revision: number;
   title_state: 'pending' | 'running' | 'completed' | 'failed' | 'interrupted';
 };
+export function resultsResetBlocker(task: Task): string | null {
+  if (task.archived) return 'Для сброса архивной задачи необходимо восстановление карточки; для удаления карточки используйте полное удаление. Архив автоматически не снимается.';
+  if (task.publication_status === 'pending' || task.publication_status === 'unknown') return 'Публикация не подтверждена. Сначала остановите исполнение и сверьте remote результат; сброс не снимает это ограничение.';
+  if (task.deletion_state || task.stop_unverified || task.execution_unverified) return 'Сначала используйте «Остановить исполнение / сверить» и подтвердите остановку процессов.';
+  if (['queued', 'running'].includes(task.run_state) || ['pending', 'running'].includes(task.title_state)) return 'Дождитесь завершения работы или используйте «Остановить исполнение / сверить».';
+  return null;
+}
 export type Revision = { task_id: string; revision: number; description: string; created_at: string };
 export type SavedEvent = { id: number; type: string; task_id: string | null; payload: string; created_at: string };
 export type Snapshot = { issue_syncing?: string[]; issue_errors?: { project_id: string; message: string }[]; archived_tasks?: Task[]; execution_pause?: ExecutionPause; projects: Project[]; tasks: Task[]; runs: AgentRun[]; human_requests: HumanRequest[]; execution_error?: string | null; title_error?: string | null; cursor: number };

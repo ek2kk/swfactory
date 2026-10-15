@@ -14,12 +14,13 @@ import { Titles, generateTitle, parseTitle } from './title.js';
 import { formatOutput } from './output.js';
 import { CodexFailure } from './diagnostics.js';
 import { Scheduler } from './scheduler.js';
-import { artifactDirectory, saveArtifact } from './artifacts.js';
+import { artifactDirectory, saveArtifact, removeResultArtifacts } from './artifacts.js';
 
 export class SpecController {
   private scopes = new Map<string, ProcessScope>();
   private interrupts = new Map<string, { run: AgentRun; stop: () => void }>();
   private deletions = new Map<string, Promise<void>>();
+  private verifications = new Map<string, number>();
   private active = new Set<Promise<void>>();
   private scheduler = new Scheduler();
   readonly titles: Titles;
@@ -50,7 +51,7 @@ export class SpecController {
     return scope;
   }
   private async owned(run: AgentRun, work: () => Promise<void>) {
-    if (this.store.blocked(run.task_id)) return;
+    if (this.store.blocked(run.task_id) || !this.store.hasRun(run)) return;
     const scope = this.scope(run.task_id);
     this.store.db.prepare('UPDATE tasks SET execution_unverified = 1 WHERE id = ?').run(run.task_id);
     await scope.run(work).finally(() => {
@@ -58,7 +59,29 @@ export class SpecController {
       this.publish();
     });
   }
-  deleteTask(taskId: string) {
+  assertResultsResetIdle(taskId: string) {
+    if (this.scheduler.hasWork(taskId) || this.titles.hasWork(taskId) || this.chat.hasWork(taskId)
+      || this.scopes.get(taskId)?.hasWork() || this.deletions.has(taskId) || this.verifications.has(taskId)
+      || [...this.interrupts.values()].some(control => control.run.task_id === taskId)) {
+      throw new Problem(409, 'Процессы или callbacks ещё не завершены. Дождитесь завершения или используйте «Остановить исполнение / сверить».');
+    }
+  }
+  completeResultsReset(taskId: string, resetId: string) {
+    const cleanup = this.store.resultsCleanup(taskId);
+    // Replaying an old request must never clean results from a newer cycle.
+    if (!cleanup || cleanup.reset_id !== resetId) return;
+    this.assertResultsResetIdle(taskId);
+    try {
+      removeResultArtifacts(this.directory, JSON.parse(cleanup.run_ids));
+      this.store.finishResultsReset(taskId, resetId);
+      this.scopes.delete(taskId);
+      this.chat.cancel(taskId);
+    } catch {
+      this.store.db.prepare('UPDATE tasks SET reset_error = ? WHERE id = ?').run('Очистка файлов не завершена. Проверьте доступ и свободное место в data directory, затем повторите «Сбросить все результаты». Новые запуски заблокированы.', taskId);
+      throw new Problem(409, 'Очистка результатов не завершена. Проверьте data directory и повторите сброс; новый запуск заблокирован.');
+    } finally { this.publish(); }
+  }
+  deleteTask(taskId: string, preserveVisibility = false) {
     const prior = this.deletions.get(taskId);
     if (prior) return prior;
     const done = (async () => {
@@ -70,9 +93,9 @@ export class SpecController {
         await Promise.all([scope?.stop(), titleStop]);
         const task = this.store.db.prepare('SELECT execution_unverified, stop_unverified FROM tasks WHERE id = ?').get(taskId) as { execution_unverified: number; stop_unverified: number };
         if (task.stop_unverified || (task.execution_unverified && !scope)) throw new Error('Остановка всех потомков не подтверждена: detached-процесс мог потерять связь с родителем. Нужна ручная сверка процессов и remote публикации; автоматический повтор запрещён.');
-        this.store.finishDeletion(taskId);
+        this.store.finishDeletion(taskId, undefined, preserveVisibility);
         this.scopes.delete(taskId);
-      } catch (error) { this.store.finishDeletion(taskId, (error as Error).message); }
+      } catch (error) { this.store.finishDeletion(taskId, (error as Error).message, preserveVisibility); }
       this.publish();
     })().finally(() => this.deletions.delete(taskId));
     this.deletions.set(taskId, done); return done;
@@ -96,6 +119,7 @@ export class SpecController {
     control.stop();
   }
   private registerInterrupt(run: AgentRun, stop: (() => void) | null) {
+    if (!this.store.hasRun(run)) return;
     if (stop) this.interrupts.set(run.id, { run, stop });
     else this.interrupts.delete(run.id);
     if (run.diagnostic?.can_interrupt !== !!stop) this.recordMetadata(run, { can_interrupt: !!stop });
@@ -109,7 +133,7 @@ export class SpecController {
     this.publish();
   }
   private recordMetadata(run: AgentRun, value: RunDiagnostic) {
-    if (this.store.blocked(run.task_id)) return;
+    if (this.store.blocked(run.task_id) || !this.store.hasRun(run)) return;
     run.diagnostic = { ...run.diagnostic, ...value };
     this.store.db.transaction(() => {
       this.store.db.prepare("UPDATE runs SET diagnostic = ? WHERE id = ? AND status = 'running'").run(JSON.stringify(run.diagnostic), run.id);
@@ -337,7 +361,7 @@ ${JSON.stringify(context)}`;
       if (!run || run.stale || this.store.runs().filter(r => r.task_id === task.id).at(-1)?.role === 'build') continue;
       try { await this.verifyReviewSource(run); }
       catch {
-        if (this.store.blocked(task.id)) continue;
+        if (this.store.blocked(task.id) || !this.store.hasRun(run)) continue;
         if (!this.store.specRun(task.project_id, task.id, run.id).stale) {
           this.error = 'Не удалось проверить актуальность Review. Новые запуски остановлены; нужна ручная сверка.';
         }
@@ -355,12 +379,17 @@ ${JSON.stringify(context)}`;
       || build.description_revision !== run.description_revision || build.spec_run_id !== run.spec_run_id
       || build.base_sha !== run.base_sha || build.head_sha !== run.head_sha || build.source_hash !== run.source_hash
       || build.worktree !== run.worktree || build.branch !== run.branch || run.stale) throw new Problem(409, 'Review относится к другой версии реализации или Spec.');
+    this.verifications.set(run.task_id, (this.verifications.get(run.task_id) ?? 0) + 1);
     try {
       await verifyRepository(this.store.project(run.project_id), run.worktree, this.command);
       if (await this.command('git', ['rev-parse', 'HEAD'], run.worktree) !== run.head_sha
         || await this.command('git', ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'], run.worktree)
         || await sourceHash(run, this.command) !== run.source_hash) throw new Problem(422, 'Source изменился. Старые Review неактуальны; нужна ручная сверка.');
     } catch (error) { this.store.invalidateReviews(run); throw error; }
+    finally {
+      const remaining = this.verifications.get(run.task_id)! - 1;
+      if (remaining) this.verifications.set(run.task_id, remaining); else this.verifications.delete(run.task_id);
+    }
   }
 
   private async performReview(run: AgentRun) {
