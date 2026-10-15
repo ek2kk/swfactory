@@ -668,6 +668,34 @@ for (const state of ['queued', 'running', 'needs-human'] as const) test(`restore
   assert.deepEqual(store.runs()[0], history[0], 'new run preserves the old result and interruption');
 });
 
+for (const publication of ['pending', 'unknown', 'confirmed', null]) test(`publication-only stop API preserves visibility and remote safety: ${publication}`, async t => {
+  const { app, store, project, headers } = await apiFixture(t);
+  const task = store.createTask(project.id, 'Publication verification', 1);
+  store.db.prepare("UPDATE tasks SET title_state = 'completed', publication_status = ? WHERE id = ?").run(publication, task.id);
+  const before = store.rawTask(project.id, task.id);
+  const path = `/api/projects/${project.id}/tasks/${task.id}`;
+  const payload = { request_id: randomUUID(), state_version: before.state_version };
+  const post = (suffix: string, body = payload) => app.inject({ method: 'POST', url: path + suffix, headers, payload: body });
+  const response = await post('/stop');
+  if (publication === 'confirmed' || publication === null) {
+    assert.equal(response.statusCode, 409);
+    assert.deepEqual(store.rawTask(project.id, task.id), before);
+    return;
+  }
+  assert.equal(response.statusCode, 200); assert.equal(response.json().deleted, true);
+  assert.match(response.json().warning, /Remote операция/);
+  const after = store.rawTask(project.id, task.id);
+  assert.equal(after.archived, 0); assert.equal(after.archive_source, null); assert.equal(after.deletion_state, null);
+  assert.equal(after.publication_status, 'unknown'); assert.ok(after.state_version > before.state_version);
+  assert.equal(store.events(0).filter(event => event.type === 'task.archived').length, 0);
+  assert.deepEqual((await post('/stop')).json(), response.json());
+  assert.deepEqual(store.rawTask(project.id, task.id), after);
+  const reset = await post('/reset-results', { request_id: randomUUID(), state_version: after.state_version });
+  assert.equal(reset.statusCode, 409);
+  assert.deepEqual(store.rawTask(project.id, task.id), after);
+  assert.throws(() => store.beginPublication(project.id, task.id, after.state_version), /неизвестном исходе/);
+});
+
 test('restored card permits stop/reconciliation without re-archiving, preserves unknown publication and replays requests', async t => {
   const { app, store, project, headers } = await apiFixture(t);
   const task = githubCard(store, project.id);

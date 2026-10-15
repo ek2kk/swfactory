@@ -182,6 +182,7 @@ export async function createApp(options: {
     if (action === 'stop') {
       const task = store.rawTask(projectId, taskId);
       if (!task.archived && !task.deletion_state && !task.execution_unverified && !task.stop_unverified
+        && task.publication_status !== 'pending' && task.publication_status !== 'unknown'
         && !['queued','running'].includes(task.run_state) && !['pending','running'].includes(task.title_state)) throw new Problem(409, 'Нет исполнения для остановки или сверки.');
     }
     if (!prior) {

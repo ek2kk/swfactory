@@ -113,7 +113,7 @@ function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () =>
   const [version, setVersion] = useState(task.state_version);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const checkingStop = !(confirming && archiving) && !!(task.archived || task.deletion_state || task.stop_unverified || task.execution_unverified || ['queued','running'].includes(task.run_state) || ['pending','running'].includes(task.title_state));
+  const checkingStop = !(confirming && archiving) && !!(task.archived || task.deletion_state || task.stop_unverified || task.execution_unverified || task.publication_status === 'pending' || task.publication_status === 'unknown' || ['queued','running'].includes(task.run_state) || ['pending','running'].includes(task.title_state));
   return <section aria-label={checkingStop ? "Остановка исполнения" : "Архивирование задачи"}>
     {task.archive_source === 'github-filter' && <p role="status">{task.archived ? `Автоматический архив: ${task.archive_reason}` : 'Соответствие фильтру GitHub восстановлено. Исполнение автоматически не возобновляется.'}</p>}
     {task.deletion_state === 'stopping' && <p role="status">Останавливаем известные процессы. Подтверждение остановки всех процессов пока не получено.</p>}

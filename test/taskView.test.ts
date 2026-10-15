@@ -32,7 +32,7 @@ function taskCard(api = async (..._args: any[]): Promise<any> => ({})) {
     './taskView.js': {}, './chat.js': { Composer() {}, Message() {}, RunConversation() {} },
     './output.js': { AgentOutput() {}, RunProgress() {} },
   };
-  runInNewContext(transformSync(source.replace(/createRoot\(document[^\n]+/, 'export { TaskCard, ArchivedTask, History, TaskResultsReset, ResetHistory };'), { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code, {
+  runInNewContext(transformSync(source.replace(/createRoot\(document[^\n]+/, 'export { TaskCard, ArchivedTask, History, TaskResultsReset, ResetHistory, TaskDisposition };'), { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code, {
     module, require(name: string) { assert.ok(Object.hasOwn(modules, name), name); return modules[name]; },
   });
   const props = {
@@ -190,6 +190,32 @@ test('reset UI explains archive/execution/publication barriers and invalidates a
   const tree = card.render('TaskResultsReset').tree;
   assert.equal(elements(tree).find(node => node.type === 'button' && node.props.children === 'Подтвердить сброс').props.disabled, true);
   assert.ok(elements(tree).some(node => node.props.role === 'status' && node.props.children.includes('Карточка изменилась')));
+});
+
+test('publication-only barriers expose stop verification without archiving and retain explicit archive', async () => {
+  for (const publication_status of ['pending', 'unknown', 'confirmed', null]) {
+    const calls: any[][] = [], card = taskCard(async (...args) => { calls.push(args); return { deleted: true }; });
+    Object.assign(card.props.task, { publication_status, title_state: 'completed' });
+    const render = () => card.render('TaskDisposition');
+    const button = (tree: unknown, label: string) => elements(tree).find(node => node.type === 'button' && node.props['aria-label'] === label);
+    const stop = button(render().tree, 'Остановить исполнение / сверить');
+    if (publication_status === 'confirmed' || publication_status === null) {
+      assert.equal(stop, undefined);
+      assert.ok(button(render().tree, 'Архивировать'));
+      continue;
+    }
+    assert.ok(stop); assert.equal(stop.props.disabled, false);
+    stop.props.onClick();
+    let view = render();
+    assert.ok(JSON.stringify(view.tree).includes('без изменения видимости карточки'));
+    await elements(view.tree).find(node => node.type === 'button' && node.props.children === 'Проверить остановку').props.onClick();
+    assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['/projects/project/tasks/task/stop', 'POST', { state_version: 1 }]]);
+    assert.ok(!elements(render().tree).some(node => node.type === 'dialog'));
+    elements(render().tree).find(node => node.type === 'button' && node.props.children === 'Архивировать вручную').props.onClick();
+    view = render();
+    await elements(view.tree).find(node => node.type === 'button' && node.props.children === 'Подтвердить архивирование').props.onClick();
+    assert.equal(calls[1][0], '/projects/project/tasks/task/archive');
+  }
 });
 
 test('reset history exposes the previous PR identity without links to deleted run results', async () => {
