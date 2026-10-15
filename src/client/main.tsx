@@ -707,7 +707,7 @@ function App() {
           const payload = JSON.parse(change.payload) as { state_version?: number };
           setNotice('Карточка скрыта. Результат остановки и история доступны в архиве.', payload.state_version ? `archive:${change.task_id}:${payload.state_version}` : `event:${change.id}`);
         }
-        if (change.type === 'task.results-reset') setNotice('Все результаты сброшены. Задача в Backlog; новый запуск — отдельным действием.');
+        if (change.type === 'task.results-reset') setNotice('Выбранные и зависимые результаты сброшены. Новый запуск — отдельным действием.');
         if (change.type === 'task.restored') setNotice('Карточка возвращена на доску. Исполнение автоматически не возобновляется.');
       });
       events.onerror = () => setConnection('Live-обновления недоступны. Переподключаемся. Это само по себе не означает остановку задачи. Обновите страницу, чтобы получить актуальное состояние');
