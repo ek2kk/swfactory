@@ -180,6 +180,51 @@ for (const reused of [false, true]) test(`restart retries an unavailable census 
   await waitFor(() => !(controller as any).scheduler.isActive(task.id));
 });
 
+for (const owner of ['run', 'title'] as const) for (const exit of [0, 1]) test(`restart counts two recovered ${owner} generations independently; generation ${exit} exits first`, async t => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'factory-stop-generations-'))), ps = join(directory, 'ps');
+  let store = new Store(directory), controller: SpecController | undefined;
+  const previousPath = process.env.PATH, live = [true, true];
+  const listing = () => writeFileSync(ps, `#!/bin/sh\nprintf '${live.map((running, i) => `${987654 + i} 1 ${987654 + i} ${running ? 'S' : 'Z'} Thu Oct 15 00:00:0${i} 2026\\n`).join('')}'\n`, { mode: 0o700 });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  t.after(async () => {
+    try {
+      live.fill(false); listing(); release(); await delay(400);
+      await controller?.close(); await delay(300);
+    } finally { process.env.PATH = previousPath; store.close(); rmSync(directory, { recursive: true, force: true }); }
+  });
+  const project = store.addProject(projectInput), task = store.createTask(project.id, 'Two live generations', 1);
+  for (const generation of [0, 1]) {
+    const run = owner === 'run' ? store.queueSpec(project.id, task.id, store.task(project.id, task.id).state_version, directory) : undefined;
+    store.recordProcess(task.id, { pid: 987654 + generation, pgid: 987654 + generation, started_at: `Thu Oct 15 00:00:0${generation} 2026`, state: 'running', run_id: run?.id, execution_generation: generation });
+    if (generation === 0) {
+      store.beginDeletion(project.id, task.id, store.task(project.id, task.id).state_version);
+      store.finishDeletion(task.id, 'Известный процесс ещё работает.', true); store.releaseStoppedTask(project.id, task.id);
+    }
+  }
+  store.close(); store = new Store(directory);
+  listing(); process.env.PATH = `${directory}:${previousPath}`;
+  const sent: number[] = [];
+  t.mock.method(process, 'kill', (pid: number) => { sent.push(pid); return true; });
+  controller = new SpecController(store, directory, () => {});
+  const scheduler = (controller as any).scheduler, started: string[] = [];
+  const jobs = ['other-1', 'other-2', 'other-3'].map(id => scheduler.enqueue(id, async () => { started.push(id); await gate; }));
+  assert.equal(store.executionProcesses(task.id).filter(row => row.state === 'running').length, 2);
+  assert.deepEqual(started, ['other-1'], 'two recovered generations leave only one free slot');
+  assert.ok(sent.includes(-987654)); assert.ok(!sent.includes(-987655), 'the current generation must not receive Stop');
+  live[exit] = false; listing();
+  await waitFor(() => started.length >= 2);
+  await delay(150);
+  assert.deepEqual(started, ['other-1', 'other-2'], 'exit releases exactly one reservation');
+  release(); await Promise.all(jobs);
+  let sameStarted = false;
+  const same = scheduler.enqueue(task.id, async () => { sameStarted = true; });
+  assert.equal(scheduler.hasWork(task.id), true);
+  await delay(150); assert.equal(sameStarted, false, 'the other generation still blocks this task');
+  live.fill(false); listing(); await same;
+  assert.equal(sameStarted, true);
+});
+
 test('recovered survivor retains capacity independently of an active fresh run of the same task', async t => {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'factory-stop-recovery-race-'))), ps = join(directory, 'ps');
   let store = new Store(directory), controller: SpecController | undefined;

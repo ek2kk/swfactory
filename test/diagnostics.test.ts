@@ -70,8 +70,9 @@ test('survivor exit releases only its reservation while the same task job is act
   t.after(() => { scheduler.close(); releaseJob(); releaseSurvivor(); releaseOthers(); });
   const job = scheduler.enqueue('same-task', () => jobGate);
   const others = ['other-1', 'other-2'].map(id => scheduler.enqueue(id, () => othersGate));
-  scheduler.retain('same-task', () => survivorGate);
-  scheduler.retain('same-task', async () => { assert.fail('repeated retention must not reserve another slot'); });
+  const survivor = {};
+  scheduler.retain('same-task', survivor, () => survivorGate);
+  scheduler.retain('same-task', survivor, async () => { assert.fail('repeated retention must not reserve another slot'); });
   let started = false;
   const next = scheduler.enqueue('next-task', async () => { started = true; });
   releaseSurvivor(); await survivorGate;

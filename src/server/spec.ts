@@ -52,26 +52,32 @@ export class SpecController {
     const runs = store.runs(), revoked = new Set(runs.filter(run => run.revoked).map(run => run.id));
     for (const { task_id } of taskIds) {
       const task = store.db.prepare('SELECT execution_generation FROM tasks WHERE id = ?').get(task_id) as { execution_generation: number };
-      const processes = store.executionProcesses(task_id).filter(row => row.state !== 'exited'), scopes: ProcessScope[] = [];
-      for (const stopping of [true, false]) {
-        const rows = processes.filter(row => (row.run_id ? revoked.has(row.run_id)
-          : (row.execution_generation ?? 0) < task.execution_generation) === stopping);
-        if (!rows.length) continue;
-        const scope = this.scope(task_id); scope.restore(rows); scopes.push(scope);
-        if (stopping) {
-          this.retired.set(task_id, new Set([scope])); this.scopes.delete(task_id);
+      const processes = store.executionProcesses(task_id).filter(row => row.state !== 'exited');
+      const attempts = new Map<string | number, typeof processes>();
+      for (const row of processes) {
+        const owner = row.run_id ?? row.execution_generation ?? 0;
+        if (!attempts.has(owner)) attempts.set(owner, []);
+        attempts.get(owner)!.push(row);
+      }
+      const scopes = new Set<ProcessScope>(); this.retired.set(task_id, scopes);
+      for (const rows of attempts.values()) {
+        const scope = this.scope(task_id); this.scopes.delete(task_id);
+        scope.restore(rows); scopes.add(scope);
+        const owner = rows[0];
+        if (owner.run_id ? revoked.has(owner.run_id) : (owner.execution_generation ?? 0) < task.execution_generation) {
           void scope.stop().catch(() => {});
         }
+        // Each recovered attempt owns its slot; later jobs get a fresh scope.
+        // Keep diagnosing saved identities even when the initial census cannot reserve capacity.
+        void (async () => {
+          while (!this.closing && scope.hasRecoverableProcess) {
+            if (scope.hasLiveProcesses()) this.scheduler.retain(task_id, scope, async () => {
+              while (!this.closing && scope.hasLiveProcesses()) await new Promise(resolve => setTimeout(resolve, 100));
+            });
+            await new Promise(resolve => setTimeout(resolve, 100).unref());
+          }
+        })();
       }
-      // Keep diagnosing saved identities even when the initial census cannot reserve capacity.
-      void (async () => {
-        while (!this.closing && scopes.some(scope => scope.hasRecoverableProcess)) {
-          if (scopes.some(scope => scope.hasLiveProcesses())) this.scheduler.retain(task_id, async () => {
-            while (!this.closing && scopes.some(scope => scope.hasLiveProcesses())) await new Promise(resolve => setTimeout(resolve, 100));
-          });
-          await new Promise(resolve => setTimeout(resolve, 100).unref());
-        }
-      })();
     }
   }
 
@@ -164,8 +170,8 @@ export class SpecController {
       const scope = this.scopes.get(taskId);
       const scopes = new Set([...(this.retired.get(taskId) ?? []), ...(scope ? [scope] : [])]);
       const stopDeadline = started + 4500;
-      if ([...scopes].some(scope => scope.hasKnownProcess)) this.scheduler.retain(taskId, async () => {
-        while (!this.closing && [...scopes].some(scope => scope.hasKnownProcess && scope.hasLiveProcesses())) await new Promise(resolve => setTimeout(resolve, 100));
+      for (const scope of scopes) if (scope.hasKnownProcess) this.scheduler.retain(taskId, scope, async () => {
+        while (!this.closing && scope.hasKnownProcess && scope.hasLiveProcesses()) await new Promise(resolve => setTimeout(resolve, 100));
       });
       let deadline: ReturnType<typeof setTimeout> | undefined;
       let warning: string | undefined;

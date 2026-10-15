@@ -133,8 +133,8 @@ export class Titles {
   async cancel(taskId: string, deadline = Date.now() + 4500) {
     this.scheduler.cancel(taskId);
     const scopes = this.scopes.get(taskId) ?? [];
-    if (scopes.some(scope => scope.hasKnownProcess)) this.scheduler.retain(taskId, async () => {
-      while (!this.stopped && scopes.some(scope => scope.hasKnownProcess && scope.hasLiveProcesses())) await new Promise(resolve => setTimeout(resolve, 100));
+    for (const scope of scopes) if (scope.hasKnownProcess) this.scheduler.retain(taskId, scope, async () => {
+      while (!this.stopped && scope.hasKnownProcess && scope.hasLiveProcesses()) await new Promise(resolve => setTimeout(resolve, 100));
     });
     await Promise.all(scopes.map(scope => scope.stop(Math.max(0, Math.min(4000, deadline - Date.now())))));
     if (scopes.length && scopes.every(scope => scope.knownGroupsStopped())) this.store.db.prepare("UPDATE tasks SET execution_unverified = EXISTS(SELECT 1 FROM execution_processes WHERE task_id = ? AND state = 'running') WHERE id = ?").run(taskId, taskId);

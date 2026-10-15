@@ -6,14 +6,14 @@ type Job = { taskId: string; work: () => Promise<void>; resolve: () => void; rej
 
 export class Scheduler {
   private active = new Set<string>();
-  private retained = new Set<string>();
+  private retained = new Map<object, string>();
   private pending: Job[] = [];
   private closed = false;
   private timer?: ReturnType<typeof setTimeout>;
   private lastLoad = '';
   private blocked?: string;
   constructor(private available = () => true, private log?: FastifyBaseLogger, private blockedReason = () => 'unavailable') {}
-  private isActive(taskId: string) { return this.active.has(taskId) || this.retained.has(taskId); }
+  private isActive(taskId: string) { return this.active.has(taskId) || [...this.retained.values()].includes(taskId); }
   hasWork(taskId: string) { return this.isActive(taskId) || this.pending.some(job => job.taskId === taskId); }
   cancel(taskId: string) {
     this.pending = this.pending.filter(job => {
@@ -33,11 +33,11 @@ export class Scheduler {
     this.load();
   }
 
-  retain(taskId: string, work: () => Promise<void>) {
-    if (this.retained.has(taskId)) return;
-    this.retained.add(taskId);
+  retain(taskId: string, execution: object, work: () => Promise<void>) {
+    if (this.retained.has(execution)) return;
+    this.retained.set(execution, taskId);
     this.load();
-    void work().finally(() => { this.retained.delete(taskId); this.drain(); });
+    void work().finally(() => { this.retained.delete(execution); this.drain(); });
   }
 
   enqueue(taskId: string, work: () => Promise<void>, log = this.log?.child({ task_id: taskId })): Promise<void> {
