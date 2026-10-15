@@ -76,8 +76,10 @@ export async function createApp(options: {
   app.addHook('preHandler', async request => {
     const params = request.params as Record<string, unknown>;
     const body = request.body as Record<string, unknown> | null;
+    const bodySchema = request.routeOptions.schema?.body as { properties?: Record<string, unknown> } | undefined;
     request.log = request.log.child({ project_id: params?.projectId, task_id: params?.taskId, run_id: params?.runId,
-      request_id: body?.request_id });
+      request_id: bodySchema?.properties?.request_id && typeof body?.request_id === 'string' && new RegExp(uuid.pattern).test(body.request_id)
+        ? body.request_id : undefined });
     if (!['GET', 'HEAD'].includes(request.method)) request.log.info({ event: 'http.action' });
   });
   app.addHook('onResponse', async (request, reply) => {

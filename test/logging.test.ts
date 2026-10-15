@@ -55,6 +55,34 @@ test('HTTP completion uses route template and server ID; query, headers, bodies 
   for (const forbidden of [secret, token, cookie, 'PRIVATE', 'authorization', 'stderr', 'stack']) assert.ok(!output.includes(forbidden), forbidden);
 });
 
+test('HTTP logs accept command IDs only from validated body schemas', async t => {
+  const capture = captureLogs();
+  const directory = mkdtempSync(join(tmpdir(), 'factory-logging-'));
+  const { app, token } = await createApp({ directory, origin, logStream: capture.stream, chooseFolder: async () => null });
+  t.after(async () => { await app.close(); await capture.app.close(); rmSync(directory, { recursive: true, force: true }); });
+  const headers = { host: '127.0.0.1:4317', origin };
+  const session = await app.inject({ method: 'POST', url: '/api/session', headers, payload: { token } });
+  const cookie = String(session.headers['set-cookie']).split(';')[0];
+  const privateValue = 'PRIVATE PROMPT WITH UNREGISTERED CREDENTIAL abcXYZ123';
+  for (const requestId of [privateValue, randomUUID()]) {
+    const start = capture.lines.length;
+    const unmatched = await app.inject({ method: 'POST', url: '/unmatched', headers, payload: { request_id: requestId } });
+    assert.equal(unmatched.statusCode, 404);
+    const folder = await app.inject({ method: 'POST', url: '/api/projects/choose-folder', headers: { ...headers, cookie }, payload: { request_id: requestId } });
+    assert.equal(folder.statusCode, 200);
+    assert.deepEqual(folder.json(), { checkout: null });
+    const logs = capture.lines.slice(start);
+    assert.equal(logs.filter(line => line.event === 'http.action').length, 2);
+    assert.equal(logs.filter(line => line.event === 'http.completed').length, 2);
+    assert.ok(logs.every(line => line.request_id === undefined));
+  }
+  const invalid = await app.inject({ method: 'PATCH', url: `/api/projects/${randomUUID()}/tasks/${randomUUID()}`, headers: { ...headers, cookie },
+    payload: { request_id: privateValue, state_version: 1, description: 'PRIVATE DESCRIPTION' } });
+  assert.equal(invalid.statusCode, 400);
+  assert.ok(capture.lines.some(line => line.event === 'http.rejected' && line.reason === 'validation'));
+  assert.ok(!JSON.stringify(capture.lines).includes(privateValue));
+});
+
 test('scheduler reports capacity, same-task and rate-limit blocking without polling spam; records queue wait', async () => {
   const { app, log, lines } = captureLogs();
   let available = true;
