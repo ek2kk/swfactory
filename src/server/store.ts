@@ -1,3 +1,4 @@
+import { statisticsRun, type StatisticsRun } from '../statistics.js';
 import Database from 'better-sqlite3';
 import type { ExecutionProcess } from './processes.js';
 import { mkdirSync, chmodSync, realpathSync } from 'node:fs';
@@ -123,6 +124,7 @@ export class Store {
         for (const [name, type] of [['diagnostic', "TEXT NOT NULL DEFAULT '{}'"], ['started_at', 'TEXT'], ['finished_at', 'TEXT']]) {
           if (!runColumns.some(c => c.name === name)) this.db.exec(`ALTER TABLE runs ADD COLUMN ${name} ${type}`);
         }
+        this.db.prepare("UPDATE runs SET diagnostic = json_remove(diagnostic, '$.stop_pending') WHERE json_extract(diagnostic, '$.stop_pending') = 1").run();
         this.db.exec(`CREATE TABLE IF NOT EXISTS run_output (
           run_id TEXT PRIMARY KEY REFERENCES runs(id), text TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL);`);
         this.db.exec(`CREATE TABLE IF NOT EXISTS chat_messages (
@@ -221,6 +223,7 @@ export class Store {
   close() { this.db.close(); this.owner.close(); }
   snapshot(): Snapshot {
     return {
+      statistics_runs: this.statisticsRuns(),
       projects: this.db.prepare('SELECT * FROM projects ORDER BY rowid').all() as Project[],
       tasks: (this.db.prepare(`${taskSelect} WHERE archived = 0 ORDER BY t.rowid`).all() as Task[]).map(parseTask),
       archived_tasks: (this.db.prepare(`${taskSelect} WHERE archived = 1 ORDER BY t.rowid`).all() as Task[]).map(parseTask),
@@ -228,6 +231,14 @@ export class Store {
       human_requests: this.humanRequests().filter(r => !this.blocked(r.task_id)),
       cursor: (this.db.prepare('SELECT coalesce(max(id), 0) AS id FROM events').get() as { id: number }).id,
     };
+  }
+  statisticsRuns(): StatisticsRun[] {
+    const rows = this.db.prepare(`SELECT r.id, r.task_id, r.project_id, r.role, r.status, r.started_at, r.finished_at, r.diagnostic
+      FROM runs r JOIN tasks t ON t.id = r.task_id AND t.project_id = r.project_id`).all() as (Omit<AgentRun, 'diagnostic'> & { diagnostic: string })[];
+    return rows.flatMap(row => {
+      const record = statisticsRun({ ...row, diagnostic: JSON.parse(row.diagnostic) });
+      return record ? [record] : [];
+    });
   }
   events(after: number): SavedEvent[] {
     return this.db.prepare('SELECT * FROM events WHERE id > ? ORDER BY id LIMIT 500').all(after) as SavedEvent[];
@@ -320,7 +331,7 @@ export class Store {
       this.event('task.stop-verified-by-human', id, { evidence: reconciliation, state_version: task.state_version, revision: task.revision });
     }
     this.db.prepare("UPDATE tasks SET deletion_state = 'stopping', deletion_error = NULL, results_restart = NULL, execution_generation = execution_generation + 1, state_version = state_version + 1 WHERE id = ?").run(id);
-    this.db.prepare("UPDATE runs SET revoked = 1, status = CASE WHEN status IN ('queued','running') THEN 'interrupted' ELSE status END WHERE task_id = ?").run(id);
+    this.db.prepare("UPDATE runs SET diagnostic = CASE WHEN status = 'running' THEN json_set(diagnostic, '$.stop_pending', json('true')) ELSE diagnostic END, revoked = 1, status = CASE WHEN status IN ('queued','running') THEN 'interrupted' ELSE status END WHERE task_id = ?").run(id);
     this.db.prepare("UPDATE human_requests SET status = 'revoked' WHERE task_id = ? AND status = 'pending'").run(id);
     this.db.prepare("UPDATE chat_messages SET status = 'revoked', error = 'Сообщение отозвано при остановке исполнения; доставка и применение запрещены.' WHERE task_id = ? AND status IN ('queued','sending')").run(id);
     this.event('task.deletion-requested', id, {});
@@ -332,6 +343,7 @@ export class Store {
         .run(error ? 'failed' : 'deleted', error ?? null, id);
       this.db.prepare('UPDATE tasks SET execution_warning = ? WHERE id = ?').run(error ?? null, id);
       this.db.prepare("UPDATE runs SET status = 'interrupted', error = 'Исполнение остановлено при архивировании.', finished_at = ? WHERE task_id = ? AND status IN ('queued','running')").run(new Date().toISOString(), id);
+      if (!error) this.db.prepare("UPDATE runs SET finished_at = ?, diagnostic = json_remove(diagnostic, '$.stop_pending') WHERE task_id = ? AND json_extract(diagnostic, '$.stop_pending') = 1 AND finished_at IS NULL").run(new Date().toISOString(), id);
       // Visibility belongs to archive/restore, never to a late stop callback (except legacy /delete).
       this.db.prepare(`UPDATE tasks SET archived = CASE WHEN ? = 0 AND archive_source IS NOT 'github-filter' THEN 1 ELSE archived END,
         run_state = CASE WHEN run_state IN ('queued','running','waiting') THEN 'interrupted' ELSE run_state END,
@@ -1008,7 +1020,7 @@ export class Store {
         || !['queued', 'running'].includes(task.run_state)) throw new Problem(409, 'Результат запуска устарел.');
       const now = new Date().toISOString();
       run.started_at = current.started_at ?? (run.status === 'running' ? now : null);
-      run.finished_at = ['completed', 'failed'].includes(run.status) ? now : null;
+      run.finished_at = run.status === 'completed' || (['failed', 'interrupted'].includes(run.status) && run.diagnostic?.execution_finished) ? now : null;
       run.diagnostic ??= {};
       if (run.status === 'completed' && result && 'dependencies' in result && run.outcome === 'BLOCKED' && result.dependencies?.length) {
         run.diagnostic.dependency_block = { reason: result.summary, dependencies: result.dependencies };

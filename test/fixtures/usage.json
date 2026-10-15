@@ -1,0 +1,144 @@
+{
+  "exec": {
+    "type": "turn.completed",
+    "usage": {
+      "input_tokens": 100,
+      "cached_input_tokens": 40,
+      "output_tokens": 20
+    }
+  },
+  "appServer": [
+    {
+      "method": "thread/tokenUsage/updated",
+      "params": {
+        "threadId": "session",
+        "turnId": "turn",
+        "tokenUsage": {
+          "total": {
+            "inputTokens": 1100,
+            "outputTokens": 210,
+            "cachedInputTokens": 440
+          },
+          "last": {
+            "inputTokens": 100,
+            "outputTokens": 10,
+            "cachedInputTokens": 40
+          }
+        }
+      }
+    },
+    {
+      "method": "thread/tokenUsage/updated",
+      "params": {
+        "threadId": "session",
+        "turnId": "turn",
+        "tokenUsage": {
+          "total": {
+            "inputTokens": 1300,
+            "outputTokens": 250,
+            "cachedInputTokens": 500
+          },
+          "last": {
+            "inputTokens": 200,
+            "outputTokens": 40,
+            "cachedInputTokens": 60
+          }
+        }
+      }
+    },
+    {
+      "method": "thread/tokenUsage/updated",
+      "params": {
+        "threadId": "session",
+        "turnId": "turn",
+        "tokenUsage": {
+          "total": {
+            "inputTokens": 1300,
+            "outputTokens": 250,
+            "cachedInputTokens": 500
+          },
+          "last": {
+            "inputTokens": 200,
+            "outputTokens": 40,
+            "cachedInputTokens": 60
+          }
+        }
+      }
+    }
+  ],
+  "baseline": {
+    "session_id": "session",
+    "usage": {
+      "input_tokens": 1000,
+      "output_tokens": 200,
+      "cached_input_tokens": 400
+    }
+  },
+  "captured": {
+    "cli_version": "codex-cli 0.162.1",
+    "exec": {
+      "type": "turn.completed",
+      "usage": {
+        "input_tokens": 17246,
+        "cached_input_tokens": 7168,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 5,
+        "reasoning_output_tokens": 0
+      }
+    },
+    "appServer": [
+      {
+        "method": "thread/tokenUsage/updated",
+        "params": {
+          "threadId": "captured-session",
+          "turnId": "captured-turn-1",
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 21181,
+              "inputTokens": 21174,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 7,
+              "reasoningOutputTokens": 0
+            },
+            "last": {
+              "totalTokens": 21181,
+              "inputTokens": 21174,
+              "cachedInputTokens": 0,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 7,
+              "reasoningOutputTokens": 0
+            },
+            "modelContextWindow": 475000
+          }
+        }
+      },
+      {
+        "method": "thread/tokenUsage/updated",
+        "params": {
+          "threadId": "captured-session",
+          "turnId": "captured-turn-2",
+          "tokenUsage": {
+            "total": {
+              "totalTokens": 42400,
+              "inputTokens": 42386,
+              "cachedInputTokens": 20992,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 14,
+              "reasoningOutputTokens": 0
+            },
+            "last": {
+              "totalTokens": 21219,
+              "inputTokens": 21212,
+              "cachedInputTokens": 20992,
+              "cacheWriteInputTokens": 0,
+              "outputTokens": 7,
+              "reasoningOutputTokens": 0
+            },
+            "modelContextWindow": 475000
+          }
+        }
+      }
+    ]
+  }
+}

@@ -86,7 +86,7 @@ async function app(t: TestContext, initial = snapshot()) {
     'react-dom/client': { createRoot: () => ({ render: (element: any) => { App = element.type; } }) },
     './api.js': { api: async (...args: any[]) => { if (args[0] === '/snapshot') return current; calls.push(args); return request(...args); } },
     './theme.js': { readTheme: () => 'system', applyTheme() {} },
-    '../shared.js': shared, './stageHistory.js': stageHistory, './TaskMarkdown.js': { TaskMarkdown },
+    '../shared.js': shared, './stageHistory.js': stageHistory, './statistics.js': { TaskStatistics() {}, RunStatistics() {}, StatisticsWindow() {} }, './TaskMarkdown.js': { TaskMarkdown },
     './windows.js': load('windows', { react: runtime.react, 'react/jsx-runtime': jsx }),
     './models.js': {}, './chat.js': {}, './output.js': {}, './taskView.js': {}, './style.css': {},
   };
@@ -280,7 +280,7 @@ test('settings drafts retain values on failure/conflict, guard duplicate sends a
   const { ModelSettings } = load('main', {
     react: runtime.react, 'react/jsx-runtime': jsx, 'react-dom/client': { createRoot: () => ({ render() {} }) },
     './api.js': { api }, './theme.js': { readTheme: () => 'system', applyTheme() {} },
-    '../shared.js': shared, './stageHistory.js': stageHistory, './TaskMarkdown.js': { TaskMarkdown },
+    '../shared.js': shared, './stageHistory.js': stageHistory, './statistics.js': { TaskStatistics() {}, RunStatistics() {}, StatisticsWindow() {} }, './TaskMarkdown.js': { TaskMarkdown },
     './windows.js': {}, './models.js': { ModelPicker, ReasoningPicker }, './chat.js': {}, './output.js': {}, './taskView.js': {}, './style.css': {},
   }, { document: { getElementById: () => ({}) } });
   const current = project('one');
