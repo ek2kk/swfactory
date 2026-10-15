@@ -48,6 +48,7 @@ test('message history stays readable during Stop without allowing writes or bypa
   assert.equal(history.statusCode, 200);
   assert.equal(history.json()[0].text, message.text);
   assert.equal(history.json()[0].status, 'revoked');
+  assert.equal(history.json()[0].error, 'Сообщение отозвано при остановке исполнения; доставка и применение запрещены.');
   assert.equal((await app.inject({ url: url.replace(project.id, randomUUID()), headers })).statusCode, 404);
   assert.equal((await app.inject({ url, headers: { ...headers, cookie: '' } })).statusCode, 401);
   assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...message, request_id: randomUUID(), state_version: stopping.state_version } })).statusCode, 409);
@@ -55,6 +56,8 @@ test('message history stays readable during Stop without allowing writes or bypa
   store.finishDeletion(task.id, undefined, true);
   store.releaseStoppedTask(project.id, task.id);
   assert.equal(store.rawTask(project.id, task.id).stage, 'backlog');
+  assert.equal(store.rawTask(project.id, task.id).description, task.description);
+  assert.equal(store.rawTask(project.id, task.id).revision, task.revision);
   const stopped = await app.inject({ url, headers });
   assert.equal(stopped.statusCode, 200);
   assert.deepEqual(stopped.json(), history.json());

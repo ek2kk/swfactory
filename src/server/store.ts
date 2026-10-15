@@ -317,7 +317,7 @@ export class Store {
     this.db.prepare("UPDATE tasks SET deletion_state = 'stopping', deletion_error = NULL, execution_generation = execution_generation + 1, state_version = state_version + 1 WHERE id = ?").run(id);
     this.db.prepare("UPDATE runs SET revoked = 1, status = CASE WHEN status IN ('queued','running') THEN 'interrupted' ELSE status END WHERE task_id = ?").run(id);
     this.db.prepare("UPDATE human_requests SET status = 'revoked' WHERE task_id = ? AND status = 'pending'").run(id);
-    this.db.prepare("UPDATE chat_messages SET status = 'revoked', error = 'Задача удаляется; доставка и применение запрещены.' WHERE task_id = ? AND status IN ('queued','sending')").run(id);
+    this.db.prepare("UPDATE chat_messages SET status = 'revoked', error = 'Сообщение отозвано при остановке исполнения; доставка и применение запрещены.' WHERE task_id = ? AND status IN ('queued','sending')").run(id);
     this.event('task.deletion-requested', id, {});
     return this.rawTask(projectId, id);
   }

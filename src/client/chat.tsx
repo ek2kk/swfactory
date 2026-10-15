@@ -5,7 +5,7 @@ import { HistoryFlow } from './taskView.js';
 import { stageTimeline } from './stageHistory.js';
 
 type Api = <T>(path: string, method?: string, body?: Record<string, unknown>) => Promise<T>;
-const delivery = { queued: 'Ожидает доставки', sending: 'Передаём в CLI', delivered: 'Принято активным turn', failed: 'Не доставлено', unknown: 'Доставка неизвестна — нужна сверка', applied: 'Требования применены · запустите новую Spec', revoked: 'Отозвано: требования изменились' };
+const delivery = { queued: 'Ожидает доставки', sending: 'Передаём в CLI', delivered: 'Принято активным turn', failed: 'Не доставлено', unknown: 'Доставка неизвестна — нужна сверка', applied: 'Требования применены · запустите новую Spec', revoked: 'Отозвано' };
 export function Message({ message }: { message: ChatMessage }) {
   return <article className="chat-message user-message"><p className="meta">Вы · {message.kind === 'requirements' ? 'Изменение требований' : 'Сообщение агенту'} · Версия требований: {message.revision}</p>
     <p className="description">{message.text}</p><p className="meta">{message.kind === 'requirements' && message.status === 'queued' ? 'Ожидает применения после текущего этапа' : delivery[message.status]} · {new Date(message.created_at).toLocaleString('ru')}</p>
