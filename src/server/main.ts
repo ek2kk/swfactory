@@ -14,8 +14,11 @@ const { app, token } = await createApp({
 });
 try {
   await app.listen({ host: '127.0.0.1', port });
-  console.log(`SW Factory: ${origin}/#token=${token}`);
-} catch (error) { await app.close(); throw error; }
+  console.error(`SW Factory: ${origin}/#token=${token}`);
+} catch {
+  app.log.error({ event: 'backend.start-failed', error_kind: 'listen_failed' });
+  await app.close(); process.exitCode = 1;
+}
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => {
-  app.close().catch(() => { process.exitCode = 1; });
+  app.close().catch(() => { app.log.error({ event: 'backend.shutdown-failed', error_kind: 'shutdown_failed' }); process.exitCode = 1; });
 });

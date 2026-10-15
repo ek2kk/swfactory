@@ -10,6 +10,7 @@ import { applyTheme, readTheme, type Theme } from './theme.js';
 import { stageRoles, stageNames, stageTabStatus } from './stageHistory.js';
 import { TaskView, type DescriptionDraft } from './taskView.js';
 import { TaskMarkdown } from './TaskMarkdown.js';
+import { Modal, Toast, ActionIcon, type Notice } from './windows.js';
 
 applyTheme(readTheme());
 
@@ -20,7 +21,7 @@ function SourceIssue({ task }: { task: Task }) {
   return task.issue_url && <p className="meta"><a href={task.issue_url} target="_blank" rel="noreferrer">GitHub issue #{task.issue_number}</a></p>;
 }
 
-function TaskResultsReset({ task, refresh, notify }: { task: Task; refresh: () => Promise<void>; notify: (text: string) => void }) {
+function TaskResultsReset({ task, refresh, notify }: { task: Task; refresh: () => Promise<void>; notify: (text: string, key?: string) => void }) {
   const [confirming, setConfirming] = useState(false);
   const [version, setVersion] = useState(task.state_version);
   const [busy, setBusy] = useState(false);
@@ -54,7 +55,7 @@ function TaskResultsReset({ task, refresh, notify }: { task: Task; refresh: () =
         setBusy(true); setError('');
         try {
           await api(`${taskPath(task)}/reset-results`, 'POST', { state_version: version });
-          close(); notify('Все результаты сброшены. Задача в Backlog; новый запуск — отдельным действием.');
+          close();
           await refresh();
         } catch (error) { setError((error as Error).message); await refresh().catch(() => {}); }
         finally { setBusy(false); }
@@ -87,7 +88,7 @@ function ResetHistory({ task }: { task: Task }) {
   </details>;
 }
 
-function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () => Promise<void>; notify: (text: string) => void }) {
+function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () => Promise<void>; notify: (text: string, key?: string) => void }) {
   const [verification, setVerification] = useState<unknown>(null);
   useEffect(() => {
     if (!task.deletion_state) return;
@@ -137,9 +138,9 @@ function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () =>
             setError(result.error ?? ''); closeConfirmation(); setReconciliation('');
             notify(`${result.deleted ? 'Остановка подтверждена.' : 'Остановка не подтверждена; исполнение заблокировано.'}${result.warning ? ' ' + result.warning : ''}`);
           } else {
-            await api(`${taskPath(task)}/archive`, 'POST', { state_version: version });
+            const archived = await api<Task>(`${taskPath(task)}/archive`, 'POST', { state_version: version });
             closeConfirmation();
-            notify('Карточка скрыта. Результат остановки и история доступны в архиве.');
+            notify('Карточка скрыта. Результат остановки и история доступны в архиве.', `archive:${task.id}:${archived.state_version}`);
           }
           await refresh();
         } catch (error) { setError((error as Error).message); await refresh().catch(() => {}); }
@@ -153,7 +154,7 @@ function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () =>
   </section>;
 }
 
-function ArchivedTask({ task, refresh, notify, expanded = false, draft, openTask }: { task: Task; refresh: () => Promise<void>; notify: (text: string) => void; expanded?: boolean; draft?: DescriptionDraft; openTask?: (id: string) => void }) {
+function ArchivedTask({ task, refresh, notify, expanded = false, draft, openTask }: { task: Task; refresh: () => Promise<void>; notify: (text: string, key?: string) => void; expanded?: boolean; draft?: DescriptionDraft; openTask?: (id: string) => void }) {
   const [open, setOpen] = useState(expanded);
   const [history, setHistory] = useState<{ revisions: Revision[]; messages: ChatMessage[]; runs: AgentRun[] } | null>(null);
   const [error, setError] = useState('');
@@ -191,7 +192,7 @@ function ArchivedTask({ task, refresh, notify, expanded = false, draft, openTask
   </details>;
 }
 
-function TaskCard({ task, project, runs, questions, refresh, active, cursor, notify, draft, setDraft, executionPaused = false }: { executionPaused?: boolean; task: Task; project: Project; runs: AgentRun[]; questions: HumanRequest[]; refresh: () => Promise<void>; active: boolean; cursor: number; notify: (text: string) => void; draft?: DescriptionDraft; setDraft: (draft: DescriptionDraft | null) => void }) {
+function TaskCard({ task, project, runs, questions, refresh, active, cursor, notify, draft, setDraft, executionPaused = false }: { executionPaused?: boolean; task: Task; project: Project; runs: AgentRun[]; questions: HumanRequest[]; refresh: () => Promise<void>; active: boolean; cursor: number; notify: (text: string, key?: string) => void; draft?: DescriptionDraft; setDraft: (draft: DescriptionDraft | null) => void }) {
   const [specMode, setSpecMode] = useState<'auto' | 'spec' | 'skip'>('auto');
   const decision = task.spec_decision?.revision === task.revision ? task.spec_decision : null;
   const [editing, setEditing] = useState(!!draft);
@@ -504,6 +505,7 @@ function ModelSettings({ project, refresh }: { project: Project; refresh: () => 
   const [catalog, setCatalog] = useState<import('../shared.js').ModelCatalog | null>(null);
   const [loading, setLoading] = useState(false);
   const [catalogError, setCatalogError] = useState('');
+  const submitting = useRef(false);
   async function refreshCatalog() {
     setLoading(true); setCatalogError('');
     try { setCatalog(await api(`/projects/${project.id}/models`)); }
@@ -518,9 +520,9 @@ function ModelSettings({ project, refresh }: { project: Project; refresh: () => 
   useEffect(() => { reload().catch(error => setError(error.message)); }, [project.id]);
   return <details><summary>Модели и инструкции · {project.host}/{project.repository} · {project.checkout}</summary>
     {config && <form onSubmit={async event => {
-      event.preventDefault(); setBusy(true); setError('');
+      event.preventDefault(); if (submitting.current) return; submitting.current = true; setBusy(true); setError('');
       try { await api(`/projects/${project.id}/settings`, 'PUT', { ...config, state_version: version }); setVersion(version + 1); await refresh(); }
-      catch (error) { setError((error as Error).message); } finally { setBusy(false); }
+      catch (error) { setError((error as Error).message); } finally { submitting.current = false; setBusy(false); }
     }}>
       <p role="status">{loading ? 'Получаем модели Codex…' : catalog ? `Источник: ${{ codex: 'Codex', cache: 'последний успешный каталог', defaults: 'встроенные настройки' }[catalog.source]}${catalog.updated_at ? ' · ' + new Date(catalog.updated_at).toLocaleString('ru') : ''}` : 'Каталог пока недоступен.'}</p>
       {(catalogError || catalog?.error) && <p role="alert">{catalogError || catalog?.error}</p>}
@@ -605,12 +607,21 @@ function App() {
   }
   const [snapshot, setSnapshot] = useState<Snapshot>({ projects: [], tasks: [], runs: [], human_requests: [], cursor: 0 });
   const [ready, setReady] = useState(false);
-  const [notice, setNotice] = useState('');
+  const [notices, setNotices] = useState<Notice[]>([]);
+  const noticeId = useRef(0);
+  const eventCursor = useRef(0);
+  const announced = useRef(new Set<string>());
+  function setNotice(text: string, key?: string) {
+    if (key && announced.current.has(key)) return;
+    if (key) announced.current.add(key);
+    const notice = { id: ++noticeId.current, text, persistent: /не подтверждена|Remote|remote/.test(text) };
+    setNotices(previous => [...previous, notice]);
+  }
   useEffect(() => {
     if (ready && detailId && ![...snapshot.tasks, ...(snapshot.archived_tasks ?? [])].some(task => task.id === detailId)) {
       history.replaceState(null, '', location.pathname);
       setDetailId(''); setOpened(ids => ids.filter(id => id !== detailId));
-      setNotice(value => value || 'Карточка архивирована или недоступна.');
+      setNotice('Карточка архивирована или недоступна.');
     }
   }, [ready, snapshot, detailId]);
   const [connection, setConnection] = useState('Подключаемся к backend…');
@@ -620,6 +631,32 @@ function App() {
   const [filter, setFilter] = useState('');
   const [description, setDescription] = useState('');
   const [checkout, setCheckout] = useState('');
+  const [windowName, setWindowName] = useState('');
+  const [settingsVisited, setSettingsVisited] = useState(false);
+  const [projectError, setProjectError] = useState('');
+  const [taskError, setTaskError] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+  const [deleting, setDeleting] = useState<Project | null>(null);
+  const [resumeCreate, setResumeCreate] = useState(false);
+  const submitting = useRef(false);
+  const projectPopover = useRef<HTMLDivElement>(null);
+  const createDraftStarted = useRef(false);
+  function showWindow(name: string) {
+    projectPopover.current?.hidePopover();
+    if (name === 'create' && !createDraftStarted.current) {
+      setProjectId(filter || (snapshot.projects.some(project => project.id === projectId) ? projectId : snapshot.projects[0]?.id ?? ''));
+      createDraftStarted.current = true;
+    }
+    if (name === 'settings') setSettingsVisited(true);
+    if (name === 'delete') { setDeleting(snapshot.projects.find(project => project.id === filter) ?? null); setDeleteError(''); }
+    setWindowName(name);
+  }
+  function closeWindow() { setWindowName(''); setResumeCreate(false); }
+  useEffect(() => {
+    if (!ready) return;
+    if (filter && !snapshot.projects.some(project => project.id === filter)) setFilter('');
+    if (projectId && !snapshot.projects.some(project => project.id === projectId)) setProjectId('');
+  }, [snapshot.projects, filter, projectId, ready]);
   const selectingFolder = useRef(false);
   async function refresh() { setSnapshot(await api<Snapshot>('/snapshot')); }
   useEffect(() => {
@@ -632,12 +669,17 @@ function App() {
       }
       const initial = await api<Snapshot>('/snapshot');
       if (disposed) return;
-      setSnapshot(initial); setReady(true);
+      eventCursor.current = initial.cursor; setSnapshot(initial); setReady(true);
       events = new EventSource('/api/events');
       events.addEventListener('snapshot', event => { setSnapshot(JSON.parse((event as MessageEvent).data)); setConnection('Сохранено локально · Соединение активно'); });
       events.addEventListener('change', event => {
-        const change = JSON.parse((event as MessageEvent).data);
-        if (change.type === 'task.archived') setNotice('Карточка скрыта. Результат остановки и история доступны в архиве.');
+        const change = JSON.parse((event as MessageEvent).data) as SavedEvent;
+        if (change.id <= eventCursor.current) return;
+        eventCursor.current = change.id;
+        if (change.type === 'task.archived') {
+          const payload = JSON.parse(change.payload) as { state_version?: number };
+          setNotice('Карточка скрыта. Результат остановки и история доступны в архиве.', payload.state_version ? `archive:${change.task_id}:${payload.state_version}` : `event:${change.id}`);
+        }
         if (change.type === 'task.results-reset') setNotice('Все результаты сброшены. Задача в Backlog; новый запуск — отдельным действием.');
         if (change.type === 'task.restored') setNotice('Карточка возвращена на доску. Исполнение автоматически не возобновляется.');
       });
@@ -648,7 +690,8 @@ function App() {
   const visibleTasks = snapshot.tasks.filter(task => !filter || task.project_id === filter);
   const archived = (snapshot.archived_tasks ?? []).filter(task => !filter || task.project_id === filter);
   const unverified = (snapshot.archived_tasks ?? []).filter(task => task.deletion_state !== 'deleted');
-  const selected = snapshot.projects.find(p => p.id === projectId) ?? snapshot.projects[0];
+  const selected = snapshot.projects.find(p => p.id === projectId);
+  const filteredProject = snapshot.projects.find(p => p.id === filter);
   return <main>
     <header><div><p className="eyebrow">LOCAL WORKSPACE</p><h1>SW Factory</h1></div><p className="connection" role="status">{connection}</p>
       <label className="theme">Тема<select value={theme} onChange={event => {
@@ -657,9 +700,8 @@ function App() {
         try { localStorage.setItem('theme', next); } catch { /* The theme still works when storage is unavailable. */ }
       }}><option value="system">Системная</option><option value="light">Светлая</option><option value="dark">Тёмная</option></select></label>
     </header>
-    <p className="intro" hidden={!!detailId}>Из описания — в проверяемую спецификацию. Codex работает в отдельном worktree; закрытие вкладки не останавливает задачу.</p>
-    {notice && <p role="status">{notice}</p>}
-    {!!unverified.length && <p role="alert">В архиве {unverified.length} задач: остановка всех процессов не подтверждена. Проверьте раздел «Архив» на доске.</p>}
+    <div className="toasts" aria-label="Уведомления">{notices.map(notice => <Toast key={notice.id} notice={notice} dismiss={() => setNotices(previous => previous.filter(item => item.id !== notice.id))} />)}</div>
+    {!!unverified.length && <p role="alert">В архиве {unverified.length} задач: остановка всех процессов не подтверждена. Откройте «Архив» с панели действий.</p>}
     {error && <p role="alert" className="error">{error}</p>}
     {snapshot.title_error && <p role="alert" className="error">{snapshot.title_error}</p>}
     {snapshot.execution_error && <p role="alert" className="error">{snapshot.execution_error}</p>}
@@ -671,25 +713,41 @@ function App() {
       {!snapshot.execution_pause.reset_at && <button disabled={!!busy} onClick={async () => { setBusy('resume'); try { await api('/execution/resume', 'POST', { state_version: snapshot.execution_pause!.state_version }); await refresh(); } catch (error) { setError((error as Error).message); } finally { setBusy(''); } }}>Лимит восстановлен — продолжить очередь</button>}
     </section>}
     <div hidden={!!detailId}>
-    <div className="setup">
-      <section aria-labelledby="connect-title"><h2 id="connect-title">Подключить проект</h2>
+    <nav className="workspace-actions" aria-label="Действия доски">
+      <button className="secondary" onClick={() => showWindow('connect')}><ActionIcon kind="connect" />Подключить проект</button>
+      <button className="secondary project-choice" popoverTarget="project-selector" aria-haspopup="dialog" onClick={event => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        if (projectPopover.current) { projectPopover.current.style.top = `${Math.min(rect.bottom + 8, innerHeight - 160)}px`; projectPopover.current.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - 376))}px`; }
+      }}><ActionIcon kind="select" /><span>{filteredProject ? `${filteredProject.host}/${filteredProject.repository} · ${filteredProject.checkout}` : 'Все проекты'}</span><span aria-hidden="true">▾</span></button>
+      <div id="project-selector" ref={projectPopover} popover="auto" role="dialog" aria-label="Выбор проекта" className="project-popover" onToggle={event => { if (event.newState === 'open') event.currentTarget.querySelector('select')?.focus(); }}>
+        <label>Показывать проект<select value={filter} onChange={event => { setFilter(event.target.value); projectPopover.current?.hidePopover(); }}><option value="">Все проекты</option>{snapshot.projects.map(p => <option key={p.id} value={p.id}>{p.host}/{p.repository} · {p.checkout} · {p.target_branch}</option>)}</select></label>
+        <button className="secondary" onClick={() => projectPopover.current?.hidePopover()}>Закрыть</button>
+      </div>
+      <button id="create-task-action" onClick={() => showWindow('create')}><ActionIcon kind="create" />Создать задачу</button>
+      <span className="delete-project-action"><button className="secondary" disabled={!filteredProject} aria-describedby={!filteredProject ? 'delete-project-hint' : undefined} onClick={() => showWindow('delete')}><ActionIcon kind="delete" />Удалить проект</button>{!filteredProject && <small id="delete-project-hint">Выберите конкретный проект для удаления</small>}</span>
+      <button className="secondary" onClick={() => showWindow('settings')}><ActionIcon kind="settings" />Модели и инструкции</button>
+      <button id="archive-action" className="secondary" onClick={() => showWindow('archive')}><ActionIcon kind="archive" />Архив ({archived.length})</button>
+    </nav>
+    <Modal open={windowName === 'connect'} title="Подключить проект" close={closeWindow}>
         <form onSubmit={async event => {
-          event.preventDefault(); if (!ready || busy || selectingFolder.current) return;
+          event.preventDefault(); if (!ready || submitting.current || busy || selectingFolder.current) return;
           const form = event.currentTarget; const fields = new FormData(form);
-          setBusy('project'); setError('');
+          submitting.current = true; setBusy('project'); setProjectError('');
           try {
             const project = await api<Project>('/projects', 'POST', { ...Object.fromEntries(fields), state_version: 0 });
             await refresh(); setProjectId(project.id); form.reset(); setCheckout('');
-          } catch (error) { setError((error as Error).message); } finally { setBusy(''); }
+            setWindowName(resumeCreate ? 'create' : ''); setResumeCreate(false);
+          } catch (error) { setProjectError((error as Error).message); } finally { submitting.current = false; setBusy(''); }
         }}>
-          <label>Checkout<input name="checkout" required placeholder="/Users/you/projects/repository" value={checkout} disabled={busy === 'folder'} onChange={event => setCheckout(event.target.value)} /></label>
+          <fieldset className="form-fields" disabled={!!busy}>
+          <label>Checkout<input data-initial-focus name="checkout" required placeholder="/Users/you/projects/repository" value={checkout} disabled={busy === 'folder'} onChange={event => setCheckout(event.target.value)} /></label>
           <button type="button" className="secondary" disabled={!ready || !!busy} onClick={async () => {
             if (!ready || busy || selectingFolder.current) return;
-            selectingFolder.current = true; setBusy('folder'); setError('');
+            selectingFolder.current = true; setBusy('folder'); setProjectError('');
             try {
               const result = await api<{ checkout: string | null }>('/projects/choose-folder', 'POST');
               if (result.checkout !== null) setCheckout(result.checkout);
-            } catch (error) { setError((error as Error).message); }
+            } catch (error) { setProjectError((error as Error).message); }
             finally { selectingFolder.current = false; setBusy(''); }
           }}>{busy === 'folder' ? 'Выбираем папку…' : 'Выбрать папку…'}</button>
           <div className="fields"><label>Remote<input name="remote" required defaultValue="origin" /></label>
@@ -697,31 +755,64 @@ function App() {
           <label>Hosting<select name="hosting"><option value="github">GitHub</option><option value="gitlab">GitLab</option></select></label></div>
           <button disabled={!ready || !!busy}>{busy === 'project' ? 'Проверяем Git и CLI…' : 'Подключить'}</button>
           <p className="hint">Проверим локальный remote, известную target branch и CLI auth. Checkout останется без изменений.</p>
+          {projectError && <p role="alert" className="error">{projectError}</p>}
+          </fieldset>
         </form>
-      </section>
-      <section aria-labelledby="create-title"><h2 id="create-title">Новая задача</h2>
+    </Modal>
+    <Modal open={windowName === 'create'} title="Новая задача" close={closeWindow}>
         <form onSubmit={async event => {
-          event.preventDefault(); if (!selected) return; setBusy('task'); setError('');
-          try { await api(`/projects/${selected.id}/tasks`, 'POST', { state_version: selected.state_version, description }); setDescription(''); await refresh(); }
-          catch (error) { setError((error as Error).message); } finally { setBusy(''); }
+          event.preventDefault(); if (!ready || !selected || !description.trim() || busy || submitting.current) return;
+          submitting.current = true; setBusy('task'); setTaskError('');
+          try {
+            await api(`/projects/${selected.id}/tasks`, 'POST', { state_version: selected.state_version, description });
+            setDescription(''); createDraftStarted.current = false; setTaskError(''); setWindowName(''); await refresh().catch(error => setError(error.message));
+          } catch (error) { setTaskError((error as Error).message); } finally { submitting.current = false; setBusy(''); }
         }}>
-          <label>Проект<select value={selected?.id ?? ''} onChange={event => setProjectId(event.target.value)} disabled={!snapshot.projects.length}>
-            {!snapshot.projects.length && <option value="">Сначала подключите проект</option>}
+          <fieldset className="form-fields" disabled={!!busy}>
+          <label>Проект<select data-initial-focus required value={selected?.id ?? ''} onChange={event => setProjectId(event.target.value)} disabled={!snapshot.projects.length}>
+            <option value="" disabled>Выберите проект</option>
             {snapshot.projects.map(p => <option key={p.id} value={p.id}>{p.host}/{p.repository} · {p.checkout} · {p.target_branch}</option>)}
           </select></label>
+          {!snapshot.projects.length && <p>Сначала подключите проект. Описание сохранится. <button type="button" className="secondary" onClick={() => { setResumeCreate(true); showWindow('connect'); }}>Подключить проект</button></p>}
           <label>Описание<textarea required maxLength={100000} value={description} onChange={event => setDescription(event.target.value)} placeholder="Что нужно сделать?" /></label>
           <button disabled={!ready || !selected || !description.trim() || !!busy}>{busy === 'task' ? 'Сохраняем…' : 'Добавить в Backlog'}</button>
+          {taskError && <p role="alert" className="error">{taskError}</p>}
+          </fieldset>
         </form>
-      </section>
-    </div>
-    {!!snapshot.projects.length && <details className="projects"><summary>Подключённые проекты ({snapshot.projects.length})</summary>{snapshot.projects.map(p => <div key={p.id}>
-      <strong>{p.host}/{p.repository}</strong>{' '}
-      {p.hosting === 'github' && <IssueRefresh project={p} syncing={!!snapshot.issue_syncing?.includes(p.id)} />}
-      <p>{p.checkout}</p><p>{p.hosting} · {p.remote} → {p.remote_url} · target: {p.target_branch}</p>
-    </div>)}</details>}
-    <section className="projects" aria-label="Настройки моделей">{snapshot.projects.map(project => <ModelSettings key={project.id} project={project} refresh={refresh} />)}</section>
-    <section aria-label="Архив" className="projects"><h2>Архив ({archived.length})</h2>{archived.map(task => <ArchivedTask key={task.id} task={task} refresh={refresh} notify={setNotice} draft={drafts[task.id]} openTask={openTask} />)}{!archived.length && <p>Архив пуст.</p>}</section>
-    <div className="board-heading"><h2>Доска <span>{visibleTasks.length}</span></h2><label>Проект <select value={filter} onChange={event => setFilter(event.target.value)}><option value="">Все проекты</option>{snapshot.projects.map(p => <option key={p.id} value={p.id}>{p.host}/{p.repository} · {p.checkout}</option>)}</select></label></div>
+    </Modal>
+    <Modal open={windowName === 'settings'} title="Модели и инструкции" close={closeWindow}>
+      {!snapshot.projects.length && <p>Сначала подключите проект.</p>}
+      {settingsVisited && snapshot.projects.map(project => <ModelSettings key={project.id} project={project} refresh={refresh} />)}
+      <details className="projects"><summary>Подключённые проекты ({snapshot.projects.length})</summary>{snapshot.projects.map(p => <div key={p.id}>
+        <strong>{p.host}/{p.repository}</strong>{' '}
+        {p.hosting === 'github' && <IssueRefresh project={p} syncing={!!snapshot.issue_syncing?.includes(p.id)} />}
+        <p>{p.checkout}</p><p>{p.hosting} · {p.remote} → {p.remote_url} · target: {p.target_branch}</p>
+      </div>)}</details>
+    </Modal>
+    <Modal open={windowName === 'archive'} title={`Архив (${archived.length}) · ${filteredProject ? filteredProject.repository : 'Все проекты'}`} close={closeWindow}>
+      {archived.map(task => <ArchivedTask key={task.id} task={task} refresh={refresh} notify={setNotice} draft={drafts[task.id]} openTask={id => { setWindowName(''); openTask(id); }} />)}{!archived.length && <p>Архив пуст.</p>}
+    </Modal>
+    <Modal open={windowName === 'delete'} title="Удалить регистрацию проекта?" close={closeWindow}>
+      {deleting && <>
+        <p><strong>{deleting.host}/{deleting.repository}</strong> · {deleting.checkout} · {deleting.target_branch}</p>
+        <p>Будут удалены регистрация и настройки проекта в приложении. Локальный checkout, Git worktrees, ветки и удалённый репозиторий не удаляются. Проект можно подключить повторно.</p>
+        <p>Удаление разрешено только без любых связанных задач, включая завершённые и архивные. Архивирование не снимает ограничение; история и результаты задач не удаляются.</p>
+        {(!snapshot.projects.some(project => project.id === deleting.id) || snapshot.projects.find(project => project.id === deleting.id)?.state_version !== deleting.state_version) && <p role="status">Проект удалён или изменился. Закройте окно и откройте подтверждение заново.</p>}
+        {[...snapshot.tasks, ...(snapshot.archived_tasks ?? [])].some(task => task.project_id === deleting.id) && <p role="status">У проекта есть связанные задачи. Удаление запрещено.</p>}
+        <div className="actions"><button disabled={!!busy || !snapshot.projects.some(project => project.id === deleting.id && project.state_version === deleting.state_version) || [...snapshot.tasks, ...(snapshot.archived_tasks ?? [])].some(task => task.project_id === deleting.id)} onClick={async () => {
+          if (submitting.current || busy) return;
+          submitting.current = true; setBusy('delete'); setDeleteError('');
+          try {
+            await api(`/projects/${deleting.id}`, 'DELETE', { state_version: deleting.state_version });
+            setFilter(''); setProjectId(id => id === deleting.id ? '' : id); setWindowName('');
+            setNotice('Регистрация и настройки проекта удалены. Репозиторий сохранён.'); await refresh().catch(error => setError(error.message));
+          } catch (error) { setDeleteError((error as Error).message); await refresh().catch(() => {}); }
+          finally { submitting.current = false; setBusy(''); }
+        }}>{busy === 'delete' ? 'Удаляем…' : 'Подтвердить удаление'}</button><button data-initial-focus className="secondary" onClick={closeWindow}>Отмена</button></div>
+        {deleteError && <p role="alert" className="error">{deleteError}</p>}
+      </>}
+    </Modal>
+    <div className="board-heading"><h2>Доска <span>{visibleTasks.length}</span></h2></div>
     <div className="board" tabIndex={0} role="region" aria-label="Kanban, горизонтальная прокрутка">
       {stages.map((stage, index) => {
         const tasks = visibleTasks.filter(t => t.stage === stage);
@@ -730,7 +821,7 @@ function App() {
             <span className="project-name">{snapshot.projects.find(p => p.id === task.project_id)?.repository}</span>
             <SourceIssue task={task} />
             <h3>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3><p className="meta">{{ idle: 'Ожидает запуска', queued: 'В очереди', running: 'В работе', waiting: 'Нужен ответ', interrupted: 'Нужна сверка', completed: 'Завершена' }[task.run_state]}</p>
-            <p className="agent-preview">{task.description}</p>
+            <p className="agent-preview task-summary">{task.description}</p>
             {snapshot.runs.filter(run => run.task_id === task.id).at(-1)?.output_preview && <p className="agent-preview">{snapshot.runs.filter(run => run.task_id === task.id).at(-1)?.output_preview}</p>}
             {task.deletion_state && <p role={task.deletion_state === 'failed' ? 'alert' : 'status'}>{task.deletion_state === 'failed' ? task.deletion_error : task.deletion_state === 'deleted' ? 'Остановка подтверждена; требуется явная разблокировка.' : 'Останавливаем исполнение…'}</p>}
             <button id={`open-${task.id}`}  onClick={() => openTask(task.id)}>Открыть задачу ↗</button>

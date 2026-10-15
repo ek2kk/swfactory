@@ -3,7 +3,7 @@ import type { Project, Snapshot } from '../shared.js';
 import { Store, Problem, type GithubIssue } from './store.js';
 
 export type IssueCommand = (args: string[], signal: AbortSignal) => Promise<string>;
-type ImportLoop = { job: Promise<void>; active: boolean; timer?: ReturnType<typeof setTimeout> };
+type ImportLoop = { job: Promise<void>; active: boolean; controller: AbortController; timer?: ReturnType<typeof setTimeout> };
 class ImportFailure extends Error {}
 
 export const githubIssueCommand: IssueCommand = (args, signal) => new Promise((resolve, reject) => {
@@ -58,7 +58,7 @@ export class GithubIssues {
   }
   connect(project: Project) {
     if (project.hosting !== 'github' || this.controller.signal.aborted || this.loops.has(project.id)) return;
-    const loop: ImportLoop = { job: Promise.resolve(), active: false };
+    const loop: ImportLoop = { job: Promise.resolve(), active: false, controller: new AbortController() };
     this.loops.set(project.id, loop);
     this.poll(project, loop);
   }
@@ -68,50 +68,56 @@ export class GithubIssues {
     if (this.controller.signal.aborted) throw new Problem(503, 'Backend останавливается.');
     let loop = this.loops.get(projectId);
     if (!loop) {
-      loop = { job: Promise.resolve(), active: false };
+      loop = { job: Promise.resolve(), active: false, controller: new AbortController() };
       this.loops.set(projectId, loop);
     }
     return this.poll(project, loop);
   }
+  disconnect(projectId: string) {
+    const loop = this.loops.get(projectId);
+    if (loop) { loop.controller.abort(); clearTimeout(loop.timer); this.loops.delete(projectId); }
+    this.errors = this.errors.filter(error => error.project_id !== projectId);
+  }
   async settled() { await Promise.all([...this.loops.values()].map(loop => loop.job)); }
   async close() {
     this.controller.abort();
-    for (const loop of this.loops.values()) clearTimeout(loop.timer);
+    for (const loop of this.loops.values()) { loop.controller.abort(); clearTimeout(loop.timer); }
     await this.settled();
   }
   private poll(project: Project, loop: ImportLoop) {
-    if (this.controller.signal.aborted || loop.active) return loop.job;
+    if (this.controller.signal.aborted || loop.controller.signal.aborted || loop.active) return loop.job;
     clearTimeout(loop.timer);
     loop.active = true;
-    loop.job = this.load(project).catch(error => this.fail(project, error)).finally(() => {
+    loop.job = this.load(project, loop.controller.signal).catch(error => this.fail(project, error)).finally(() => {
       loop.active = false;
-      if (!this.controller.signal.aborted) loop.timer = setTimeout(() => this.poll(project, loop), 60_000);
-      this.publish();
+      if (!this.controller.signal.aborted && !loop.controller.signal.aborted) {
+        loop.timer = setTimeout(() => this.poll(project, loop), 60_000);
+        this.publish();
+      }
     });
     this.publish();
     return loop.job;
   }
   private fail(project: Project, error: unknown) {
-    if (this.controller.signal.aborted) return;
+    if (this.controller.signal.aborted || !this.loops.has(project.id)) return;
     const message = error instanceof ImportFailure ? error.message : 'Не удалось загрузить или сохранить GitHub Issues. Проверьте сеть, авторизацию gh и data directory.';
     if (!this.errors.some(item => item.project_id === project.id && item.message === message)) this.errors.push({ project_id: project.id, message });
     this.publish();
   }
-  private async request(project: Project, endpoint: string) {
-    const signal = this.controller.signal;
+  private async request(project: Project, endpoint: string, signal: AbortSignal) {
     signal.throwIfAborted();
     const response = await this.command(['api', '--hostname', project.host, '--method', 'GET', endpoint], signal);
     signal.throwIfAborted();
     try { return JSON.parse(response) as unknown; }
     catch { throw new ImportFailure('GitHub вернул некорректный JSON. Импорт этих данных пропущен.'); }
   }
-  private async load(project: Project) {
+  private async load(project: Project, signal: AbortSignal) {
     const retained = this.store.retainedGithubIssues(project.id);
     let successful = true;
     try {
       // Do not depend on the selected UI project, a checkout, or gh issue list's total limit.
       for (let page = 1; ; page++) {
-        const response = await this.request(project, `repos/${project.repository}/issues?state=open&labels=ready-for-agent&per_page=100&page=${page}`);
+        const response = await this.request(project, `repos/${project.repository}/issues?state=open&labels=ready-for-agent&per_page=100&page=${page}`, signal);
         if (!Array.isArray(response) || response.length > 100) throw new ImportFailure('GitHub вернул некорректную страницу issues. Загрузка остановлена.');
         const issues = response.map(value => parseIssue(value, project));
         let changed = false;
@@ -122,11 +128,11 @@ export class GithubIssues {
         if (response.length < 100) break;
       }
     } catch (error) { successful = false; this.fail(project, error); }
-    if (this.controller.signal.aborted) return;
+    if (signal.aborted) return;
     // Missing labels/pages/404 never prove mismatch; fetch every retained link, including archives.
     for (const { issue_number } of retained) {
       try {
-        const issue = parseIssue(await this.request(project, `repos/${project.repository}/issues/${issue_number}`), project);
+        const issue = parseIssue(await this.request(project, `repos/${project.repository}/issues/${issue_number}`, signal), project);
         if (issue.number !== issue_number || issue.pullRequest) throw new ImportFailure('Ответ GitHub не соответствует исходной issue. Карточка сохранена.');
         const task = this.store.reconcileGithubIssue(project.id, issue_number, issue.state === 'open' && issue.ready,
           issue.state === 'closed' ? 'Исходная GitHub issue закрыта.' : 'У исходной GitHub issue отсутствует ready-for-agent.');
@@ -135,7 +141,7 @@ export class GithubIssues {
           this.publish();
         }
       } catch (error) { successful = false; this.fail(project, error); }
-      if (this.controller.signal.aborted) return;
+      if (signal.aborted) return;
     }
     if (successful && this.errors.some(item => item.project_id === project.id)) {
       this.errors = this.errors.filter(item => item.project_id !== project.id);

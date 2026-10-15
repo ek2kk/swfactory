@@ -28,7 +28,7 @@ function taskCard(api = async (..._args: any[]): Promise<any> => ({})) {
     '../shared.js': shared, './stageHistory.js': stageHistory,
     './theme.js': { applyTheme() {}, readTheme() {} },
     './style.css': {}, './models.js': {}, './api.js': { api }, 'react-dom/client': {},
-    './TaskMarkdown.js': { TaskMarkdown },
+    './TaskMarkdown.js': { TaskMarkdown }, './windows.js': {},
     './taskView.js': {}, './chat.js': { Composer() {}, Message() {}, RunConversation() {} },
     './output.js': { AgentOutput() {}, RunProgress() {} },
   };

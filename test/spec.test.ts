@@ -561,3 +561,76 @@ test('automatic archive and restore during Spec callback never start Build or pu
     assert.equal(store.rawTask(project.id, task.id).stop_unverified, 1);
   } finally { release(); await runner.close(); }
 });
+
+
+import { captureLogs } from './helpers/logging.js';
+for (const mode of ['success', 'failure', 'commit-failure', 'rate-limit'] as const) test(`operational run correlation and committed state: ${mode}`, async t => {
+  const { store, directory, project, queue } = fixture(t);
+  const { app, log, lines } = captureLogs();
+  t.after(() => app.close());
+  const run = queue('PRIVATE DESCRIPTION');
+  if (mode === 'commit-failure') store.db.exec("CREATE TRIGGER fail_log_commit BEFORE INSERT ON events WHEN NEW.type = 'spec.completed' OR NEW.type = 'spec.failed' BEGIN SELECT RAISE(ABORT, 'PRIVATE PROMPT'); END");
+  const runner = new SpecController(store, directory, () => {}, command, async () => {
+    if (mode === 'failure') throw Object.assign(new Error('Command failed: codex PRIVATE PROMPT'), { cmd: 'PRIVATE PROMPT', stderr: 'PRIVATE OUTPUT' });
+    if (mode === 'rate-limit') { const error = new CodexFailure('rate_limit'); error.finished = true; throw error; }
+    return ready;
+  }, undefined, undefined, undefined, undefined, undefined, log);
+  runner.enqueue(run, log.child({ http_request_id: 'server-http-id', request_id: 'command-request-id' }));
+  await runner.close();
+  const chain = lines.filter(line => line.run_id === run.id);
+  for (const event of ['job.enqueued', 'job.started', 'run.started', 'run.finished']) {
+    const line = chain.find(line => line.event === event)!;
+    assert.ok(line, event); assert.equal(line.task_id, run.task_id); assert.equal(line.project_id, project.id);
+    assert.equal(line.role, 'spec'); assert.equal(line.http_request_id, 'server-http-id'); assert.equal(line.request_id, 'command-request-id');
+  }
+  const terminal = chain.find(line => line.event === 'run.finished')!;
+  assert.equal(typeof terminal.duration_ms, 'number');
+  assert.equal(terminal.state_confirmed, mode !== 'commit-failure');
+  assert.equal(terminal.outcome, mode === 'success' ? 'READY' : mode === 'commit-failure' ? 'running' : 'failed');
+  if (mode === 'commit-failure') {
+    assert.ok(chain.some(line => line.event === 'run.persistence-failed'));
+    assert.ok(!chain.some(line => line.event === 'stage.changed' && line.stage === 'build'));
+    assert.equal(store.specRun(project.id, run.task_id, run.id).status, 'running');
+  }
+  if (mode === 'failure') assert.ok(chain.some(line => line.event === 'run.failure' && line.error_kind === 'internal_error'));
+  if (mode === 'rate-limit') {
+    assert.ok(chain.some(line => line.event === 'execution.paused' && line.state_confirmed === true));
+    assert.equal(terminal.error_kind, 'rate_limit'); assert.equal(terminal.execution_finished, true);
+    assert.equal(store.executionPause().paused, 1);
+  }
+  for (const text of ['PRIVATE DESCRIPTION', 'PRIVATE PROMPT', 'PRIVATE OUTPUT']) assert.ok(!JSON.stringify(lines).includes(text));
+});
+
+
+import { createApp } from '../src/server/app.js';
+for (const failure of [false, true]) test(`HTTP-triggered execution retains correlation after response: failure=${failure}`, async t => {
+  const { store, project, directory } = fixture(t);
+  const task = store.createTask(project.id, 'PRIVATE DESCRIPTION', project.state_version);
+  store.close();
+  const capture = captureLogs();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const origin = 'http://127.0.0.1:4317';
+  const backend = await createApp({ directory, origin, logStream: capture.stream, command,
+    issueCommand: async () => '[]', execute: async () => { await gate; if (failure) throw new Error('PRIVATE PROMPT'); return needsInput; } });
+  t.after(async () => { release(); await backend.app.close(); await capture.app.close(); });
+  const headers = { host: '127.0.0.1:4317', origin };
+  const session = await backend.app.inject({ method: 'POST', url: '/api/session', headers, payload: { token: backend.token } });
+  const requestId = randomUUID();
+  const response = await backend.app.inject({ method: 'POST', url: `/api/projects/${project.id}/tasks/${task.id}/start`,
+    headers: { ...headers, cookie: String(session.headers['set-cookie']).split(';')[0] },
+    payload: { request_id: requestId, state_version: task.state_version } });
+  assert.equal(response.statusCode, 200);
+  const run = response.json<ReturnType<Store['queueSpec']>>();
+  const completed = capture.lines.find(line => line.event === 'http.completed' && line.request_id === requestId)!;
+  assert.ok(completed); assert.ok(!capture.lines.some(line => line.event === 'run.finished'));
+  release();
+  for (let i = 0; i < 500 && !capture.lines.some(line => line.event === 'run.finished'); i++) await delay(10);
+  const terminal = capture.lines.find(line => line.event === 'run.finished')!;
+  assert.ok(terminal); assert.equal(terminal.task_id, task.id); assert.equal(terminal.run_id, run.id);
+  assert.equal(terminal.project_id, project.id); assert.equal(terminal.role, 'spec');
+  assert.equal(terminal.http_request_id, completed.http_request_id); assert.equal(terminal.request_id, requestId);
+  assert.equal(terminal.outcome, failure ? 'failed' : 'NEEDS_INPUT');
+  assert.ok(capture.lines.indexOf(terminal) > capture.lines.indexOf(completed));
+  assert.ok(!JSON.stringify(capture.lines).includes('PRIVATE'));
+});

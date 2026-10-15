@@ -1,38 +1,51 @@
+import type { FastifyBaseLogger } from 'fastify';
+import { errorKind } from './logging.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFile as nativeExecFile, spawn as nativeSpawn, type ChildProcess, type ExecFileOptions } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 
 // Each task owns isolated POSIX process groups, including descendants after the leader exits.
-const context = new AsyncLocalStorage<ProcessScope>();
+type ProcessLog = FastifyBaseLogger | (() => FastifyBaseLogger | undefined);
+function resolveLog(log?: ProcessLog) { return typeof log === 'function' ? log() : log; }
+const context = new AsyncLocalStorage<{ scope: ProcessScope; log?: ProcessLog }>();
 export class ProcessScope {
-  constructor(private onProcess: (pid: number) => void = () => {}) {}
+  constructor(private onProcess: (pid: number) => void = () => {}, private log?: FastifyBaseLogger) {}
   readonly controller = new AbortController();
   private cancelled = false;
   private scanning = false;
-  private groups = new Set<number>();
-  private jobs = new Set<Promise<unknown>>();
-  run<T>(work: () => Promise<T>): Promise<T> {
+  private groups = new Map<number, ProcessLog | undefined>();
+  private jobs = new Map<Promise<unknown>, ProcessLog | undefined>();
+  run<T>(work: () => Promise<T>, log: ProcessLog | undefined = this.log): Promise<T> {
     this.check();
-    const job = context.run(this, async () => {
+    const job = context.run({ scope: this, log }, async () => {
       try { return await work(); }
       finally {
         // Keep the scheduler slot while deletion is stopping descendant processes.
         while ((this.cancelled || this.controller.signal.aborted) && (this.scanning || !this.knownGroupsStopped())) await delay(25);
       }
     });
-    this.jobs.add(job);
+    this.jobs.set(job, log);
     void job.finally(() => this.jobs.delete(job)).catch(() => {});
     return job;
   }
   // shortcut: ps cannot recover orphan ancestry; deletion also requires persisted human reconciliation.
-  knownGroupsStopped() { return [...this.groups].every(pid => !this.alive(pid)); }
+  knownGroupsStopped() { return [...this.groups.keys()].every(pid => !this.alive(pid)); }
   hasWork() { return this.jobs.size > 0 || !this.knownGroupsStopped(); }
   check() { if (this.cancelled) throw new Error('Task execution aborted'); this.controller.signal.throwIfAborted(); }
   track(child: ChildProcess) {
     if (!child.pid) return;
-    this.groups.add(child.pid);
+    const currentLog = context.getStore()?.log ?? this.log;
+    const log = resolveLog(currentLog);
+    if (log) {
+      const started = Date.now();
+      child.once('close', (code, signal) => { log.info({ event: 'process.exited', pid: child.pid, pgid: child.pid,
+        exit_code: code, signal, duration_ms: Date.now() - started }); });
+      child.once('error', error => { log.error({ event: 'process.failed', error_kind: errorKind(error) }); });
+    }
+    this.groups.set(child.pid, currentLog);
     try { this.onProcess(child.pid); }
     catch (error) { process.kill(-child.pid, 'SIGKILL'); throw error; }
+    log?.info({ event: 'process.started', pid: child.pid, pgid: child.pid });
   }
   private alive(pid: number) {
     try { process.kill(-pid, 0); return true; }
@@ -44,8 +57,8 @@ export class ProcessScope {
     }
   }
   private signal(signal: NodeJS.Signals) {
-    for (const pid of this.groups) if (this.alive(pid)) {
-      try { process.kill(-pid, signal); }
+    for (const [pid, log] of this.groups) if (this.alive(pid)) {
+      try { process.kill(-pid, signal); resolveLog(log)?.info({ event: 'process.signal-sent', pgid: pid, signal }); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
     }
   }
@@ -57,17 +70,30 @@ export class ProcessScope {
     });
     const rows = listing.trim().split('\n').map(line => line.trim().split(/\s+/).map(Number));
     if (rows.some(row => row.length !== 3 || row.some(id => !Number.isSafeInteger(id) || id < 0))) throw new Error('Не удалось проверить дерево процессов. Нужна ручная сверка.');
-    const owned = new Set(rows.filter(row => this.groups.has(row[2])).map(row => row[0]));
+    const owned = new Map(rows.filter(row => this.groups.has(row[2])).map(row => [row[0], this.groups.get(row[2])]));
     let added: boolean;
     do {
       added = false;
       for (const [pid, parent, group] of rows) if (owned.has(parent) && !owned.has(pid)) {
-        owned.add(pid); added = true;
-        if (!this.groups.has(group)) { this.groups.add(group); this.onProcess(group); }
+        owned.set(pid, owned.get(parent)); added = true;
+        if (!this.groups.has(group)) { this.groups.set(group, owned.get(parent)); this.onProcess(group); }
       }
     } while (added);
   }
   async stop(timeout = 5000) {
+    const started = Date.now();
+    const owners = new Set([...this.groups.values(), ...this.jobs.values()]);
+    const logs = owners.size ? [...owners].map(resolveLog) : [this.log];
+    for (const log of logs) log?.info({ event: 'process.stop-requested' });
+    try {
+      await this.performStop(timeout);
+      for (const log of logs) log?.info({ event: 'process.stop-confirmed', duration_ms: Date.now() - started, execution_finished: true });
+    } catch (error) {
+      for (const log of logs) log?.warn({ event: 'process.stop-unknown', duration_ms: Date.now() - started, error_kind: errorKind(error), execution_finished: false });
+      throw error;
+    }
+  }
+  private async performStop(timeout: number) {
     this.cancelled = true;
     this.scanning = true;
     if (!this.groups.size) this.controller.abort();
@@ -77,7 +103,7 @@ export class ProcessScope {
     const deadline = Date.now() + timeout;
     this.signal('SIGTERM');
     while (true) {
-      const alive = [...this.groups].some(pid => this.alive(pid));
+      const alive = [...this.groups.keys()].some(pid => this.alive(pid));
       if (!alive && !this.jobs.size) return;
       if (Date.now() >= deadline) throw new Error('Остановка процессов или callbacks не подтверждена. Повторите удаление; нужна ручная сверка.');
       await this.discoverDescendantGroups();
@@ -86,11 +112,11 @@ export class ProcessScope {
     }
   }
 }
-export function checkExecution() { context.getStore()?.check(); }
-export function executionSignal() { return context.getStore()?.controller.signal; }
+export function checkExecution() { context.getStore()?.scope.check(); }
+export function executionSignal() { return context.getStore()?.scope.controller.signal; }
 
 export const execFile: typeof nativeExecFile = ((file: string, args: string[], options: ExecFileOptions, callback?: (...args: any[]) => void) => {
-  const scope = context.getStore(); scope?.check();
+  const scope = context.getStore()?.scope; scope?.check();
   if (!scope) return nativeExecFile(file, args, options, callback as any);
   // execFile itself does not forward detached to spawn; buffer an isolated spawn instead.
   const child = nativeSpawn(file, args, { ...options, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -115,7 +141,7 @@ export const execFile: typeof nativeExecFile = ((file: string, args: string[], o
   return child;
 }) as typeof nativeExecFile;
 export const spawn: typeof nativeSpawn = ((file: string, args: string[], options: object) => {
-  const scope = context.getStore(); scope?.check();
+  const scope = context.getStore()?.scope; scope?.check();
   const child = nativeSpawn(file, args, { ...options, detached: true });
   scope?.track(child); return child;
 }) as typeof nativeSpawn;

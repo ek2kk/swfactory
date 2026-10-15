@@ -249,6 +249,18 @@ export class Store {
     if (!project) throw new Problem(404, 'Проект не найден.');
     return project;
   }
+  deleteProject(id: string, version: number) {
+    return this.db.transaction(() => {
+      if (this.project(id).state_version !== version) throw new Problem(409, 'Проект изменился. Откройте подтверждение заново.');
+      if (this.db.prepare('SELECT 1 FROM tasks WHERE project_id = ? LIMIT 1').get(id)) {
+        throw new Problem(409, 'В проекте есть связанные задачи, включая архивные. Удаление запрещено; архивирование не снимает ограничение.');
+      }
+      this.db.prepare('DELETE FROM project_settings WHERE project_id = ?').run(id);
+      this.db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+      this.event('project.deleted', null, { project_id: id });
+      return { deleted: true };
+    }).immediate();
+  }
   rawTask(projectId: string, id: string) {
     const task = this.db.prepare(`${taskSelect} WHERE t.id = ? AND t.project_id = ?`).get(id, projectId) as Task | undefined;
     if (!task) throw new Problem(404, 'Задача не найдена в этом проекте.');
@@ -272,8 +284,9 @@ export class Store {
       if (task.archived && (source !== 'manual' || task.archive_source === 'manual')) return task;
       if (!task.archived && task.deletion_state !== 'stopping') this.beginDeletion(projectId, id, version);
       this.db.prepare('UPDATE tasks SET archived = 1, archive_source = ?, archive_reason = ?, state_version = state_version + 1 WHERE id = ?').run(source, reason, id);
-      this.event('task.archived', id, { source, reason, warning: 'Карточка скрыта; результат остановки доступен в архиве.' });
-      return this.rawTask(projectId, id);
+      const archived = this.rawTask(projectId, id);
+      this.event('task.archived', id, { source, reason, state_version: archived.state_version, warning: 'Карточка скрыта; результат остановки доступен в архиве.' });
+      return archived;
     }).immediate();
   }
   beginDeletion(projectId: string, id: string, version: number, reconciliation?: string) {

@@ -1,3 +1,5 @@
+import type { FastifyBaseLogger } from 'fastify';
+import { errorKind } from './logging.js';
 import { makeReviewPlan } from './reviewPlan.js';
 import { ProcessScope, checkExecution, executionSignal } from './processes.js';
 import { classifySpec, validateDecision } from './specDecision.js';
@@ -32,36 +34,70 @@ export class SpecController {
   private detectingLimits = 0;
   error: string | null = null;
   constructor(private store: Store, private directory: string, private publish: () => void,
-    private command: Run = git, private execute: ExecuteSpec = executeSpec, private generate = generateTitle, private build: ExecuteBuild = executeBuild, private review: ExecuteReview = executeReview, private approve: ExecuteApprove = executeApprove, private classify = classifySpec,
+    private command: Run = git, private execute: ExecuteSpec = executeSpec, private generate = generateTitle, private build: ExecuteBuild = executeBuild, private review: ExecuteReview = executeReview, private approve: ExecuteApprove = executeApprove, private classify = classifySpec, private log?: FastifyBaseLogger,
     private diagnoseDependency: DiagnoseDependencies = diagnoseDependencies, private condition: VerifyCondition = verifyCondition) {
     const originalCommand = this.command;
     this.command = async (...args) => { checkExecution(); return originalCommand(...args); };
-    this.chat = new Chat(store, publish);
-    this.scheduler = new Scheduler(() => this.canRun());
-    this.titles = new Titles(store, publish, generate, undefined, this.scheduler, error => {
-      if (error instanceof CodexFailure && error.kind === 'rate_limit') this.store.db.transaction(() => this.store.pauseExecution(error.resetAt))();
-    });
+    this.chat = new Chat(store, publish, log);
+    this.scheduler = new Scheduler(() => this.canRun(), log, () => this.blockedReason());
+    this.titles = new Titles(store, publish, generate, error => log?.error({ event: 'title.persistence-failed', error_kind: errorKind(error) }), this.scheduler, error => {
+      if (error instanceof CodexFailure && error.kind === 'rate_limit') {
+        this.store.db.transaction(() => this.store.pauseExecution(error.resetAt))();
+        log?.warn({ event: 'execution.paused', reset_at: error.resetAt, state_confirmed: true, reason: 'rate_limit' });
+      }
+    }, log);
   }
 
-  private scope(taskId: string) {
+  private scope(taskId: string, log?: FastifyBaseLogger) {
     let scope = this.scopes.get(taskId);
     if (!scope) {
       scope = new ProcessScope(pid => {
         this.store.db.prepare('UPDATE tasks SET stop_unverified = 1 WHERE id = ?').run(taskId);
         this.store.event('execution.process-started', taskId, { pid, pgid: pid });
-      });
+      }, log);
       this.scopes.set(taskId, scope);
     }
     return scope;
   }
-  private async owned(run: AgentRun, work: () => Promise<void>) {
+  private runLog(run: AgentRun, log = this.log) {
+    return log?.child({ project_id: run.project_id, task_id: run.task_id, run_id: run.id, role: run.role });
+  }
+  private stateLog(run: AgentRun) {
+    // Only called after the outer transaction has committed.
+    try {
+      const task = this.store.rawTask(run.project_id, run.task_id);
+      this.runLog(run)?.info({ event: 'stage.changed', stage: task.stage, run_state: task.run_state, state_confirmed: true });
+      if (run.diagnostic?.error_kind === 'rate_limit') this.runLog(run)?.warn({ event: 'execution.paused',
+        reason: 'rate_limit', reset_at: this.store.executionPause().reset_at, state_confirmed: true });
+    } catch { this.runLog(run)?.error({ event: 'logging.state-unavailable', state_confirmed: false }); }
+  }
+  private blockedReason() {
+    return this.closing ? 'shutdown' : this.error ? 'execution_error' : this.chat.error ? 'chat_error'
+      : this.titles?.error ? 'title_error' : this.detectingLimits > 0 ? 'rate_limit_detection'
+      : this.store.executionPause().paused ? 'rate_limit' : 'unavailable';
+  }
+  private async owned(run: AgentRun, work: () => Promise<void>, log = this.runLog(run), publication = false) {
     if (this.store.blocked(run.task_id) || !this.store.hasRun(run)) return;
-    const scope = this.scope(run.task_id);
+    const scope = this.scope(run.task_id, this.log?.child({ project_id: run.project_id, task_id: run.task_id }));
     this.store.db.prepare('UPDATE tasks SET execution_unverified = 1 WHERE id = ?').run(run.task_id);
-    await scope.run(work).finally(() => {
+    const started = Date.now();
+    log?.info({ event: publication ? 'publication.started' : 'run.started' });
+    // Auto Spec can choose Build in this same run; bind the current role when a process starts.
+    try { await scope.run(work, () => this.runLog(run, log)); }
+    finally {
       if (scope.knownGroupsStopped()) this.store.db.prepare('UPDATE tasks SET execution_unverified = 0 WHERE id = ?').run(run.task_id);
+      try {
+        const saved = this.store.specRun(run.project_id, run.task_id, run.id);
+        const task = this.store.rawTask(run.project_id, run.task_id);
+        log?.info({ event: publication ? 'publication.finished' : 'run.finished', duration_ms: Date.now() - started,
+          role: saved.role, outcome: publication ? task.publication_status : saved.outcome ?? saved.status,
+          ...(publication ? {} : { execution_finished: saved.diagnostic?.execution_finished ?? false,
+            error_kind: saved.diagnostic?.error_kind ?? (['queued', 'running'].includes(saved.status) ? 'state_unconfirmed' : saved.status === 'failed' ? 'internal_error' : null) }),
+          stage: task.stage, run_state: task.run_state, publication_status: task.publication_status,
+          state_confirmed: publication ? ['confirmed', 'unknown'].includes(task.publication_status ?? '') : !['queued', 'running'].includes(saved.status) });
+      } catch { log?.error({ event: 'run.state-unavailable', duration_ms: Date.now() - started, state_confirmed: false }); }
       this.publish();
-    });
+    }
   }
   assertResultsResetIdle(taskId: string) {
     if (this.dependencyWork.has(taskId) || this.scheduler.hasWork(taskId) || this.titles.hasWork(taskId) || this.chat.hasWork(taskId)
@@ -85,9 +121,13 @@ export class SpecController {
       throw new Problem(409, 'Очистка результатов не завершена. Проверьте data directory и повторите сброс; новый запуск заблокирован.');
     } finally { this.publish(); }
   }
-  deleteTask(taskId: string, preserveVisibility = false) {
+  deleteTask(taskId: string, preserveVisibility = false, log = this.log) {
     const prior = this.deletions.get(taskId);
     if (prior) return prior;
+    const task = this.store.db.prepare('SELECT project_id FROM tasks WHERE id = ?').get(taskId) as { project_id: string };
+    log = log?.child({ project_id: task.project_id, task_id: taskId });
+    const started = Date.now();
+    log?.info({ event: 'task.stop-requested' });
     const done = (async () => {
       this.scheduler.cancel(taskId);
       this.chat.cancel(taskId);
@@ -100,6 +140,11 @@ export class SpecController {
         this.store.finishDeletion(taskId, undefined, preserveVisibility);
         this.scopes.delete(taskId);
       } catch (error) { this.store.finishDeletion(taskId, (error as Error).message, preserveVisibility); }
+      const saved = this.store.rawTask(task.project_id, taskId);
+      log?.info({ event: saved.deletion_state === 'deleted' ? 'task.stop-confirmed' : 'task.stop-unknown',
+        duration_ms: Date.now() - started, state_confirmed: true, execution_finished: saved.deletion_state === 'deleted',
+        stage: saved.stage, run_state: saved.run_state,
+        publication_status: saved.publication_status });
       this.publish();
     })().finally(() => this.deletions.delete(taskId));
     this.deletions.set(taskId, done); return done;
@@ -109,8 +154,8 @@ export class SpecController {
     const pause = this.store.executionPause();
     if (!pause.paused) return true;
     if (pause.reset_at && Date.parse(pause.reset_at) <= Date.now()) {
-      try { this.store.db.transaction(() => this.store.resumeExecution(pause.state_version))(); this.publish(); return true; }
-      catch { this.error = 'Не удалось сохранить продолжение очереди. Нужна ручная проверка.'; return false; }
+      try { this.store.db.transaction(() => this.store.resumeExecution(pause.state_version))(); this.log?.info({ event: 'execution.resumed', reason: 'reset_time', state_confirmed: true }); this.publish(); return true; }
+      catch { this.log?.error({ event: 'execution.persistence-failed', state_confirmed: false }); this.error = 'Не удалось сохранить продолжение очереди. Нужна ручная проверка.'; return false; }
     }
     return false;
   }
@@ -213,10 +258,11 @@ export class SpecController {
     if (continuation && !this.closing) this.enqueue(continuation);
   }
   canInterrupt(runId: string) { return this.interrupts.has(runId); }
-  interrupt(run: AgentRun) {
+  interrupt(run: AgentRun, log = this.log) {
     const control = this.interrupts.get(run.id);
     if (!control) return;
     control.run.diagnostic = { ...control.run.diagnostic, interrupt_requested_at: run.diagnostic?.interrupt_requested_at };
+    this.runLog(run, log)?.info({ event: 'run.interrupt-requested', state_confirmed: true });
     control.stop();
   }
   private registerInterrupt(run: AgentRun, stop: (() => void) | null) {
@@ -243,9 +289,13 @@ export class SpecController {
       this.store.db.prepare("UPDATE runs SET diagnostic = ? WHERE id = ? AND status = 'running'").run(JSON.stringify(run.diagnostic), run.id);
       this.store.event('run.metadata', run.task_id, { run_id: run.id, ...value });
     })();
+    if (value.execution_finished !== undefined) this.runLog(run)?.info({
+      event: value.execution_finished ? 'run.execution-finished' : 'run.execution-unknown', execution_finished: value.execution_finished, state_confirmed: true,
+    });
     this.publish();
   }
   private async diagnose(run: AgentRun, error: unknown) {
+    this.runLog(run)?.error({ event: 'run.failure', error_kind: errorKind(error) });
     if (run.diagnostic?.result_saved) {
       try {
         const hash = await sourceHash(run, this.command);
@@ -281,8 +331,10 @@ export class SpecController {
     this.recordMetadata(run, { result_saved: true, execution_finished: true });
     return result;
   }
-  enqueue(run: AgentRun) {
+  enqueue(run: AgentRun, logger = this.log) {
+    const log = this.runLog(run, logger);
     if (this.closing || this.error || this.titles.error) throw new Problem(503, 'Исполнение остановлено. Нужна ручная проверка backend.');
+    this.stateLog(run);
     const released = this.titles.releaseForSpec(this.store.task(run.project_id, run.task_id));
     const work = this.scheduler.enqueue(run.task_id, () => this.owned(run, async () => {
       if (this.closing || this.error || this.titles.error) return;
@@ -302,10 +354,12 @@ export class SpecController {
       else if (run.role.startsWith('review-')) await this.performReview(run);
       else await this.perform(run);
       if (!this.store.blocked(run.task_id) && this.store.task(run.project_id, run.task_id).revision !== run.description_revision) this.titles.kick();
-    })).finally(() => { this.active.delete(work); });
+    }, log), log).finally(() => { this.active.delete(work); });
     this.active.add(work);
   }
-  enqueuePublication(run: AgentRun) {
+  enqueuePublication(run: AgentRun, logger = this.log) {
+    const log = this.runLog(run, logger);
+    log?.info({ event: 'publication.pending', state_confirmed: true, publication_status: 'pending' });
     const work = this.scheduler.enqueue(run.task_id, () => this.owned(run, async () => {
       try {
         if (this.closing || this.error || this.titles.error) return;
@@ -319,12 +373,20 @@ export class SpecController {
             if (operation === 'pr-url' && result) this.store.db.prepare('UPDATE tasks SET pr_url = ? WHERE id = ?').run(result, run.task_id);
           });
         this.store.finishPublication(run, identity);
-      } catch {
-        try { this.store.finishPublication(run); }
-        catch { this.error = 'Не удалось сохранить исход публикации. Остановлено; нужна ручная сверка GitHub.'; }
+        log?.info({ event: 'publication.confirmed', publication_status: 'confirmed', state_confirmed: true });
+        this.stateLog(run);
+      } catch (error) {
+        log?.error({ event: 'publication.failure', error_kind: errorKind(error) });
+        try {
+          this.store.finishPublication(run);
+          const status = this.store.rawTask(run.project_id, run.task_id).publication_status;
+          log?.warn({ event: status === 'confirmed' ? 'publication.confirmed' : 'publication.unknown', publication_status: status, state_confirmed: true });
+          this.stateLog(run);
+        }
+        catch { log?.error({ event: 'publication.persistence-failed', state_confirmed: false }); this.error = 'Не удалось сохранить исход публикации. Остановлено; нужна ручная сверка GitHub.'; }
       }
       this.publish();
-    })).finally(() => { this.active.delete(work); });
+    }, log, true), log).finally(() => { this.active.delete(work); });
     this.active.add(work);
   }
   async close() {
@@ -450,7 +512,7 @@ Human answers and decisions:
 ${JSON.stringify(context)}`;
       prompt += this.chatContext(run);
       saveArtifact(directory, 'input.json', JSON.stringify({ run, mode, description: task.description, specification, feedback, previousBuild, prompt }, null, 2));
-      run.status = 'running'; this.store.updateRun(run, 'build', 'running'); this.publish();
+      run.status = 'running'; this.store.updateRun(run, 'build', 'running'); this.stateLog(run); this.publish();
       const result = await this.agentResult(run, directory, () => this.build({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), interrupt: stop => this.registerInterrupt(run, stop), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.build, reasoningEffort: run.config.reasoning_efforts?.build, prompt }), validateBuild);
       await verifyRepository(project, run.worktree, this.command);
       run.head_sha = result.outcome === 'READY' ? await commitBuild(run, result, this.command)
@@ -473,6 +535,7 @@ ${JSON.stringify(context)}`;
           result.outcome === 'READY' ? 'idle' : result.outcome === 'NEEDS_INPUT' ? 'waiting' : 'interrupted', undefined, result);
         if (result.outcome === 'READY' && !this.closing && this.store.task(run.project_id, run.task_id).revision === run.description_revision) next = this.store.queueReview(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
       })();
+      this.stateLog(run);
       if (next) this.enqueue(next);
     } catch (error) {
       if (this.store.blocked(run.task_id)) return;
@@ -480,8 +543,8 @@ ${JSON.stringify(context)}`;
       run.status = 'failed'; run.outcome = null; run.report = 0;
       run.repair_attempt = this.store.specRun(run.project_id, run.task_id, run.id).repair_attempt;
       run.error = error instanceof Problem ? error.message : 'Ошибка сохранения или исполнения Build. Нужна ручная проверка; частичные изменения сохранены.';
-      try { this.store.updateRun(run, 'needs-human', 'interrupted'); }
-      catch { this.error = 'Не удалось сохранить Build. Новые запуски остановлены; нужна ручная сверка перед restart.'; }
+      try { this.store.updateRun(run, 'needs-human', 'interrupted'); this.stateLog(run); }
+      catch { this.runLog(run)?.error({ event: 'run.persistence-failed', state_confirmed: false }); this.error = 'Не удалось сохранить Build. Новые запуски остановлены; нужна ручная сверка перед restart.'; }
     }
     if (run.diagnostic?.error_kind === 'rate_limit') this.detectingLimits--;
     this.publish();
@@ -518,7 +581,7 @@ ${JSON.stringify(context)}`;
       if (await this.command('git', ['rev-parse', 'HEAD'], run.worktree) !== run.head_sha
         || await this.command('git', ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'], run.worktree)
         || await sourceHash(run, this.command) !== run.source_hash) throw new Problem(422, 'Source изменился. Старые Review неактуальны; нужна ручная сверка.');
-    } catch (error) { this.store.invalidateReviews(run); throw error; }
+    } catch (error) { this.store.invalidateReviews(run); this.stateLog(run); throw error; }
     finally {
       const remaining = this.verifications.get(run.task_id)! - 1;
       if (remaining) this.verifications.set(run.task_id, remaining); else this.verifications.delete(run.task_id);
@@ -563,7 +626,7 @@ Human answers:
 ${JSON.stringify(context)}`;
       prompt += this.chatContext(run);
       saveArtifact(directory, 'input.json', JSON.stringify({ run, specification, prompt }, null, 2));
-      run.status = 'running'; this.store.updateRun(run, 'review', 'running'); this.publish();
+      run.status = 'running'; this.store.updateRun(run, 'review', 'running'); this.stateLog(run); this.publish();
       const result = await this.agentResult(run, directory, () => this.review({ reviewRole: run.role as ReviewRole, cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), interrupt: stop => this.registerInterrupt(run, stop), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models[run.role]!, reasoningEffort: run.config.reasoning_efforts?.[run.role], prompt }), value => validateReview(value, run.role as ReviewRole));
       await this.verifyReviewSource(run);
       saveArtifact(directory, 'result.json', JSON.stringify({ schema_version: run.role === 'review-ui-ux' ? 2 : 1, task_id: task.id, run_id: run.id, role: run.role,
@@ -590,14 +653,15 @@ ${JSON.stringify(context)}`;
           } else if (!this.closing) next = this.store.queueReview(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
         }
       })();
+      this.stateLog(run);
       if (next) this.enqueue(next);
     } catch (error) {
       if (this.store.blocked(run.task_id)) return;
       await this.diagnose(run, error);
       run.status = 'failed'; run.outcome = null; run.report = 0;
       run.error = error instanceof Problem ? error.message : 'Ошибка исполнения или сохранения Review. Нужна ручная проверка; изменения сохранены.';
-      try { this.store.updateRun(run, 'needs-human', 'interrupted'); }
-      catch { this.error = 'Не удалось сохранить Review. Новые запуски остановлены; нужна ручная сверка.'; }
+      try { this.store.updateRun(run, 'needs-human', 'interrupted'); this.stateLog(run); }
+      catch { this.runLog(run)?.error({ event: 'run.persistence-failed', state_confirmed: false }); this.error = 'Не удалось сохранить Review. Новые запуски остановлены; нужна ручная сверка.'; }
     }
     if (run.diagnostic?.error_kind === 'rate_limit') this.detectingLimits--;
     this.publish();
@@ -625,7 +689,7 @@ Return only the structured result. Reports/logs belong in ${directory}.
 Context: ${JSON.stringify({ review_plan: run.review_plan, run, description: task.description, specification, reports, human_answers: context })}`;
       prompt += this.chatContext(run);
       saveArtifact(directory, 'input.json', JSON.stringify({ run, specification, reports, prompt }, null, 2));
-      run.status = 'running'; this.store.updateRun(run, 'approve', 'running'); this.publish();
+      run.status = 'running'; this.store.updateRun(run, 'approve', 'running'); this.stateLog(run); this.publish();
       const result = await this.agentResult(run, directory, () => this.approve({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), interrupt: stop => this.registerInterrupt(run, stop), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.approve, reasoningEffort: run.config.reasoning_efforts?.approve, prompt }), validateApprove);
       await this.verifyReviewSource(run);
       if (!this.store.reviewPasses(run)) throw new Problem(409, 'Review устарел.');
@@ -637,13 +701,14 @@ Context: ${JSON.stringify({ review_plan: run.review_plan, run, description: task
         'Reviews:', ...reports.map(r => `${r.role}: ${r.run_id}`)].join('\n\n'));
       run.status = 'completed'; run.outcome = result.outcome; run.report = 1;
       this.store.updateRun(run, result.outcome === 'APPROVE' ? 'approve' : 'needs-human', result.outcome === 'APPROVE' ? 'completed' : 'waiting', undefined, result);
+      this.stateLog(run);
     } catch (error) {
       if (this.store.blocked(run.task_id)) return;
       await this.diagnose(run, error);
       run.status = 'failed'; run.outcome = null; run.report = 0;
       run.error = error instanceof Problem ? error.message : 'Ошибка исполнения или сохранения Approve. Нужна ручная проверка.';
-      try { this.store.updateRun(run, 'needs-human', 'interrupted'); }
-      catch { this.error = 'Не удалось сохранить Approve. Новые запуски остановлены; нужна ручная сверка.'; }
+      try { this.store.updateRun(run, 'needs-human', 'interrupted'); this.stateLog(run); }
+      catch { this.runLog(run)?.error({ event: 'run.persistence-failed', state_confirmed: false }); this.error = 'Не удалось сохранить Approve. Новые запуски остановлены; нужна ручная сверка.'; }
     }
     if (run.diagnostic?.error_kind === 'rate_limit') this.detectingLimits--;
     this.publish();
@@ -655,7 +720,7 @@ Context: ${JSON.stringify({ review_plan: run.review_plan, run, description: task
       const project = this.store.project(run.project_id);
       const task = this.store.task(run.project_id, run.task_id);
       if (task.spec_decision?.revision === run.description_revision && task.spec_decision.required === null) {
-        run.status = 'running'; this.store.updateRun(run, 'backlog', 'running'); this.publish();
+        run.status = 'running'; this.store.updateRun(run, 'backlog', 'running'); this.stateLog(run); this.publish();
         const result = validateDecision(await this.classify(task.description, run.config.models.spec, executionSignal()!));
         checkExecution();
         const decision = { ...task.spec_decision, ...result };
@@ -664,6 +729,7 @@ Context: ${JSON.stringify({ review_plan: run.review_plan, run, description: task
           run.role = decision.required ? 'spec' : 'build';
           this.store.db.prepare('UPDATE runs SET role = ? WHERE id = ?').run(run.role, run.id);
         })();
+        this.stateLog(run);
         this.publish();
       }
       if (!run.parent_run_id) {
@@ -674,6 +740,7 @@ Context: ${JSON.stringify({ review_plan: run.review_plan, run, description: task
         run.status = 'running';
         // Persist the immutable base and intended paths before creating external Git state.
         this.store.updateRun(run, 'backlog', 'running');
+        this.stateLog(run);
         this.publish();
         const parent = dirname(run.worktree);
         mkdirSync(parent, { recursive: true, mode: 0o700 });
@@ -699,6 +766,7 @@ ${context.length ? `Previous Spec results and human answers (same revision):\n${
       prompt += this.chatContext(run);
       saveArtifact(directory, 'input.json', JSON.stringify({ run, description: task.description, prompt }, null, 2));
       this.store.updateRun(run, 'spec', 'running');
+      this.stateLog(run);
       this.publish();
       const result = await this.agentResult(run, directory, () => this.execute({ cwd: run.worktree, directory, signal: executionSignal(), control: steer => this.chat.control(run, steer), interrupt: stop => this.registerInterrupt(run, stop), metadata: value => this.recordMetadata(run, value), output: text => this.recordOutput(run, text), model: run.config.models.spec, reasoningEffort: run.config.reasoning_efforts?.spec, prompt }), validateSpec);
       const head = await this.verifyWorktree(run);
@@ -717,14 +785,15 @@ ${context.length ? `Previous Spec results and human answers (same revision):\n${
           next = this.store.queueBuild(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
         }
       })();
+      this.stateLog(run);
       if (next) this.enqueue(next);
     } catch (error) {
       if (this.store.blocked(run.task_id)) return;
       await this.diagnose(run, error);
       run.status = 'failed'; run.outcome = null; run.report = 0;
       run.error = error instanceof Problem ? error.message : 'Ошибка сохранения или исполнения. Проверьте data directory и локальные логи; автоматического продолжения нет.';
-      try { this.store.updateRun(run, prepared ? 'needs-human' : 'backlog', prepared ? 'interrupted' : 'idle'); }
-      catch { this.error = 'Не удалось сохранить состояние исполнения. Новые запуски остановлены. Проверьте диск и вручную сверьте worktrees перед restart.'; }
+      try { this.store.updateRun(run, prepared ? 'needs-human' : 'backlog', prepared ? 'interrupted' : 'idle'); this.stateLog(run); }
+      catch { this.runLog(run)?.error({ event: 'run.persistence-failed', state_confirmed: false }); this.error = 'Не удалось сохранить состояние исполнения. Новые запуски остановлены. Проверьте диск и вручную сверьте worktrees перед restart.'; }
     }
     if (run.diagnostic?.error_kind === 'rate_limit') this.detectingLimits--;
     this.publish();

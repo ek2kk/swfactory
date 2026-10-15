@@ -1,6 +1,8 @@
 import { ModelCatalogs, discoverModels } from './models.js';
 import { readTranscript } from './transcript.js';
-import Fastify from 'fastify';
+import Fastify, { LogController } from 'fastify';
+import type { Writable } from 'node:stream';
+import { loggerOptions, errorKind } from './logging.js';
 import staticFiles from '@fastify/static';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { ServerResponse } from 'node:http';
@@ -37,13 +39,16 @@ export async function createApp(options: {
   chooseFolder?: () => Promise<string | null>;
   issueCommand?: IssueCommand;
   diagnoseDependencies?: DiagnoseDependencies; verifyCondition?: VerifyCondition;
+  logStream?: Writable;
 }) {
   const store = new Store(options.directory);
   const directory = realpathSync(options.directory);
   const catalogs = new ModelCatalogs(directory, options.discoverModels);
-  const app = Fastify({ logger: false, bodyLimit: 128 * 1024, ajv: { customOptions: { removeAdditional: false, coerceTypes: false } } });
   const token = randomBytes(32).toString('hex');
   const session = randomBytes(32).toString('hex');
+  const app = Fastify({ logger: loggerOptions([token, session], options.logStream),
+    logController: new LogController({ disableRequestLogging: true, requestIdLogLabel: 'http_request_id' }), requestIdHeader: false, bodyLimit: 128 * 1024,
+    ajv: { customOptions: { removeAdditional: false, coerceTypes: false } } });
   const clients = new Map<ServerResponse, ReturnType<typeof subscribe>>();
   let closing = false;
   const origin = new URL(options.origin);
@@ -54,7 +59,7 @@ export async function createApp(options: {
   function publish() {
     for (const client of clients.values()) client.update();
   }
-  const controller = new SpecController(store, directory, publish, options.command, options.execute, options.generateTitle, options.executeBuild, options.executeReview, options.executeApprove, undefined, options.diagnoseDependencies, options.verifyCondition);
+  const controller = new SpecController(store, directory, publish, options.command, options.execute, options.generateTitle, options.executeBuild, options.executeReview, options.executeApprove, undefined, app.log, options.diagnoseDependencies, options.verifyCondition);
   const titles = controller.titles;
   const issues = new GithubIssues(store, publish, options.issueCommand, taskId => controller.deleteTask(taskId));
   app.addHook('onRequest', async (request, reply) => {
@@ -70,9 +75,24 @@ export async function createApp(options: {
       if (!equal(cookie, session)) throw new Problem(401, 'Откройте URL с bootstrap token из терминала backend.');
     }
   });
-  app.setErrorHandler((error, _request, reply) => {
+  app.addHook('preHandler', async request => {
+    const params = request.params as Record<string, unknown>;
+    const body = request.body as Record<string, unknown> | null;
+    const bodySchema = request.routeOptions.schema?.body as { properties?: Record<string, unknown> } | undefined;
+    request.log = request.log.child({ project_id: params?.projectId, task_id: params?.taskId, run_id: params?.runId,
+      request_id: bodySchema?.properties?.request_id && typeof body?.request_id === 'string' && new RegExp(uuid.pattern).test(body.request_id)
+        ? body.request_id : undefined });
+    if (!['GET', 'HEAD'].includes(request.method)) request.log.info({ event: 'http.action' });
+  });
+  app.addHook('onResponse', async (request, reply) => {
+    request.log.info({ event: 'http.completed', method: request.method, route: request.routeOptions.url ?? 'unmatched',
+      status: reply.statusCode, duration_ms: reply.elapsedTime,
+      ...(reply.statusCode >= 400 ? { reason: `http_${reply.statusCode}` } : {}) });
+  });
+  app.setErrorHandler((error, request, reply) => {
     const err = error as Error & { statusCode?: number; validation?: unknown };
     const status = err.statusCode && err.statusCode < 500 ? err.statusCode : 500;
+    request.log[status >= 500 ? 'error' : 'warn']({ event: 'http.rejected', reason: err.validation ? 'validation' : `http_${status}`, error_kind: errorKind(error) });
     reply.code(status).send({ message: err.validation ? 'Проверьте поля формы: формат или значение не подходят.'
       : status === 500 ? 'Не удалось сохранить или прочитать данные. Действие не продолжено; проверьте доступ к data directory и свободное место.' : err.message });
   });
@@ -108,6 +128,16 @@ export async function createApp(options: {
     return result;
   });
   const projectParams = object({ projectId: uuid });
+  app.delete<{ Params: { projectId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId', {
+    schema: { params: projectParams, body: object({ request_id: uuid, state_version: version }) },
+  }, async request => {
+    const { projectId } = request.params;
+    const { request_id, state_version } = request.body;
+    const result = store.mutate(request_id, JSON.stringify(['project.delete', projectId, state_version]), () => store.deleteProject(projectId, state_version));
+    issues.disconnect(projectId);
+    publish();
+    return result;
+  });
   app.post<{ Params: { projectId: string } }>('/api/projects/:projectId/issues/refresh', { schema: { params: projectParams } }, async request => {
     void issues.refresh(request.params.projectId);
     return { ok: true };
@@ -167,7 +197,7 @@ export async function createApp(options: {
     const result = store.mutate(request_id, JSON.stringify(['task.archive', projectId, taskId, state_version]),
       () => store.archiveTask(projectId, taskId, state_version));
     if (store.rawTask(projectId, taskId).deletion_state === 'stopping') {
-      void controller.deleteTask(taskId).catch(() => { controller.error = 'Не удалось сохранить результат остановки. Проверьте архив и backend.'; publish(); });
+      void controller.deleteTask(taskId, false, request.log).catch(() => { controller.error = 'Не удалось сохранить результат остановки. Проверьте архив и backend.'; publish(); });
     }
     publish();
     return result;
@@ -214,7 +244,7 @@ export async function createApp(options: {
       publish();
     }
     let task = store.rawTask(projectId, taskId);
-    if (task.deletion_state === 'stopping') await controller.deleteTask(taskId, action === 'stop');
+    if (task.deletion_state === 'stopping') await controller.deleteTask(taskId, action === 'stop', request.log);
     task = store.rawTask(projectId, taskId);
     const result = deletionResult(projectId, taskId);
     if (action === 'stop') store.releaseStoppedTask(projectId, taskId);
@@ -294,7 +324,7 @@ export async function createApp(options: {
     if (prior !== undefined) return prior;
     if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
     const result = store.mutate(request_id, fingerprint, () => store.queueSpec(projectId, taskId, state_version, directory, spec_mode)) as AgentRun;
-    controller.enqueue(result);
+    controller.enqueue(result, request.log);
     publish(); return result;
   });
   app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/build', {
@@ -307,7 +337,7 @@ export async function createApp(options: {
     if (prior !== undefined) return prior;
     if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
     const result = store.mutate(request_id, fingerprint, () => store.queueBuild(projectId, taskId, state_version)) as AgentRun;
-    controller.enqueue(result);
+    controller.enqueue(result, request.log);
     publish(); return result;
   });
   app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/review', {
@@ -320,7 +350,7 @@ export async function createApp(options: {
     if (prior !== undefined) return prior;
     if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
     const result = store.mutate(request_id, fingerprint, () => store.queueReview(projectId, taskId, state_version)) as AgentRun;
-    controller.enqueue(result);
+    controller.enqueue(result, request.log);
     publish(); return result;
   });
   app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/publish', {
@@ -333,7 +363,7 @@ export async function createApp(options: {
     if (prior !== undefined) return prior;
     if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
     const run = store.mutate(request_id, fingerprint, () => store.beginPublication(projectId, taskId, state_version)) as AgentRun;
-    controller.enqueuePublication(run);
+    controller.enqueuePublication(run, request.log);
     publish(); return run;
   });
   app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/approve', {
@@ -346,7 +376,7 @@ export async function createApp(options: {
     if (prior !== undefined) return prior;
     if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
     const result = store.mutate(request_id, fingerprint, () => store.queueApprove(projectId, taskId, state_version)) as AgentRun;
-    controller.enqueue(result);
+    controller.enqueue(result, request.log);
     publish(); return result;
   });
   app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/repair', {
@@ -359,7 +389,7 @@ export async function createApp(options: {
     if (prior !== undefined) return prior;
     if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
     const result = store.mutate(request_id, fingerprint, () => store.queueRepair(projectId, taskId, state_version, true)) as AgentRun;
-    controller.enqueue(result);
+    controller.enqueue(result, request.log);
     publish(); return result;
   });
   app.post<{ Params: { projectId: string; taskId: string; humanId: string }; Body: { request_id: string; state_version: number; answers: string[] } }>('/api/projects/:projectId/tasks/:taskId/questions/:humanId/answer', {
@@ -373,7 +403,7 @@ export async function createApp(options: {
     if (prior !== undefined) return prior;
     if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
     const result = store.mutate(request_id, fingerprint, () => store.answer(projectId, taskId, humanId, state_version, answers)) as { run: AgentRun | null };
-    if (result.run) controller.enqueue(result.run);
+    if (result.run) controller.enqueue(result.run, request.log);
     publish(); return result;
   });
   app.post<{ Params: { projectId: string; taskId: string; humanId: string }; Body: { request_id: string; state_version: number; decision: 'publish' | 'repair'; feedback: string } }>('/api/projects/:projectId/tasks/:taskId/decisions/:humanId', {
@@ -393,7 +423,7 @@ export async function createApp(options: {
     const result = store.mutate(request_id, fingerprint, () => {
       changed = true; return store.decide(projectId, taskId, humanId, state_version, decision, feedback);
     }) as { run: AgentRun | null };
-    if (changed && result.run) controller.enqueue(result.run);
+    if (changed && result.run) controller.enqueue(result.run, request.log);
     publish(); return result;
   });
   app.get<{ Params: { projectId: string; taskId: string; runId: string } }>('/api/projects/:projectId/tasks/:taskId/runs/:runId/report', {
@@ -430,6 +460,7 @@ export async function createApp(options: {
   }, async request => {
     const { request_id, state_version } = request.body;
     const result = store.mutate(request_id, JSON.stringify(['execution.resume', state_version]), () => store.resumeExecution(state_version));
+    request.log.info({ event: 'execution.resumed', state_confirmed: true });
     controller.resume(); publish(); return result;
   });
   app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/retry', {
@@ -442,7 +473,7 @@ export async function createApp(options: {
     if (prior !== undefined) return prior;
     if (controller.error || titles.error) throw new Problem(503, controller.error ?? titles.error!);
     const result = store.mutate(request_id, fingerprint, () => store.retryRun(projectId, taskId, state_version)) as AgentRun;
-    controller.enqueue(result); publish(); return result;
+    controller.enqueue(result, request.log); publish(); return result;
   });
   app.post<{ Params: { projectId: string; taskId: string; runId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/runs/:runId/interrupt', {
     schema: { params: object({ projectId: uuid, taskId: uuid, runId: uuid }), body: object({ request_id: uuid, state_version: version }) },
@@ -455,7 +486,7 @@ export async function createApp(options: {
     store.specRun(projectId, taskId, runId);
     if (!controller.canInterrupt(runId)) throw new Problem(409, 'Активная сессия недоступна. Нужна ручная сверка.');
     const run = store.mutate(request_id, fingerprint, () => store.requestInterrupt(projectId, taskId, runId, state_version)) as AgentRun;
-    controller.interrupt(run); publish(); return run;
+    controller.interrupt(run, request.log); publish(); return run;
   });
   app.get('/api/events', async (request, reply) => {
     await controller.refreshReviewState();
@@ -477,10 +508,15 @@ export async function createApp(options: {
   });
   app.addHook('preClose', async () => {
     closing = true;
+    app.log.info({ event: 'backend.shutdown-started' });
     for (const client of clients.values()) client.close();
     await issues.close();
   });
-  app.addHook('onClose', async () => { await issues.close(); await controller.close(); store.close(); });
+  app.addHook('onListen', async () => { app.log.info({ event: 'backend.started' }); });
+  app.addHook('onClose', async () => {
+    await issues.close(); await controller.close(); store.close();
+    app.log.info({ event: 'backend.shutdown-finished' });
+  });
   try {
     if (options.staticRoot) await app.register(staticFiles, { root: options.staticRoot, index: 'index.html', dotfiles: 'deny' });
     await app.ready();
