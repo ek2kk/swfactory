@@ -36,6 +36,30 @@ async function apiFixture(t: { after: (fn: () => void | Promise<void>) => void }
   return { ...result, project, directory, headers };
 }
 
+test('message history stays readable during Stop without allowing writes or bypassing ownership/auth', async t => {
+  const { app, store, project, headers } = await apiFixture(t);
+  const task = store.createTask(project.id, 'Keep message history', 1);
+  const url = `/api/projects/${project.id}/tasks/${task.id}/messages`;
+  const message = { request_id: randomUUID(), state_version: task.state_version, text: 'Saved guidance', kind: 'guidance' };
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload: message })).statusCode, 200);
+  store.beginDeletion(project.id, task.id, store.rawTask(project.id, task.id).state_version);
+  const stopping = store.rawTask(project.id, task.id);
+  const history = await app.inject({ url, headers });
+  assert.equal(history.statusCode, 200);
+  assert.equal(history.json()[0].text, message.text);
+  assert.equal(history.json()[0].status, 'revoked');
+  assert.equal((await app.inject({ url: url.replace(project.id, randomUUID()), headers })).statusCode, 404);
+  assert.equal((await app.inject({ url, headers: { ...headers, cookie: '' } })).statusCode, 401);
+  assert.equal((await app.inject({ method: 'POST', url, headers, payload: { ...message, request_id: randomUUID(), state_version: stopping.state_version } })).statusCode, 409);
+  assert.deepEqual(store.rawTask(project.id, task.id), stopping, 'history reads and rejected writes preserve Stop state');
+  store.finishDeletion(task.id, undefined, true);
+  store.releaseStoppedTask(project.id, task.id);
+  assert.equal(store.rawTask(project.id, task.id).stage, 'backlog');
+  const stopped = await app.inject({ url, headers });
+  assert.equal(stopped.statusCode, 200);
+  assert.deepEqual(stopped.json(), history.json());
+});
+
 test('delete API checks ownership/version before side effects; concurrent requests replay once and preserve files/history', async t => {
   const { app, store, project, directory, headers } = await apiFixture(t);
   const task = store.createTask(project.id, 'Keep all files', 1);

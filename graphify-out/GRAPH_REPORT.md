@@ -1,16 +1,16 @@
 # Graph Report - ae574043-a275-471b-8763-14732a2f66d0  (2026-10-15)
 
 ## Corpus Check
-- 99 files · ~133,807 words
+- 99 files · ~133,959 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 664 nodes · 2238 edges · 32 communities (28 shown, 4 thin omitted)
+- 664 nodes · 2237 edges · 32 communities (28 shown, 4 thin omitted)
 - Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 45 edges (avg confidence: 0.76)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `8b7af15e`
+- Built from commit: `3f4b962e`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -47,7 +47,7 @@
 
 ## God Nodes (most connected - your core abstractions)
 1. `Store` - 94 edges
-2. `createApp()` - 85 edges
+2. `createApp()` - 84 edges
 3. `AgentRun` - 56 edges
 4. `SpecController` - 48 edges
 5. `ProcessScope` - 23 edges
@@ -187,9 +187,9 @@ Nodes (12): ModelPicker(), ReasoningPicker(), AgentOutput(), RunProgress(), allR
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `createApp()` connect `Application and Spec Lifecycle` to `Review Planning and Shared Types`, `GitHub Issue Synchronization`, `Codex Execution and Failures`, `deletion.test.ts`, `Application Setup and Validation`, `Process Shutdown and Titles`, `Agent Output and Validation`, `Artifacts and Conversation Storage`, `Build Commits and Source Hashing`, `Snapshot`, `GitHub Smoke Checks`, `Agent Output Progress`?**
-  _High betweenness centrality (0.077) - this node is a cross-community bridge._
+  _High betweenness centrality (0.076) - this node is a cross-community bridge._
 - **Why does `Store` connect `Application and Spec Lifecycle` to `Review Planning and Shared Types`, `GitHub Issue Synchronization`, `Codex Execution and Failures`, `Dependency Validation and Schemas`, `deletion.test.ts`, `Git Operations and Publication`, `Application Setup and Validation`, `Process Shutdown and Titles`, `Agent Output and Validation`, `Artifacts and Conversation Storage`, `Snapshot`, `reviewPlan.ts`?**
-  _High betweenness centrality (0.073) - this node is a cross-community bridge._
+  _High betweenness centrality (0.074) - this node is a cross-community bridge._
 - **Why does `AgentRun` connect `Application and Spec Lifecycle` to `Review Planning and Shared Types`, `Codex Execution and Failures`, `Dependency Validation and Schemas`, `Client API and Task Controls`, `Scheduling and Process Logging`, `deletion.test.ts`, `Git Operations and Publication`, `Application Setup and Validation`, `Artifacts and Conversation Storage`, `reviewPlan.ts`, `Agent Output Progress`?**
   _High betweenness centrality (0.056) - this node is a cross-community bridge._
 - **Are the 3 inferred relationships involving `createApp()` (e.g. with `.run()` and `.events()`) actually correct?**
@@ -197,6 +197,6 @@ _Questions this graph is uniquely positioned to answer:_
 - **What connects `name`, `version`, `private` to the rest of the system?**
   _115 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Application and Spec Lifecycle` be split into smaller, more focused modules?**
-  _Cohesion score 0.07541059449456396 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.07529493407356003 - nodes in this community are weakly interconnected._
 - **Should `Documentation and Agent Workflows` be split into smaller, more focused modules?**
   _Cohesion score 0.07610993657505286 - nodes in this community are weakly interconnected._

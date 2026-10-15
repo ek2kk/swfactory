@@ -258,7 +258,7 @@ export async function createApp(options: {
     return result;
   });
   app.get<{ Params: { projectId: string; taskId: string } }>('/api/projects/:projectId/tasks/:taskId/messages', { schema: { params: taskParams } }, async request => {
-    store.task(request.params.projectId, request.params.taskId);
+    store.rawTask(request.params.projectId, request.params.taskId);
     return controller.chat.messages(request.params.taskId);
   });
   app.get<{ Params: { projectId: string; taskId: string }; Querystring: { after: string } }>('/api/projects/:projectId/tasks/:taskId/events', {
