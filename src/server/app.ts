@@ -165,19 +165,43 @@ export async function createApp(options: {
     if (queued) controller.checkDependencies(queued.origin, queued.check);
     publish(); return result;
   });
-  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/reset-results', {
-    schema: { params: taskParams, body: object({ request_id: uuid, state_version: version }) },
+  app.get<{ Params: { projectId: string; taskId: string; role: AgentRun['role'] } }>('/api/projects/:projectId/tasks/:taskId/reset-results/:role', {
+    schema: { params: object({ projectId: uuid, taskId: uuid, role: { enum: allRoles } }) },
+  }, async request => {
+    const { projectId, taskId, role } = request.params;
+    store.rawTask(projectId, taskId);
+    const pending = store.resultsCleanup(taskId);
+    return pending?.plan ? { ...JSON.parse(pending.plan), state_version: store.rawTask(projectId, taskId).state_version } : store.resultsResetPlan(projectId, taskId, role);
+  });
+  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number; stage?: AgentRun['role'] } }>('/api/projects/:projectId/tasks/:taskId/reset-results', {
+    schema: { params: taskParams, body: { ...object({ request_id: uuid, state_version: version }),
+      properties: { request_id: uuid, state_version: version, stage: { enum: allRoles } } } },
   }, async request => {
     const { projectId, taskId } = request.params;
-    const { request_id, state_version } = request.body;
+    const { request_id, state_version, stage } = request.body;
     store.rawTask(projectId, taskId);
-    const result = store.mutate(request_id, JSON.stringify(['task.reset-results', projectId, taskId, state_version]), () => {
+    const result = store.mutate(request_id, JSON.stringify(['task.reset-results', projectId, taskId, state_version, ...(stage ? [stage] : [])]), () => {
       controller.assertResultsResetIdle(taskId);
-      return store.beginResultsReset(projectId, taskId, state_version, request_id);
+      return store.beginResultsReset(projectId, taskId, state_version, request_id, stage);
     }) as { reset_id: string };
     controller.completeResultsReset(taskId, result.reset_id);
     publish();
     return result;
+  });
+  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/restart-results', {
+    schema: { params: taskParams, body: object({ request_id: uuid, state_version: version }) },
+  }, async request => {
+    const { projectId, taskId } = request.params;
+    const { request_id, state_version } = request.body;
+    const fingerprint = JSON.stringify(['task.restart-results', projectId, taskId, state_version]);
+    const prior = store.replay(request_id, fingerprint);
+    if (prior !== undefined) return prior;
+    if (controller.error || titles.error || controller.chat.error) throw new Problem(503, controller.error ?? titles.error ?? controller.chat.error!);
+    const run = store.mutate(request_id, fingerprint, () => {
+      controller.assertResultsResetIdle(taskId);
+      return store.queueResultsRestart(projectId, taskId, state_version, directory);
+    }) as AgentRun;
+    controller.enqueue(run, request.log); publish(); return run;
   });
   const actionBody = object({ request_id: uuid, state_version: version, description });
   app.post<{ Params: { projectId: string }; Body: Action }>('/api/projects/:projectId/tasks', { schema: { params: projectParams, body: actionBody } }, async request => {

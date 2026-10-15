@@ -255,8 +255,9 @@ test('asynchronous Review verification blocks reset until its Git callbacks fini
   await controller.close();
 });
 
-test('two SSE clients receive reset event plus an idle card, empty stages and cleared human requests', async t => {
-  const f = await fixture(t); const { task } = seed(f.store, f.project.id, f.directory);
+for (const resetStage of [undefined, 'review-code'] as const) test(`two SSE clients receive ${resetStage ?? 'full'} reset with matching stages and human requests`, async t => {
+  const f = await fixture(t); const { task } = resetStage ? stageSeed(f) : seed(f.store, f.project.id, f.directory);
+  if (resetStage) f.store.db.prepare("UPDATE tasks SET publication_status = 'confirmed' WHERE id = ?").run(task.id);
   await f.app.listen({ host: '127.0.0.1', port: 0 });
   const address = f.app.server.address(); assert.ok(address && typeof address !== 'string');
   function subscribe() {
@@ -274,8 +275,13 @@ test('two SSE clients receive reset event plus an idle card, empty stages and cl
             const snapshot: Snapshot = JSON.parse(data); connected();
             if (seen) {
               const saved = snapshot.tasks.find(t => t.id === task.id)!;
-              assert.equal(saved.stage, 'backlog'); assert.equal(saved.run_state, 'idle'); assert.equal(saved.reset_pending, 0);
-              assert.deepEqual(snapshot.runs, []); assert.deepEqual(snapshot.human_requests, []);
+              assert.equal(saved.stage, resetStage ? 'review' : 'backlog'); assert.equal(saved.run_state, 'idle'); assert.equal(saved.reset_pending, 0);
+              if (resetStage) {
+                assert.equal(snapshot.runs.length, 4);
+                assert.ok(!snapshot.runs.some(r => ['review-code', 'approve'].includes(r.role)));
+                assert.ok(snapshot.runs.some(r => r.role === 'review-security' && r.outcome === 'PASS'));
+                assert.ok(!snapshot.human_requests.some(r => r.role === 'approve'));
+              } else { assert.deepEqual(snapshot.runs, []); assert.deepEqual(snapshot.human_requests, []); }
               request.destroy(); resolve();
             }
           }
@@ -287,7 +293,7 @@ test('two SSE clients receive reset event plus an idle card, empty stages and cl
     return { ready, reset };
   }
   const a = subscribe(), b = subscribe(); await Promise.all([a.ready, b.ready]);
-  assert.equal((await f.post(task.id, 'reset-results', { request_id: randomUUID(), state_version: task.state_version })).statusCode, 200);
+  assert.equal((await f.post(task.id, 'reset-results', { request_id: randomUUID(), state_version: task.state_version, ...(resetStage ? { stage: resetStage } : {}) })).statusCode, 200);
   await Promise.all([a.reset, b.reset]);
 });
 
@@ -327,4 +333,140 @@ test('explicit new Spec fetches current target into a new worktree with no old f
   assert.equal(saved.status, 'completed', saved.error ?? ''); assert.equal(saved.base_sha, newHead); assert.equal(executed, 1);
   assert.equal(git('rev-parse', old.spec.branch), oldHead); assert.equal(git('rev-parse', 'HEAD'), newHead);
   assert.equal(readFileSync(join(old.spec.worktree, 'README.md'), 'utf8'), 'initial'); assert.equal(store.humanRequests().length, 1);
+});
+
+function stageSeed(f: Awaited<ReturnType<typeof fixture>>) {
+  const seeded = seed(f.store, f.project.id, f.directory);
+  f.store.db.prepare(`UPDATE runs SET repair_round_id = NULL, repair_attempt = 0, diagnostic = '{}',
+    base_sha = 'base', head_sha = 'head', source_hash = 'source', stale = 0 WHERE task_id = ?`).run(seeded.task.id);
+  f.store.db.prepare("UPDATE runs SET outcome = 'READY', spec_run_id = NULL, round_id = NULL WHERE id = ?").run(seeded.spec.id);
+  f.store.db.prepare('UPDATE runs SET round_id = NULL WHERE id = ?').run(seeded.ids[1]);
+  f.store.db.prepare("UPDATE tasks SET stage = 'approve', run_state = 'completed' WHERE id = ?").run(seeded.task.id);
+  f.store.db.prepare('UPDATE review_plans SET plan = ? WHERE build_id = ?').run(JSON.stringify({ policy_version: 2,
+    build_id: seeded.ids[1], head_sha: 'head', source_hash: 'source', revision: seeded.task.revision, diff_base: 'base', diff: 'change', requirements: 'requirements',
+    checks: ['review-code', 'review-security', 'review-ui-ux'].map(role => ({ role, required: true, reason: 'Required' })) }), seeded.ids[1]);
+  return { ...seeded, task: f.store.task(f.project.id, seeded.task.id) };
+}
+
+for (const [role, removedIndexes, next] of [
+  ['spec', [0, 1, 2, 3, 4, 5], 'spec'], ['build', [1, 2, 3, 4, 5], 'build'],
+  ['review-code', [2, 5], 'review-code'], ['review-security', [3, 5], 'review-security'],
+  ['review-ui-ux', [4, 5], 'review-ui-ux'], ['approve', [5], 'approve'],
+] as const) test(`stage reset ${role}: exact cascade, independent results, restart, files and durable state`, async t => {
+  const f = await fixture(t), { task, ids } = stageSeed(f);
+  f.store.pauseExecution(null);
+  const pause = f.store.executionPause(), revisions = f.store.revisions(f.project.id, task.id);
+  const preview = await f.app.inject({ url: `/api/projects/${f.project.id}/tasks/${task.id}/reset-results/${role}`, headers: f.headers });
+  assert.equal(preview.statusCode, 200, preview.body);
+  assert.deepEqual(preview.json().runs.map((r: AgentRun) => r.id), removedIndexes.map(i => ids[i]));
+  assert.equal(preview.json().restart.role, next);
+  const payload = { request_id: randomUUID(), state_version: task.state_version, stage: role };
+  assert.equal((await f.post(task.id, 'reset-results', payload)).statusCode, 200);
+  const saved = f.store.task(f.project.id, task.id);
+  assert.equal(saved.run_state, 'idle'); assert.equal(saved.results_restart?.role, next);
+  assert.equal(saved.description, task.description); assert.equal(saved.title, task.title); assert.equal(saved.issue_url, task.issue_url);
+  assert.deepEqual(f.store.revisions(f.project.id, task.id), revisions); assert.deepEqual(f.store.executionPause(), pause);
+  for (let i = 0; i < ids.length; i++) assert.equal(existsSync(join(f.directory, 'artifacts', ids[i])), !removedIndexes.some(index => index === i));
+  const kept = f.store.runs();
+  for (const run of kept) for (const ref of [run.parent_run_id, run.spec_run_id, run.round_id, run.repair_round_id]) if (ref) assert.ok(kept.some(r => r.id === ref), ref);
+  const keptBuild = kept.find(r => r.role === 'build');
+  if (keptBuild) assert.equal(f.store.reviewPasses({ ...keptBuild, round_id: ids[1] }), role === 'approve');
+  assert.equal(f.commands(), 0, 'reset makes no Git calls and does not enqueue agents');
+  await f.restart(); assert.deepEqual(f.store.task(f.project.id, task.id), saved);
+  const restarted = await f.post(task.id, 'restart-results', { request_id: randomUUID(), state_version: saved.state_version });
+  assert.equal(restarted.statusCode, 200, restarted.body);
+  const fresh = f.store.readRun(f.project.id, task.id, restarted.json().id);
+  assert.equal(fresh.role, next); assert.ok(!ids.includes(fresh.id)); assert.deepEqual(fresh.diagnostic, {});
+  assert.equal(fresh.description_revision, task.revision); assert.equal(fresh.repair_attempt, 0);
+  if (next === 'build') { assert.notEqual(fresh.worktree, kept[0].worktree); assert.equal(fresh.base_sha, null); assert.equal(fresh.parent_run_id, null); assert.equal(fresh.spec_run_id, ids[0]); }
+  const beforeReplay = f.store.snapshot();
+  assert.equal((await f.post(task.id, 'reset-results', payload)).statusCode, 200);
+  assert.deepEqual(f.store.snapshot(), beforeReplay);
+});
+
+test('reset follows review inputs into repair Build and all later rounds, preserving the predecessor Build', async t => {
+  const f = await fixture(t), { task, ids } = stageSeed(f);
+  const build2 = randomUUID(), review2 = randomUUID();
+  f.store.db.prepare(`INSERT INTO runs (id, task_id, project_id, description_revision, config, project_version, status, branch, worktree,
+    base_sha, head_sha, source_hash, parent_run_id, role, spec_run_id, repair_round_id, repair_attempt, outcome)
+    SELECT ?, task_id, project_id, description_revision, config, project_version, 'completed', branch, worktree,
+    base_sha, 'head2', 'source2', ?, 'build', spec_run_id, ?, 1, 'READY' FROM runs WHERE id = ?`).run(build2, ids[3], ids[1], ids[1]);
+  f.store.db.prepare(`INSERT INTO runs (id, task_id, project_id, description_revision, config, project_version, status, branch, worktree,
+    base_sha, head_sha, source_hash, parent_run_id, role, spec_run_id, round_id, repair_round_id, outcome)
+    SELECT ?, task_id, project_id, description_revision, config, project_version, 'completed', branch, worktree,
+    base_sha, head_sha, source_hash, id, 'review-code', spec_run_id, id, repair_round_id, 'PASS' FROM runs WHERE id = ?`).run(review2, build2);
+  const plan = f.store.resultsResetPlan(f.project.id, task.id, 'review-security');
+  assert.deepEqual(new Set(plan.runs.map(r => r.id)), new Set([ids[3], ids[5], build2, review2]));
+  assert.equal(plan.restart.build_id, ids[1]); assert.equal(plan.restart.role, 'review-security');
+  assert.equal((await f.post(task.id, 'reset-results', { request_id: randomUUID(), state_version: task.state_version, stage: 'review-security' })).statusCode, 200);
+  assert.deepEqual(f.store.runs().map(r => r.id), [ids[0], ids[1], ids[2], ids[4]]);
+});
+
+for (const mismatch of ['revision', 'spec-project', 'build-project', 'build-stale', 'head', 'source'] as const) test(`reset rejects incompatible prerequisites: ${mismatch}`, async t => {
+  const f = await fixture(t), { task, ids } = stageSeed(f);
+  if (mismatch === 'revision') f.store.db.prepare('UPDATE tasks SET revision = revision + 1 WHERE id = ?').run(task.id);
+  if (mismatch === 'spec-project') f.store.db.prepare('UPDATE runs SET project_version = 0 WHERE id = ?').run(ids[0]);
+  if (mismatch === 'build-project') f.store.db.prepare('UPDATE runs SET project_version = 0 WHERE id = ?').run(ids[1]);
+  if (mismatch === 'build-stale') f.store.db.prepare('UPDATE runs SET stale = 1 WHERE id = ?').run(ids[1]);
+  if (mismatch === 'head' || mismatch === 'source') f.store.db.prepare(`UPDATE runs SET ${mismatch === 'head' ? 'head_sha' : 'source_hash'} = 'mismatch' WHERE id = ?`).run(ids[2]);
+  const plan = f.store.resultsResetPlan(f.project.id, task.id, 'approve');
+  assert.equal(plan.restart.role, ['revision', 'spec-project'].includes(mismatch) ? 'spec' : ['head', 'source'].includes(mismatch) ? 'review-code' : 'build');
+  if (plan.restart.role === 'spec') assert.match(plan.restart.reason, /Сначала требуется новая Spec/);
+});
+
+test('deleted PASS cannot reappear through reuse, output caches, feedback or retained parent references', async t => {
+  const f = await fixture(t), { task, ids } = stageSeed(f);
+  const build = f.store.readRun(f.project.id, task.id, ids[1]), plan = f.store.reviewPlan(build.id)!;
+  plan.checks[0].reuse_run_id = ids[2];
+  f.store.db.prepare('UPDATE review_plans SET plan = ? WHERE build_id = ?').run(JSON.stringify(plan), build.id);
+  f.store.db.prepare('UPDATE runs SET diagnostic = ? WHERE id = ?').run(JSON.stringify({ session_id: 'deleted-review-session' }), ids[2]);
+  f.store.db.prepare('INSERT INTO run_output VALUES (?, ?, ?, 1)').run(ids[2], 'Deleted PASS', new Date().toISOString());
+  f.store.db.prepare(`INSERT INTO chat_messages (id, task_id, revision, run_id, session_id, kind, text, status)
+    VALUES (?, ?, ?, ?, 'deleted-review-session', 'guidance', 'Deleted feedback', 'delivered')`).run(randomUUID(), task.id, task.revision, ids[2]);
+  assert.equal((await f.post(task.id, 'reset-results', { request_id: randomUUID(), state_version: task.state_version, stage: 'review-code' })).statusCode, 200);
+  assert.equal(f.store.reviewPlan(build.id)!.checks[0].reuse_run_id, undefined);
+  assert.equal(f.store.reviewPlan(build.id)!.checks[0].required, true);
+  assert.equal(f.store.output(ids[2]), undefined);
+  assert.equal(f.store.reviewPasses({ ...build, round_id: build.id }), false);
+  assert.doesNotMatch(JSON.stringify(f.store.snapshot()), /deleted-review-session/);
+  assert.doesNotMatch(JSON.stringify(new Chat(f.store, () => {}).messages(task.id)), /Deleted feedback/);
+});
+
+for (const status of ['pending', 'unknown'] as const) test(`partial reset cannot clear ${status} publication`, async t => {
+  const f = await fixture(t), { task } = stageSeed(f);
+  f.store.db.prepare('UPDATE tasks SET publication_status = ? WHERE id = ?').run(status, task.id);
+  const before = f.store.snapshot();
+  assert.equal((await f.post(task.id, 'reset-results', { request_id: randomUUID(), state_version: task.state_version, stage: 'approve' })).statusCode, 409);
+  assert.deepEqual(f.store.snapshot(), before);
+});
+
+for (const role of ['review-ui', 'review-ux', 'review-ui-ux'] as const) test(`legacy UI/UX compatibility during reset ${role}`, async t => {
+  const f = await fixture(t), { task, ids } = stageSeed(f);
+  const config = f.store.settings(f.project.id); delete config.models['review-ui-ux']; config.models['review-ui'] = 'legacy'; config.models['review-ux'] = 'legacy';
+  f.store.db.prepare('UPDATE runs SET config = ? WHERE task_id = ?').run(JSON.stringify(config), task.id);
+  f.store.db.prepare("UPDATE runs SET role = 'review-ui' WHERE id = ?").run(ids[4]);
+  const ux = randomUUID();
+  f.store.db.prepare(`INSERT INTO runs (id, task_id, project_id, description_revision, config, project_version, status, branch, worktree,
+    base_sha, head_sha, source_hash, parent_run_id, role, spec_run_id, round_id, outcome)
+    SELECT ?, task_id, project_id, description_revision, config, project_version, status, branch, worktree,
+    base_sha, head_sha, source_hash, id, 'review-ux', spec_run_id, round_id, outcome FROM runs WHERE id = ?`).run(ux, ids[4]);
+  const plan = f.store.resultsResetPlan(f.project.id, task.id, role);
+  assert.deepEqual(new Set(plan.runs.map(r => r.id)), new Set([ids[5], ...(role !== 'review-ux' ? [ids[4]] : []), ...(role !== 'review-ui' ? [ux] : [])]));
+  assert.equal((await f.post(task.id, 'reset-results', { request_id: randomUUID(), state_version: task.state_version, stage: role })).statusCode, 200);
+  for (const run of f.store.runs()) if (run.parent_run_id) assert.ok(f.store.hasRun({ id: run.parent_run_id, task_id: task.id }));
+});
+
+test('partial cleanup retry keeps the original cascade across restart and cannot expand to a different stage', async t => {
+  const f = await fixture(t), { task, ids } = stageSeed(f);
+  const root = join(f.directory, 'artifacts'), kept = join(f.directory, 'kept'); renameSync(root, kept); symlinkSync(kept, root);
+  const payload = { request_id: randomUUID(), state_version: task.state_version, stage: 'review-code' };
+  assert.equal((await f.post(task.id, 'reset-results', payload)).statusCode, 409);
+  assert.ok(f.store.resultsCleanup(task.id)); assert.ok(f.store.runs().some(r => r.id === ids[3]));
+  await f.restart(); unlinkSync(root); renameSync(kept, root);
+  const preview = await f.app.inject({ url: `/api/projects/${f.project.id}/tasks/${task.id}/reset-results/build`, headers: f.headers });
+  assert.equal(preview.json().role, 'review-code'); assert.equal(preview.json().state_version, f.store.rawTask(f.project.id, task.id).state_version);
+  assert.equal((await f.post(task.id, 'reset-results', { request_id: randomUUID(), state_version: preview.json().state_version, stage: 'build' })).statusCode, 200);
+  assert.ok(existsSync(join(root, ids[1]))); assert.ok(existsSync(join(root, ids[3]))); assert.ok(!existsSync(join(root, ids[2])));
+  assert.equal(f.store.task(f.project.id, task.id).results_restart?.role, 'review-code');
+  assert.equal((await f.post(task.id, 'reset-results', { ...payload, stage: 'build' })).statusCode, 409, 'request replay cannot change its selected stage');
 });
