@@ -502,8 +502,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "scripts_build_smoke",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "build-smoke.ts"
     },
     {
@@ -513,8 +513,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "scripts_build_smoke_root",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "root"
     },
     {
@@ -524,8 +524,8 @@
       "source_location": "L9",
       "_origin": "ast",
       "id": "scripts_build_smoke_git",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "git()"
     },
     {
@@ -535,8 +535,8 @@
       "source_location": "L12",
       "_origin": "ast",
       "id": "scripts_build_smoke_base",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "base"
     },
     {
@@ -546,8 +546,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "scripts_smoke_github",
-      "community": 22,
-      "community_name": "smoke-github.ts",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "smoke-github.ts"
     },
     {
@@ -557,8 +557,8 @@
       "source_location": "L12",
       "_origin": "ast",
       "id": "scripts_smoke_github_headers",
-      "community": 22,
-      "community_name": "smoke-github.ts",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "headers"
     },
     {
@@ -568,8 +568,8 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "scripts_smoke_github_post",
-      "community": 22,
-      "community_name": "smoke-github.ts",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "post()"
     },
     {
@@ -579,8 +579,8 @@
       "source_location": "L25",
       "_origin": "ast",
       "id": "scripts_smoke_github_settled",
-      "community": 22,
-      "community_name": "smoke-github.ts",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "settled()"
     },
     {
@@ -590,8 +590,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "scripts_smoke_steering",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "smoke-steering.ts"
     },
     {
@@ -601,8 +601,8 @@
       "source_location": "L9",
       "_origin": "ast",
       "id": "scripts_smoke_steering_root",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "root"
     },
     {
@@ -612,8 +612,8 @@
       "source_location": "L11",
       "_origin": "ast",
       "id": "scripts_smoke_steering_directory",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "directory"
     },
     {
@@ -623,8 +623,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "scripts_title_smoke",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "title-smoke.ts"
     },
     {
@@ -634,8 +634,8 @@
       "source_location": "L8",
       "_origin": "ast",
       "id": "scripts_title_smoke_repo",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "repo"
     },
     {
@@ -700,8 +700,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_client_chat",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "chat.tsx"
     },
     {
@@ -711,8 +711,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "src_client_chat_api",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "api"
     },
     {
@@ -722,8 +722,8 @@
       "source_location": "L8",
       "_origin": "ast",
       "id": "src_client_chat_delivery",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "delivery"
     },
     {
@@ -733,8 +733,8 @@
       "source_location": "L9",
       "_origin": "ast",
       "id": "src_client_chat_message",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "message()"
     },
     {
@@ -744,8 +744,8 @@
       "source_location": "L14",
       "_origin": "ast",
       "id": "src_client_chat_runconversation",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "runconversation()"
     },
     {
@@ -755,8 +755,8 @@
       "source_location": "L90",
       "_origin": "ast",
       "id": "src_client_chat_composer",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "composer()"
     },
     {
@@ -1096,8 +1096,8 @@
       "source_location": "L53",
       "_origin": "ast",
       "id": "src_client_stagehistory_time",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "time()"
     },
     {
@@ -1118,8 +1118,8 @@
       "source_location": "L65",
       "_origin": "ast",
       "id": "src_client_stagehistory_stagetimeline",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "stagetimeline()"
     },
     {
@@ -1415,8 +1415,8 @@
       "source_location": "L27",
       "_origin": "ast",
       "id": "src_server_app_object",
-      "community": 0,
-      "community_name": "Application and Spec Lifecycle",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "object()"
     },
     {
@@ -1426,8 +1426,8 @@
       "source_location": "L30",
       "_origin": "ast",
       "id": "src_server_app_equal",
-      "community": 0,
-      "community_name": "Application and Spec Lifecycle",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "equal()"
     },
     {
@@ -1459,8 +1459,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_artifacts",
-      "community": 16,
-      "community_name": "artifacts.ts",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "artifacts.ts"
     },
     {
@@ -1470,8 +1470,8 @@
       "source_location": "L5",
       "_origin": "ast",
       "id": "src_server_artifacts_removeresultartifacts",
-      "community": 16,
-      "community_name": "artifacts.ts",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "removeresultartifacts()"
     },
     {
@@ -1481,8 +1481,8 @@
       "source_location": "L17",
       "_origin": "ast",
       "id": "src_server_artifacts_artifactdirectory",
-      "community": 16,
-      "community_name": "artifacts.ts",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "artifactdirectory()"
     },
     {
@@ -1492,8 +1492,8 @@
       "source_location": "L25",
       "_origin": "ast",
       "id": "src_server_artifacts_saveartifact",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "saveartifact()"
     },
     {
@@ -1514,8 +1514,8 @@
       "source_location": "L43",
       "_origin": "ast",
       "id": "src_server_artifacts_readlog",
-      "community": 16,
-      "community_name": "artifacts.ts",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "readlog()"
     },
     {
@@ -1525,8 +1525,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_build",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "build.ts"
     },
     {
@@ -1536,8 +1536,8 @@
       "source_location": "L8",
       "_origin": "ast",
       "id": "src_server_build_paths",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "paths()"
     },
     {
@@ -1547,8 +1547,8 @@
       "source_location": "L9",
       "_origin": "ast",
       "id": "src_server_build_blocked",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "blocked()"
     },
     {
@@ -1558,8 +1558,8 @@
       "source_location": "L10",
       "_origin": "ast",
       "id": "src_server_build_safepath",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "safepath()"
     },
     {
@@ -1569,8 +1569,8 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "src_server_build_filecontent",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "filecontent()"
     },
     {
@@ -1580,8 +1580,8 @@
       "source_location": "L39",
       "_origin": "ast",
       "id": "src_server_build_sourcehash",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "sourcehash()"
     },
     {
@@ -1591,8 +1591,8 @@
       "source_location": "L60",
       "_origin": "ast",
       "id": "src_server_build_commitbuild",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "commitbuild()"
     },
     {
@@ -1602,8 +1602,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_chat",
-      "community": 15,
-      "community_name": "Problem",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "chat.ts"
     },
     {
@@ -1723,8 +1723,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_codex",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "codex.ts"
     },
     {
@@ -1734,8 +1734,8 @@
       "source_location": "L14",
       "_origin": "ast",
       "id": "src_server_codex_list",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "list"
     },
     {
@@ -1745,8 +1745,8 @@
       "source_location": "L15",
       "_origin": "ast",
       "id": "src_server_codex_specschema",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "specschema"
     },
     {
@@ -1756,8 +1756,8 @@
       "source_location": "L25",
       "_origin": "ast",
       "id": "src_server_codex_nonempty",
-      "community": 29,
-      "community_name": "Agent Output Progress",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "nonempty()"
     },
     {
@@ -1767,8 +1767,8 @@
       "source_location": "L26",
       "_origin": "ast",
       "id": "src_server_codex_validquestions",
-      "community": 29,
-      "community_name": "Agent Output Progress",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "validquestions()"
     },
     {
@@ -1778,8 +1778,8 @@
       "source_location": "L32",
       "_origin": "ast",
       "id": "src_server_codex_validatespec",
-      "community": 29,
-      "community_name": "Agent Output Progress",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "validatespec()"
     },
     {
@@ -1800,8 +1800,8 @@
       "source_location": "L49",
       "_origin": "ast",
       "id": "src_server_codex_executespec",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "executespec"
     },
     {
@@ -1811,8 +1811,8 @@
       "source_location": "L53",
       "_origin": "ast",
       "id": "src_server_codex_executebuild",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "executebuild"
     },
     {
@@ -1833,8 +1833,8 @@
       "source_location": "L130",
       "_origin": "ast",
       "id": "src_server_codex_buildschema",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "buildschema"
     },
     {
@@ -1844,8 +1844,8 @@
       "source_location": "L136",
       "_origin": "ast",
       "id": "src_server_codex_validatebuild",
-      "community": 29,
-      "community_name": "Agent Output Progress",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "validatebuild()"
     },
     {
@@ -1855,8 +1855,8 @@
       "source_location": "L151",
       "_origin": "ast",
       "id": "src_server_codex_reviewschema",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "reviewschema"
     },
     {
@@ -1866,8 +1866,8 @@
       "source_location": "L157",
       "_origin": "ast",
       "id": "src_server_codex_reviewsectionschema",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "reviewsectionschema"
     },
     {
@@ -1877,8 +1877,8 @@
       "source_location": "L162",
       "_origin": "ast",
       "id": "src_server_codex_visualreviewschema",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "visualreviewschema"
     },
     {
@@ -1888,8 +1888,8 @@
       "source_location": "L166",
       "_origin": "ast",
       "id": "src_server_codex_validatereview",
-      "community": 29,
-      "community_name": "Agent Output Progress",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "validatereview()"
     },
     {
@@ -1899,8 +1899,8 @@
       "source_location": "L187",
       "_origin": "ast",
       "id": "src_server_codex_executereview",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "executereview"
     },
     {
@@ -1910,8 +1910,8 @@
       "source_location": "L191",
       "_origin": "ast",
       "id": "src_server_codex_approveschema",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "approveschema"
     },
     {
@@ -1921,8 +1921,8 @@
       "source_location": "L197",
       "_origin": "ast",
       "id": "src_server_codex_validateapprove",
-      "community": 29,
-      "community_name": "Agent Output Progress",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "validateapprove()"
     },
     {
@@ -1932,8 +1932,8 @@
       "source_location": "L208",
       "_origin": "ast",
       "id": "src_server_codex_executeapprove",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "executeapprove"
     },
     {
@@ -1943,8 +1943,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_dependencies",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "dependencies.ts"
     },
     {
@@ -1954,8 +1954,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "src_server_dependencies_text",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "text"
     },
     {
@@ -1965,8 +1965,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "src_server_dependencies_dependenciesschema",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "dependenciesschema"
     },
     {
@@ -1976,8 +1976,8 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "src_server_dependencies_githublink",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "githublink()"
     },
     {
@@ -1987,8 +1987,8 @@
       "source_location": "L22",
       "_origin": "ast",
       "id": "src_server_dependencies_validatedependencies",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "validatedependencies()"
     },
     {
@@ -1998,8 +1998,8 @@
       "source_location": "L38",
       "_origin": "ast",
       "id": "src_server_dependencies_diagnosedependencies",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "diagnosedependencies"
     },
     {
@@ -2009,8 +2009,8 @@
       "source_location": "L54",
       "_origin": "ast",
       "id": "src_server_dependencies_conditionresult",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "conditionresult"
     },
     {
@@ -2020,8 +2020,8 @@
       "source_location": "L55",
       "_origin": "ast",
       "id": "src_server_dependencies_verifycondition",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "verifycondition"
     },
     {
@@ -2031,8 +2031,8 @@
       "source_location": "L121",
       "_origin": "ast",
       "id": "src_server_dependencies_dependencyquestion",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "dependencyquestion()"
     },
     {
@@ -2042,8 +2042,8 @@
       "source_location": "L126",
       "_origin": "ast",
       "id": "src_server_dependencies_verifydependencies",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "verifydependencies()"
     },
     {
@@ -2053,8 +2053,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_diagnostics",
-      "community": 15,
-      "community_name": "Problem",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "diagnostics.ts"
     },
     {
@@ -2064,8 +2064,8 @@
       "source_location": "L4",
       "_origin": "ast",
       "id": "src_server_diagnostics_codexfailure",
-      "community": 15,
-      "community_name": "Problem",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "codexfailure"
     },
     {
@@ -2075,8 +2075,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "src_server_diagnostics_codexfailure_constructor",
-      "community": 15,
-      "community_name": "Problem",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": ".constructor()"
     },
     {
@@ -2141,8 +2141,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_folder_dialog",
-      "community": 24,
-      "community_name": "Task Focus and Dialog Tests",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "folder-dialog.ts"
     },
     {
@@ -2152,8 +2152,8 @@
       "source_location": "L5",
       "_origin": "ast",
       "id": "src_server_folder_dialog_exec",
-      "community": 24,
-      "community_name": "Task Focus and Dialog Tests",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "exec"
     },
     {
@@ -2163,8 +2163,8 @@
       "source_location": "L17",
       "_origin": "ast",
       "id": "src_server_folder_dialog_chooseprojectfolder",
-      "community": 24,
-      "community_name": "Task Focus and Dialog Tests",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "chooseprojectfolder()"
     },
     {
@@ -2174,8 +2174,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_git",
-      "community": 14,
-      "community_name": "app.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "git.ts"
     },
     {
@@ -2185,8 +2185,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "src_server_git_run",
-      "community": 14,
-      "community_name": "app.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "run"
     },
     {
@@ -2196,8 +2196,8 @@
       "source_location": "L28",
       "_origin": "ast",
       "id": "src_server_git_remoteidentity",
-      "community": 14,
-      "community_name": "app.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "remoteidentity()"
     },
     {
@@ -2207,8 +2207,8 @@
       "source_location": "L50",
       "_origin": "ast",
       "id": "src_server_git_inspectproject",
-      "community": 14,
-      "community_name": "app.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "inspectproject()"
     },
     {
@@ -2262,8 +2262,8 @@
       "source_location": "L9",
       "_origin": "ast",
       "id": "src_server_interactive_deliveryerror",
-      "community": 15,
-      "community_name": "Problem",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "deliveryerror"
     },
     {
@@ -2273,8 +2273,8 @@
       "source_location": "L10",
       "_origin": "ast",
       "id": "src_server_interactive_deliveryerror_constructor",
-      "community": 15,
-      "community_name": "Problem",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": ".constructor()"
     },
     {
@@ -2284,8 +2284,8 @@
       "source_location": "L12",
       "_origin": "ast",
       "id": "src_server_interactive_steer",
-      "community": 15,
-      "community_name": "Problem",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "steer"
     },
     {
@@ -2515,8 +2515,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_logging",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "server/logging.ts"
     },
     {
@@ -2526,8 +2526,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "src_server_logging_errorkind",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "errorkind()"
     },
     {
@@ -2537,8 +2537,8 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "src_server_logging_loggeroptions",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "loggeroptions()"
     },
     {
@@ -2548,8 +2548,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_main",
-      "community": 0,
-      "community_name": "Application and Spec Lifecycle",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "main.ts"
     },
     {
@@ -2559,8 +2559,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "src_server_main_port",
-      "community": 0,
-      "community_name": "Application and Spec Lifecycle",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "port"
     },
     {
@@ -2658,8 +2658,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_output",
-      "community": 29,
-      "community_name": "Agent Output Progress",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "output.ts"
     },
     {
@@ -2669,8 +2669,8 @@
       "source_location": "L3",
       "_origin": "ast",
       "id": "src_server_output_labels",
-      "community": 29,
-      "community_name": "Agent Output Progress",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "labels"
     },
     {
@@ -2680,8 +2680,8 @@
       "source_location": "L12",
       "_origin": "ast",
       "id": "src_server_output_formatoutput",
-      "community": 29,
-      "community_name": "Agent Output Progress",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "formatoutput()"
     },
     {
@@ -2691,8 +2691,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_processes",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "processes.ts"
     },
     {
@@ -2702,8 +2702,8 @@
       "source_location": "L8",
       "_origin": "ast",
       "id": "src_server_processes_processlog",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "processlog"
     },
     {
@@ -2724,8 +2724,8 @@
       "source_location": "L10",
       "_origin": "ast",
       "id": "src_server_processes_context",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "context"
     },
     {
@@ -2867,8 +2867,8 @@
       "source_location": "L115",
       "_origin": "ast",
       "id": "src_server_processes_checkexecution",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "checkexecution()"
     },
     {
@@ -2911,8 +2911,8 @@
       "source_location": "L148",
       "_origin": "ast",
       "id": "src_server_processes_exec",
-      "community": 14,
-      "community_name": "app.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "exec()"
     },
     {
@@ -2922,8 +2922,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_publication",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "publication.ts"
     },
     {
@@ -2933,8 +2933,8 @@
       "source_location": "L9",
       "_origin": "ast",
       "id": "src_server_publication_publishgithub",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "publishgithub()"
     },
     {
@@ -2944,8 +2944,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_reviewplan",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "reviewplan.ts"
     },
     {
@@ -2955,8 +2955,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "src_server_reviewplan_reviewimpact",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "reviewimpact()"
     },
     {
@@ -2966,8 +2966,8 @@
       "source_location": "L23",
       "_origin": "ast",
       "id": "src_server_reviewplan_makereviewplan",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "makereviewplan()"
     },
     {
@@ -2977,8 +2977,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_scheduler",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "scheduler.ts"
     },
     {
@@ -2988,8 +2988,8 @@
       "source_location": "L4",
       "_origin": "ast",
       "id": "src_server_scheduler_job",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "job"
     },
     {
@@ -2999,8 +2999,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler",
-      "community": 20,
-      "community_name": "Live Connection UI Tests",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "scheduler"
     },
     {
@@ -3010,8 +3010,8 @@
       "source_location": "L14",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler_constructor",
-      "community": 20,
-      "community_name": "Live Connection UI Tests",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": ".constructor()"
     },
     {
@@ -3021,8 +3021,8 @@
       "source_location": "L15",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler_haswork",
-      "community": 20,
-      "community_name": "Live Connection UI Tests",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": ".haswork()"
     },
     {
@@ -3032,8 +3032,8 @@
       "source_location": "L16",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler_cancel",
-      "community": 20,
-      "community_name": "Live Connection UI Tests",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": ".cancel()"
     },
     {
@@ -3043,8 +3043,8 @@
       "source_location": "L24",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler_wake",
-      "community": 20,
-      "community_name": "Live Connection UI Tests",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": ".wake()"
     },
     {
@@ -3054,8 +3054,8 @@
       "source_location": "L25",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler_close",
-      "community": 20,
-      "community_name": "Live Connection UI Tests",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": ".close()"
     },
     {
@@ -3065,8 +3065,8 @@
       "source_location": "L34",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler_enqueue",
-      "community": 20,
-      "community_name": "Live Connection UI Tests",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": ".enqueue()"
     },
     {
@@ -3076,8 +3076,8 @@
       "source_location": "L42",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler_load",
-      "community": 20,
-      "community_name": "Live Connection UI Tests",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": ".load()"
     },
     {
@@ -3087,8 +3087,8 @@
       "source_location": "L50",
       "_origin": "ast",
       "id": "src_server_scheduler_scheduler_drain",
-      "community": 20,
-      "community_name": "Live Connection UI Tests",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": ".drain()"
     },
     {
@@ -3098,8 +3098,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_spec",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "spec.ts"
     },
     {
@@ -3120,8 +3120,8 @@
       "source_location": "L36",
       "_origin": "ast",
       "id": "src_server_spec_speccontroller_constructor",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": ".constructor()"
     },
     {
@@ -3175,8 +3175,8 @@
       "source_location": "L74",
       "_origin": "ast",
       "id": "src_server_spec_speccontroller_blockedreason",
-      "community": 10,
-      "community_name": "AgentRun",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": ".blockedreason()"
     },
     {
@@ -3219,8 +3219,8 @@
       "source_location": "L124",
       "_origin": "ast",
       "id": "src_server_spec_speccontroller_deletetask",
-      "community": 0,
-      "community_name": "Application and Spec Lifecycle",
+      "community": 4,
+      "community_name": "GitHub Issue Synchronization",
       "norm_label": ".deletetask()"
     },
     {
@@ -3230,8 +3230,8 @@
       "source_location": "L152",
       "_origin": "ast",
       "id": "src_server_spec_speccontroller_canrun",
-      "community": 10,
-      "community_name": "AgentRun",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".canrun()"
     },
     {
@@ -3241,8 +3241,8 @@
       "source_location": "L162",
       "_origin": "ast",
       "id": "src_server_spec_speccontroller_resume",
-      "community": 10,
-      "community_name": "AgentRun",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".resume()"
     },
     {
@@ -3252,8 +3252,8 @@
       "source_location": "L163",
       "_origin": "ast",
       "id": "src_server_spec_speccontroller_assertdependencyidle",
-      "community": 10,
-      "community_name": "AgentRun",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".assertdependencyidle()"
     },
     {
@@ -3285,8 +3285,8 @@
       "source_location": "L260",
       "_origin": "ast",
       "id": "src_server_spec_speccontroller_caninterrupt",
-      "community": 10,
-      "community_name": "AgentRun",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".caninterrupt()"
     },
     {
@@ -3549,8 +3549,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_sse",
-      "community": 4,
-      "community_name": "GitHub Issue Synchronization",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "sse.ts"
     },
     {
@@ -3560,8 +3560,8 @@
       "source_location": "L5",
       "_origin": "ast",
       "id": "src_server_sse_subscribe",
-      "community": 4,
-      "community_name": "GitHub Issue Synchronization",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "subscribe()"
     },
     {
@@ -3615,8 +3615,8 @@
       "source_location": "L23",
       "_origin": "ast",
       "id": "src_server_store_problem",
-      "community": 15,
-      "community_name": "Problem",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "problem"
     },
     {
@@ -3626,8 +3626,8 @@
       "source_location": "L24",
       "_origin": "ast",
       "id": "src_server_store_problem_constructor",
-      "community": 15,
-      "community_name": "Problem",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": ".constructor()"
     },
     {
@@ -3978,8 +3978,8 @@
       "source_location": "L493",
       "_origin": "ast",
       "id": "src_server_store_store_executionpause",
-      "community": 10,
-      "community_name": "AgentRun",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".executionpause()"
     },
     {
@@ -3989,8 +3989,8 @@
       "source_location": "L496",
       "_origin": "ast",
       "id": "src_server_store_store_pauseexecution",
-      "community": 10,
-      "community_name": "AgentRun",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".pauseexecution()"
     },
     {
@@ -4088,8 +4088,8 @@
       "source_location": "L623",
       "_origin": "ast",
       "id": "src_server_store_store_output",
-      "community": 0,
-      "community_name": "Application and Spec Lifecycle",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": ".output()"
     },
     {
@@ -4363,8 +4363,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_title",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "title.ts"
     },
     {
@@ -4374,8 +4374,8 @@
       "source_location": "L12",
       "_origin": "ast",
       "id": "src_server_title_titletoolrestrictions",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "titletoolrestrictions"
     },
     {
@@ -4385,8 +4385,8 @@
       "source_location": "L17",
       "_origin": "ast",
       "id": "src_server_title_parsetitle",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "parsetitle()"
     },
     {
@@ -4396,8 +4396,8 @@
       "source_location": "L25",
       "_origin": "ast",
       "id": "src_server_title_generatetitle",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "generatetitle()"
     },
     {
@@ -4407,8 +4407,8 @@
       "source_location": "L33",
       "_origin": "ast",
       "id": "src_server_title_generatetext",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "generatetext()"
     },
     {
@@ -4462,8 +4462,8 @@
       "source_location": "L111",
       "_origin": "ast",
       "id": "src_server_title_titles_fail",
-      "community": 8,
-      "community_name": "Scheduling and Process Logging",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".fail()"
     },
     {
@@ -4473,8 +4473,8 @@
       "source_location": "L119",
       "_origin": "ast",
       "id": "src_server_title_titles_releaseforspec",
-      "community": 8,
-      "community_name": "Scheduling and Process Logging",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": ".releaseforspec()"
     },
     {
@@ -4506,8 +4506,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_server_transcript",
-      "community": 16,
-      "community_name": "artifacts.ts",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "transcript.ts"
     },
     {
@@ -4517,8 +4517,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "src_server_transcript_transcriptentry",
-      "community": 16,
-      "community_name": "artifacts.ts",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "transcriptentry()"
     },
     {
@@ -4528,8 +4528,8 @@
       "source_location": "L24",
       "_origin": "ast",
       "id": "src_server_transcript_readtranscript",
-      "community": 16,
-      "community_name": "artifacts.ts",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "readtranscript()"
     },
     {
@@ -4572,8 +4572,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "src_shared_projectinput",
-      "community": 14,
-      "community_name": "app.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "projectinput"
     },
     {
@@ -4627,8 +4627,8 @@
       "source_location": "L28",
       "_origin": "ast",
       "id": "src_shared_revision",
-      "community": 7,
-      "community_name": "Client API and Task Controls",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "revision"
     },
     {
@@ -4638,8 +4638,8 @@
       "source_location": "L29",
       "_origin": "ast",
       "id": "src_shared_savedevent",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "savedevent"
     },
     {
@@ -4649,8 +4649,8 @@
       "source_location": "L30",
       "_origin": "ast",
       "id": "src_shared_snapshot",
-      "community": 4,
-      "community_name": "GitHub Issue Synchronization",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "snapshot"
     },
     {
@@ -4660,8 +4660,8 @@
       "source_location": "L32",
       "_origin": "ast",
       "id": "src_shared_roles",
-      "community": 19,
-      "community_name": "Model Discovery and Catalogs",
+      "community": 9,
+      "community_name": "Chat and Stage History",
       "norm_label": "roles"
     },
     {
@@ -4715,8 +4715,8 @@
       "source_location": "L37",
       "_origin": "ast",
       "id": "src_shared_settings",
-      "community": 3,
-      "community_name": "Review Planning and Shared Types",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "settings"
     },
     {
@@ -4737,8 +4737,8 @@
       "source_location": "L42",
       "_origin": "ast",
       "id": "src_shared_buildresult",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "buildresult"
     },
     {
@@ -4759,8 +4759,8 @@
       "source_location": "L48",
       "_origin": "ast",
       "id": "src_shared_reviewsfor",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "reviewsfor()"
     },
     {
@@ -4792,8 +4792,8 @@
       "source_location": "L51",
       "_origin": "ast",
       "id": "src_shared_reviewresult",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "reviewresult"
     },
     {
@@ -4814,8 +4814,8 @@
       "source_location": "L60",
       "_origin": "ast",
       "id": "src_shared_failurekind",
-      "community": 15,
-      "community_name": "Problem",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "failurekind"
     },
     {
@@ -4825,8 +4825,8 @@
       "source_location": "L61",
       "_origin": "ast",
       "id": "src_shared_dependency",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "dependency"
     },
     {
@@ -4836,8 +4836,8 @@
       "source_location": "L66",
       "_origin": "ast",
       "id": "src_shared_dependencystate",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "dependencystate"
     },
     {
@@ -4847,8 +4847,8 @@
       "source_location": "L69",
       "_origin": "ast",
       "id": "src_shared_dependencycheck",
-      "community": 10,
-      "community_name": "AgentRun",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "dependencycheck"
     },
     {
@@ -4880,8 +4880,8 @@
       "source_location": "L88",
       "_origin": "ast",
       "id": "src_shared_rundiagnostic",
-      "community": 15,
-      "community_name": "Problem",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "rundiagnostic"
     },
     {
@@ -4902,8 +4902,8 @@
       "source_location": "L90",
       "_origin": "ast",
       "id": "src_shared_reviewplan",
-      "community": 0,
-      "community_name": "Application and Spec Lifecycle",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "reviewplan"
     },
     {
@@ -4913,8 +4913,8 @@
       "source_location": "L91",
       "_origin": "ast",
       "id": "src_shared_requiredreviews",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "requiredreviews()"
     },
     {
@@ -4935,8 +4935,8 @@
       "source_location": "L106",
       "_origin": "ast",
       "id": "src_shared_question",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "question"
     },
     {
@@ -4946,8 +4946,8 @@
       "source_location": "L107",
       "_origin": "ast",
       "id": "src_shared_humanrequest",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 5,
+      "community_name": "Codex Execution and Failures",
       "norm_label": "humanrequest"
     },
     {
@@ -4968,8 +4968,8 @@
       "source_location": "L118",
       "_origin": "ast",
       "id": "src_shared_transcriptentry",
-      "community": 9,
-      "community_name": "Chat and Stage History",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "transcriptentry"
     },
     {
@@ -5001,8 +5001,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_api_test",
-      "community": 16,
-      "community_name": "artifacts.ts",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "api.test.ts"
     },
     {
@@ -5012,8 +5012,8 @@
       "source_location": "L15",
       "_origin": "ast",
       "id": "test_api_test_fixture",
-      "community": 0,
-      "community_name": "Application and Spec Lifecycle",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "fixture()"
     },
     {
@@ -5023,8 +5023,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_build_test",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "build.test.ts"
     },
     {
@@ -5034,8 +5034,8 @@
       "source_location": "L14",
       "_origin": "ast",
       "id": "test_build_test_spec",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "spec"
     },
     {
@@ -5045,8 +5045,8 @@
       "source_location": "L15",
       "_origin": "ast",
       "id": "test_build_test_ready",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "ready"
     },
     {
@@ -5067,8 +5067,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_chat_test",
-      "community": 16,
-      "community_name": "artifacts.ts",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "chat.test.ts"
     },
     {
@@ -5078,8 +5078,8 @@
       "source_location": "L18",
       "_origin": "ast",
       "id": "test_chat_test_conversationpolling",
-      "community": 16,
-      "community_name": "artifacts.ts",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "conversationpolling()"
     },
     {
@@ -5100,8 +5100,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_codex_test",
-      "community": 15,
-      "community_name": "Problem",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "codex.test.ts"
     },
     {
@@ -5111,8 +5111,8 @@
       "source_location": "L8",
       "_origin": "ast",
       "id": "test_codex_test_ready",
-      "community": 15,
-      "community_name": "Problem",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "ready"
     },
     {
@@ -5122,8 +5122,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_deletion_test",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "deletion.test.ts"
     },
     {
@@ -5133,8 +5133,8 @@
       "source_location": "L20",
       "_origin": "ast",
       "id": "test_deletion_test_projectinput",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "projectinput"
     },
     {
@@ -5155,8 +5155,8 @@
       "source_location": "L29",
       "_origin": "ast",
       "id": "test_deletion_test_apifixture",
-      "community": 0,
-      "community_name": "Application and Spec Lifecycle",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "apifixture()"
     },
     {
@@ -5188,8 +5188,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_dependencies_test",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "dependencies.test.ts"
     },
     {
@@ -5199,8 +5199,8 @@
       "source_location": "L19",
       "_origin": "ast",
       "id": "test_dependencies_test_dependency",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "dependency"
     },
     {
@@ -5210,8 +5210,8 @@
       "source_location": "L20",
       "_origin": "ast",
       "id": "test_dependencies_test_blocked",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "blocked"
     },
     {
@@ -5221,8 +5221,8 @@
       "source_location": "L21",
       "_origin": "ast",
       "id": "test_dependencies_test_spec",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "spec"
     },
     {
@@ -5232,8 +5232,8 @@
       "source_location": "L22",
       "_origin": "ast",
       "id": "test_dependencies_test_signal",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "signal()"
     },
     {
@@ -5243,8 +5243,8 @@
       "source_location": "L24",
       "_origin": "ast",
       "id": "test_dependencies_test_repository",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "repository()"
     },
     {
@@ -5254,8 +5254,8 @@
       "source_location": "L40",
       "_origin": "ast",
       "id": "test_dependencies_test_github",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "github()"
     },
     {
@@ -5265,8 +5265,8 @@
       "source_location": "L225",
       "_origin": "ast",
       "id": "test_dependencies_test_application",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "application()"
     },
     {
@@ -5276,8 +5276,8 @@
       "source_location": "L262",
       "_origin": "ast",
       "id": "test_dependencies_test_until",
-      "community": 6,
-      "community_name": "Dependency Validation and Schemas",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "until()"
     },
     {
@@ -5287,8 +5287,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_diagnostics_test",
-      "community": 16,
-      "community_name": "artifacts.ts",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "diagnostics.test.ts"
     },
     {
@@ -5309,8 +5309,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_fast_test",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "fast.test.ts"
     },
     {
@@ -5320,8 +5320,8 @@
       "source_location": "L14",
       "_origin": "ast",
       "id": "test_fast_test_ready",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "ready"
     },
     {
@@ -5331,8 +5331,8 @@
       "source_location": "L15",
       "_origin": "ast",
       "id": "test_fast_test_model",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "model"
     },
     {
@@ -5342,8 +5342,8 @@
       "source_location": "L97",
       "_origin": "ast",
       "id": "test_fast_test_control",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "control()"
     },
     {
@@ -5353,8 +5353,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_folder_dialog_test",
-      "community": 24,
-      "community_name": "Task Focus and Dialog Tests",
+      "community": 14,
+      "community_name": "app.ts",
       "norm_label": "folder-dialog.test.ts"
     },
     {
@@ -5364,8 +5364,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_git_test",
-      "community": 14,
-      "community_name": "app.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "git.test.ts"
     },
     {
@@ -5375,8 +5375,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_helpers_logging",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "helpers/logging.ts"
     },
     {
@@ -5386,8 +5386,8 @@
       "source_location": "L5",
       "_origin": "ast",
       "id": "test_helpers_logging_capturelogs",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "capturelogs()"
     },
     {
@@ -5397,8 +5397,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_interactive_test",
-      "community": 15,
-      "community_name": "Problem",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "interactive.test.ts"
     },
     {
@@ -5408,8 +5408,8 @@
       "source_location": "L10",
       "_origin": "ast",
       "id": "test_interactive_test_ready",
-      "community": 15,
-      "community_name": "Problem",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "ready"
     },
     {
@@ -5661,8 +5661,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_logging_test",
-      "community": 12,
-      "community_name": "spec.ts",
+      "community": 8,
+      "community_name": "Scheduling and Process Logging",
       "norm_label": "logging.test.ts"
     },
     {
@@ -5749,8 +5749,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_output_test",
-      "community": 29,
-      "community_name": "Agent Output Progress",
+      "community": 19,
+      "community_name": "Model Discovery and Catalogs",
       "norm_label": "output.test.ts"
     },
     {
@@ -5771,8 +5771,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_projectdeletion_test",
-      "community": 4,
-      "community_name": "GitHub Issue Synchronization",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "projectdeletion.test.ts"
     },
     {
@@ -5782,8 +5782,8 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "test_projectdeletion_test_fixture",
-      "community": 4,
-      "community_name": "GitHub Issue Synchronization",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "fixture()"
     },
     {
@@ -5793,8 +5793,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_projects_test",
-      "community": 14,
-      "community_name": "app.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "projects.test.ts"
     },
     {
@@ -5870,8 +5870,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_review_test",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "review.test.ts"
     },
     {
@@ -5881,8 +5881,8 @@
       "source_location": "L16",
       "_origin": "ast",
       "id": "test_review_test_spec",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "spec"
     },
     {
@@ -5892,8 +5892,8 @@
       "source_location": "L17",
       "_origin": "ast",
       "id": "test_review_test_ready",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "ready"
     },
     {
@@ -5936,8 +5936,8 @@
       "source_location": "L52",
       "_origin": "ast",
       "id": "test_review_test_pass",
-      "community": 11,
-      "community_name": "codex.ts",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "pass"
     },
     {
@@ -5958,8 +5958,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_reviewplan_test",
-      "community": 5,
-      "community_name": "Codex Execution and Failures",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "reviewplan.test.ts"
     },
     {
@@ -6035,8 +6035,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "test_sse_test",
-      "community": 4,
-      "community_name": "GitHub Issue Synchronization",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "sse.test.ts"
     },
     {
@@ -6046,8 +6046,8 @@
       "source_location": "L8",
       "_origin": "ast",
       "id": "test_sse_test_response",
-      "community": 4,
-      "community_name": "GitHub Issue Synchronization",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "response"
     },
     {
@@ -6057,8 +6057,8 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "test_sse_test_response_write",
-      "community": 4,
-      "community_name": "GitHub Issue Synchronization",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": ".write()"
     },
     {
@@ -6068,8 +6068,8 @@
       "source_location": "L18",
       "_origin": "ast",
       "id": "test_sse_test_response_destroy",
-      "community": 4,
-      "community_name": "GitHub Issue Synchronization",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": ".destroy()"
     },
     {
@@ -6079,8 +6079,8 @@
       "source_location": "L20",
       "_origin": "ast",
       "id": "test_sse_test_fixture",
-      "community": 4,
-      "community_name": "GitHub Issue Synchronization",
+      "community": 0,
+      "community_name": "Application and Spec Lifecycle",
       "norm_label": "fixture()"
     },
     {
@@ -6090,8 +6090,8 @@
       "source_location": "L34",
       "_origin": "ast",
       "id": "test_sse_test_frames",
-      "community": 4,
-      "community_name": "GitHub Issue Synchronization",
+      "community": 3,
+      "community_name": "Review Planning and Shared Types",
       "norm_label": "frames()"
     },
     {
@@ -6447,10 +6447,54 @@
       "norm_label": "reset()"
     },
     {
+      "label": "useEffect()",
+      "file_type": "code",
+      "source_file": "test/windows.test.ts",
+      "source_location": "L239",
+      "_origin": "ast",
+      "id": "test_windows_test_useeffect",
+      "community": 21,
+      "community_name": "Window and Modal Tests",
+      "norm_label": "useeffect()"
+    },
+    {
+      "label": "focus()",
+      "file_type": "code",
+      "source_file": "test/windows.test.ts",
+      "source_location": "L244",
+      "_origin": "ast",
+      "id": "test_windows_test_focus",
+      "community": 21,
+      "community_name": "Window and Modal Tests",
+      "norm_label": "focus()"
+    },
+    {
+      "label": "close()",
+      "file_type": "code",
+      "source_file": "test/windows.test.ts",
+      "source_location": "L249",
+      "_origin": "ast",
+      "id": "test_windows_test_close",
+      "community": 21,
+      "community_name": "Window and Modal Tests",
+      "norm_label": "close()"
+    },
+    {
+      "label": "preventDefault()",
+      "file_type": "code",
+      "source_file": "test/windows.test.ts",
+      "source_location": "L253",
+      "_origin": "ast",
+      "id": "test_windows_test_preventdefault",
+      "community": 21,
+      "community_name": "Window and Modal Tests",
+      "norm_label": "preventdefault()"
+    },
+    {
       "label": "render()",
       "file_type": "code",
       "source_file": "test/windows.test.ts",
-      "source_location": "L250",
+      "source_location": "L281",
       "_origin": "ast",
       "id": "test_windows_test_render",
       "community": 21,
@@ -6461,7 +6505,7 @@
       "label": "applyTheme()",
       "file_type": "code",
       "source_file": "test/windows.test.ts",
-      "source_location": "L251",
+      "source_location": "L282",
       "_origin": "ast",
       "id": "test_windows_test_applytheme",
       "community": 21,
@@ -6472,7 +6516,7 @@
       "label": "onChange()",
       "file_type": "code",
       "source_file": "test/windows.test.ts",
-      "source_location": "L303",
+      "source_location": "L334",
       "_origin": "ast",
       "id": "test_windows_test_onchange",
       "community": 21,
@@ -31699,7 +31743,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "test/windows.test.ts",
-      "source_location": "L251",
+      "source_location": "L282",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_windows_test",
@@ -31721,11 +31765,33 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "test/windows.test.ts",
+      "source_location": "L249",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_windows_test",
+      "target": "test_windows_test_close",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "test/windows.test.ts",
       "source_location": "L54",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_windows_test",
       "target": "test_windows_test_elements",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "test/windows.test.ts",
+      "source_location": "L244",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_windows_test",
+      "target": "test_windows_test_focus",
       "confidence_score": 1.0
     },
     {
@@ -31765,11 +31831,22 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "test/windows.test.ts",
-      "source_location": "L303",
+      "source_location": "L334",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_windows_test",
       "target": "test_windows_test_onchange",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "test/windows.test.ts",
+      "source_location": "L253",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_windows_test",
+      "target": "test_windows_test_preventdefault",
       "confidence_score": 1.0
     },
     {
@@ -31787,7 +31864,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "test/windows.test.ts",
-      "source_location": "L250",
+      "source_location": "L281",
       "weight": 1.0,
       "_origin": "ast",
       "source": "test_windows_test",
@@ -31825,6 +31902,17 @@
       "_origin": "ast",
       "source": "test_windows_test",
       "target": "test_windows_test_submit",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "test/windows.test.ts",
+      "source_location": "L239",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "test_windows_test",
+      "target": "test_windows_test_useeffect",
       "confidence_score": 1.0
     },
     {
@@ -32933,5 +33021,5 @@
       "source_file": "docs/task-deletion.md"
     }
   ],
-  "built_at_commit": "22237e63ee2264e7e1bc61f9cc9fc6f66af6918b"
+  "built_at_commit": "f41ce2a492450f2bc85c24bf0fea3937188a0f6c"
 }

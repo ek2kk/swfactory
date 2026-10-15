@@ -233,6 +233,37 @@ test('toast expires at 5 seconds, pauses on hover/focus, and persistent notices 
   }
 });
 
+test('modal Tab wraps across visible enabled tab stops, including collapsed/expanded project details', () => {
+  const document = { activeElement: null as unknown };
+  const { Modal } = load('windows', {
+    react: { useRef: () => ({ current: null }), useId: () => 'dialog-title', useEffect() {} },
+    'react/jsx-runtime': jsx,
+  }, { document });
+  const control = (visible = true, disabled = false, tabIndex = 0) => ({
+    tabIndex, matches: () => disabled, getClientRects: () => [{}],
+    checkVisibility: () => visible, focus() { document.activeElement = this; },
+  });
+  const first = control(), summary = control(), projectButton = control(false);
+  const hidden = control(false), disabled = control(true, true), negativeTabIndex = control(true, false, -1);
+  const controls = [first, summary, projectButton, hidden, disabled, negativeTabIndex];
+  const dialog = Modal({ open: true, title: 'Модели и инструкции', close() {}, children: null });
+  const pressTab = (active: unknown, shiftKey: boolean) => {
+    document.activeElement = active;
+    let prevented = false;
+    dialog.props.onKeyDown({ key: 'Tab', shiftKey, currentTarget: { querySelectorAll: () => controls }, preventDefault() { prevented = true; } });
+    return prevented;
+  };
+  for (const expanded of [false, true]) {
+    projectButton.checkVisibility = () => expanded;
+    const last = expanded ? projectButton : summary;
+    assert.equal(pressTab(last, false), true);
+    assert.equal(document.activeElement, first);
+    assert.equal(pressTab(first, true), true);
+    assert.equal(document.activeElement, last);
+    assert.equal(pressTab(first, false), false, 'native Tab handles non-boundary controls');
+  }
+});
+
 
 test('settings drafts retain values on failure/conflict, guard duplicate sends and reset only the changed role', async t => {
   const runtime = hooks(); t.after(() => runtime.dispose());
