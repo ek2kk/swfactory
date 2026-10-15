@@ -6,6 +6,7 @@ export class Scheduler {
   private closed = false;
   private timer?: ReturnType<typeof setTimeout>;
   constructor(private available = () => true) {}
+  hasWork(taskId: string) { return this.active.has(taskId) || this.pending.some(job => job.taskId === taskId); }
   cancel(taskId: string) {
     this.pending = this.pending.filter(job => { if (job.taskId !== taskId) return true; job.resolve(); return false; });
   }

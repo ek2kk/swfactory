@@ -115,6 +115,20 @@ export async function createApp(options: {
     return catalogs.get(project.id, project.checkout);
   });
   const taskParams = object({ projectId: uuid, taskId: uuid });
+  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/reset-results', {
+    schema: { params: taskParams, body: object({ request_id: uuid, state_version: version }) },
+  }, async request => {
+    const { projectId, taskId } = request.params;
+    const { request_id, state_version } = request.body;
+    store.rawTask(projectId, taskId);
+    const result = store.mutate(request_id, JSON.stringify(['task.reset-results', projectId, taskId, state_version]), () => {
+      controller.assertResultsResetIdle(taskId);
+      return store.beginResultsReset(projectId, taskId, state_version, request_id);
+    }) as { reset_id: string };
+    controller.completeResultsReset(taskId, result.reset_id);
+    publish();
+    return result;
+  });
   const actionBody = object({ request_id: uuid, state_version: version, description });
   app.post<{ Params: { projectId: string }; Body: Action }>('/api/projects/:projectId/tasks', { schema: { params: projectParams, body: actionBody } }, async request => {
     const { request_id, description, state_version } = request.body;
@@ -141,7 +155,8 @@ export async function createApp(options: {
   app.get<{ Params: { projectId: string; taskId: string } }>('/api/projects/:projectId/tasks/:taskId/history', { schema: { params: taskParams } }, async request => {
     const { projectId, taskId } = request.params;
     store.rawTask(projectId, taskId);
-    return { revisions: store.revisions(projectId, taskId), messages: controller.chat.messages(taskId), runs: store.runs().filter(run => run.task_id === taskId) };
+    return { revisions: store.revisions(projectId, taskId), messages: controller.chat.messages(taskId), runs: store.runs().filter(run => run.task_id === taskId),
+      resets: store.db.prepare("SELECT * FROM events WHERE task_id = ? AND type = 'task.results-reset' ORDER BY id DESC").all(taskId) };
   });
   function deletionResult(projectId: string, taskId: string) {
     const task = store.rawTask(projectId, taskId);
@@ -166,7 +181,8 @@ export async function createApp(options: {
     if (prior && !prior.stopping) return prior;
     if (action === 'stop') {
       const task = store.rawTask(projectId, taskId);
-      if (!task.archived && !task.deletion_state) throw new Problem(409, 'Нет остановленного исполнения для сверки.');
+      if (!task.archived && !task.deletion_state && !task.execution_unverified && !task.stop_unverified
+        && !['queued','running'].includes(task.run_state) && !['pending','running'].includes(task.title_state)) throw new Problem(409, 'Нет исполнения для остановки или сверки.');
     }
     if (!prior) {
       store.mutate(request_id, fingerprint, () => {
@@ -177,7 +193,7 @@ export async function createApp(options: {
       publish();
     }
     let task = store.rawTask(projectId, taskId);
-    if (task.deletion_state === 'stopping') await controller.deleteTask(taskId);
+    if (task.deletion_state === 'stopping') await controller.deleteTask(taskId, action === 'stop');
     task = store.rawTask(projectId, taskId);
     const result = deletionResult(projectId, taskId);
     if (action === 'stop') store.releaseStoppedTask(projectId, taskId);
@@ -448,6 +464,10 @@ export async function createApp(options: {
     if (options.staticRoot) await app.register(staticFiles, { root: options.staticRoot, index: 'index.html', dotfiles: 'deny' });
     await app.ready();
   } catch (error) { await app.close(); throw error; }
+  for (const task of store.snapshot().tasks.filter(task => task.reset_pending)) {
+    try { controller.completeResultsReset(task.id, store.resultsCleanup(task.id)!.reset_id); }
+    catch { /* The durable cleanup remains blocked and can be retried from the card. */ }
+  }
   issues.start();
   return { app, store, token, issues };
 }

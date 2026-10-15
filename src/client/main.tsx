@@ -2,7 +2,7 @@ import { ModelPicker, ReasoningPicker } from './models.js';
 import { api } from './api.js';
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { stages, type Project, type Task, type Snapshot, type Revision, roles, allRoles, requiredReviews, type ReviewRole, type Settings, type AgentRun, type HumanRequest, type ChatMessage } from '../shared.js';
+import { resultsResetBlocker, stages, type Project, type Task, type Snapshot, type Revision, type SavedEvent, roles, allRoles, requiredReviews, type ReviewRole, type Settings, type AgentRun, type HumanRequest, type ChatMessage } from '../shared.js';
 import './style.css';
 import { Composer, Message, RunConversation } from './chat.js';
 import { AgentOutput, RunProgress } from './output.js';
@@ -18,6 +18,73 @@ const taskPath = (task: Task) => `/projects/${task.project_id}/tasks/${task.id}`
 
 function SourceIssue({ task }: { task: Task }) {
   return task.issue_url && <p className="meta"><a href={task.issue_url} target="_blank" rel="noreferrer">GitHub issue #{task.issue_number}</a></p>;
+}
+
+function TaskResultsReset({ task, refresh, notify }: { task: Task; refresh: () => Promise<void>; notify: (text: string) => void }) {
+  const [confirming, setConfirming] = useState(false);
+  const [version, setVersion] = useState(task.state_version);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const dialog = useRef<HTMLDialogElement>(null);
+  const cancelButton = useRef<HTMLButtonElement>(null);
+  const blocker = resultsResetBlocker(task);
+  useEffect(() => {
+    if (!confirming || !dialog.current) return;
+    const element = dialog.current;
+    element.showModal(); cancelButton.current?.focus();
+    return () => element.close();
+  }, [confirming]);
+  function close() { dialog.current?.close(); setConfirming(false); }
+  return <section className="results-reset" aria-label="Сброс результатов">
+    {!!(task.has_results || task.reset_pending) && <>
+      <button className="secondary" disabled={busy || !!blocker} aria-describedby={`reset-hint-${task.id}`} onClick={() => { setVersion(task.state_version); setConfirming(true); setError(''); }}>{task.reset_pending ? 'Повторить очистку результатов' : 'Сбросить все результаты'}</button>
+      <p id={`reset-hint-${task.id}`} className="hint">{blocker ?? (task.reset_pending ? 'Очистка не завершена. Новые действия заблокированы до её завершения.' : 'Требования и Git-результаты сохранятся. Новый запуск — отдельным действием.')}</p>
+    </>}
+    {!!task.archived && !task.has_results && <p className="hint">{blocker}</p>}
+    {task.reset_error && <p role="alert">{task.reset_error}</p>}
+    {confirming && <dialog ref={dialog} className="delete-confirmation" aria-labelledby={`reset-title-${task.id}`} onCancel={event => { event.preventDefault(); if (!busy) close(); }}>
+      <h4 id={`reset-title-${task.id}`}>Сбросить все результаты?</h4>
+      <p>Будут удалены результаты всех этапов: Spec, Build, Review (Code, Security, UI/UX) и Approve.</p>
+      <ul><li>Все runs, отчёты, логи и управляемые файлы результатов.</li><li>Решение Spec, планы Review и сохранённые PASS, циклы и счётчики доработок, решения Approve.</li><li>Конфигурации и sessions прежних runs, чат, вопросы и ответы человека.</li></ul>
+      <p>ID карточки, проект, название, исходный Markdown, revision и история требований, GitHub issue и настройки проекта сохранятся. Уже применённые из чата требования останутся в описании.</p>
+      <p>Основной checkout, Git worktrees, branches и опубликованные PR сохранятся. Подтверждённый PR останется в истории сбросов. Новый цикл может создать отдельный PR; remote операции при сбросе не выполняются.</p>
+      <p>Задача вернётся в Backlog / idle. Агент не запустится автоматически.</p>
+      {(!!blocker || version !== task.state_version) && <p role="status">{blocker ?? 'Карточка изменилась. Отмените подтверждение и откройте его снова.'}</p>}
+      <div className="actions"><button disabled={busy || !!blocker || version !== task.state_version} onClick={async () => {
+        setBusy(true); setError('');
+        try {
+          await api(`${taskPath(task)}/reset-results`, 'POST', { state_version: version });
+          close(); notify('Все результаты сброшены. Задача в Backlog; новый запуск — отдельным действием.');
+          await refresh();
+        } catch (error) { setError((error as Error).message); await refresh().catch(() => {}); }
+        finally { setBusy(false); }
+      }}>{busy ? 'Очищаем…' : task.reset_pending ? 'Повторить очистку' : 'Подтвердить сброс'}</button>
+        <button ref={cancelButton} className="secondary" disabled={busy} onClick={close}>Отмена</button></div>
+      {error && <p role="alert">{error}</p>}
+    </dialog>}
+    <ResetHistory task={task} />
+  </section>;
+}
+
+function ResetHistory({ task }: { task: Task }) {
+  const [open, setOpen] = useState(false);
+  const [resets, setResets] = useState<SavedEvent[] | null>(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    if (!open) return;
+    let disposed = false;
+    api<{ resets: SavedEvent[] }>(`${taskPath(task)}/history`).then(value => {
+      if (!disposed) { setResets(value.resets); setError(''); }
+    }).catch(error => { if (!disposed) setError(error.message); });
+    return () => { disposed = true; };
+  }, [open, task.id, task.state_version]);
+  return <details onToggle={event => { if (event.target === event.currentTarget) setOpen(event.currentTarget.open); }}><summary>История сбросов и прежние PR</summary>
+    {open && <>{error && <p role="alert">{error}</p>}{resets === null ? <p role="status">Загружаем…</p> : !resets.length ? <p>Сбросов ещё не было.</p> : resets.map(event => {
+      const reset = JSON.parse(event.payload) as { removed_runs: number; previous_pr: { number: number | null; url: string | null; host: string; repository: string } | null };
+      return <div key={event.id}><p>{new Date(event.created_at).toLocaleString('ru')} · Результаты сброшены · runs: {reset.removed_runs}</p>
+        {reset.previous_pr && <p>Внешний результат сохранён: {reset.previous_pr.url ? <a href={reset.previous_pr.url} target="_blank" rel="noreferrer">PR #{reset.previous_pr.number} · {reset.previous_pr.host}/{reset.previous_pr.repository}</a> : `PR #${reset.previous_pr.number} · ${reset.previous_pr.host}/${reset.previous_pr.repository}`}.</p>}</div>;
+    })}</>}
+  </details>;
 }
 
 function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () => Promise<void>; notify: (text: string) => void }) {
@@ -46,15 +113,15 @@ function TaskDisposition({ task, refresh, notify }: { task: Task; refresh: () =>
   const [version, setVersion] = useState(task.state_version);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const checkingStop = !(confirming && archiving) && !!(task.archived || task.deletion_state);
+  const checkingStop = !(confirming && archiving) && !!(task.archived || task.deletion_state || task.stop_unverified || task.execution_unverified || ['queued','running'].includes(task.run_state) || ['pending','running'].includes(task.title_state));
   return <section aria-label={checkingStop ? "Остановка исполнения" : "Архивирование задачи"}>
     {task.archive_source === 'github-filter' && <p role="status">{task.archived ? `Автоматический архив: ${task.archive_reason}` : 'Соответствие фильтру GitHub восстановлено. Исполнение автоматически не возобновляется.'}</p>}
     {task.deletion_state === 'stopping' && <p role="status">Останавливаем известные процессы. Подтверждение остановки всех процессов пока не получено.</p>}
     {task.deletion_error && <p role="alert">{task.deletion_error}</p>}
     {!!verification && <details><summary>Данные для ручной сверки процессов и публикации</summary><pre>{JSON.stringify(verification, null, 2)}</pre></details>}
     {task.deletion_state === 'deleted' && <p role="status">Остановка подтверждена. {task.archived ? 'Карточка остаётся в архиве.' : 'Проверьте остановку для разблокировки доступных действий; новый запуск требует отдельного действия.'}</p>}
-    {(!task.archived || task.deletion_state !== 'deleted') && <button className={checkingStop ? "secondary" : "secondary archive-button"} aria-label={checkingStop ? "Остановить исполнение / сверить" : "Архивировать"} title={checkingStop ? "Остановить исполнение / сверить" : "Архивировать"} disabled={busy || task.deletion_state === 'stopping'} onClick={() => { setArchiving(false); setVersion(task.state_version); setConfirming(true); setError(''); }}>{checkingStop ? 'Остановить исполнение / сверить' : <><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 7h16v13H4zM3 3h18v4H3zM9 11h6" /></svg><span className="action-tooltip" aria-hidden="true">Архивировать</span></>}</button>}
-    {task.archive_source === 'github-filter' && (task.archived || task.deletion_state) && <button className="secondary" disabled={busy} onClick={() => {
+    {(!task.archived || task.deletion_state !== 'deleted') && <button className={checkingStop ? "secondary" : "secondary archive-button"} aria-label={checkingStop ? "Остановить исполнение / сверить" : "Архивировать"} title={checkingStop ? "Остановить исполнение / сверить" : "Архивировать"} disabled={busy || !!task.reset_pending || task.deletion_state === 'stopping'} onClick={() => { setArchiving(false); setVersion(task.state_version); setConfirming(true); setError(''); }}>{checkingStop ? 'Остановить исполнение / сверить' : <><svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 7h16v13H4zM3 3h18v4H3zM9 11h6" /></svg><span className="action-tooltip" aria-hidden="true">Архивировать</span></>}</button>}
+    {((task.archive_source === 'github-filter' && (task.archived || task.deletion_state)) || (checkingStop && !task.archived && !task.deletion_state)) && <button className="secondary" disabled={busy || !!task.reset_pending} onClick={() => {
       setArchiving(true); setVersion(task.state_version); setConfirming(true); setError('');
     }}>Архивировать вручную</button>}
     {confirming && <dialog ref={dialog} onCancel={event => { event.preventDefault(); if (!busy) closeConfirmation(); }} aria-labelledby={`delete-title-${task.id}`} className="delete-confirmation">
@@ -112,7 +179,7 @@ function ArchivedTask({ task, refresh, notify, expanded = false, draft, openTask
         {task.archive_source === 'github-filter' && <p role="status">Автоматический архив: {task.archive_reason}</p>}
         {task.deletion_error && <p role="alert">{task.deletion_error}</p>}
         <button id={`open-${task.id}`} onClick={() => openTask(task.id)}>Открыть задачу / сверить остановку ↗</button>
-      </> : <TaskDisposition task={task} refresh={refresh} notify={notify} />}
+      </> : <><TaskDisposition task={task} refresh={refresh} notify={notify} /><TaskResultsReset task={task} refresh={refresh} notify={notify} /></>}
       {loading && <p role="status">Загружаем историю…</p>}
       {error && <p role="alert">{error}</p>}
       {history && <>
@@ -161,7 +228,8 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
     <h3 data-task-heading tabIndex={-1}>{task.title ?? `Задача ${task.id.slice(0, 8)}`}</h3>
     <SourceIssue task={task} />
     <div className="actions card-actions"><TaskDisposition task={task} refresh={refresh} notify={notify} /></div>
-    <fieldset className="task-controls" disabled={!!task.deletion_state}>
+    <TaskResultsReset task={task} refresh={refresh} notify={notify} />
+    <fieldset className="task-controls" disabled={!!(task.deletion_state || task.reset_pending)}>
     <section className="task-description" aria-label="Требования задачи">
     {editing && draft ? <form onSubmit={async event => {
       event.preventDefault(); setBusy(true); setRequirementsError('');
@@ -518,6 +586,7 @@ function App() {
       events.addEventListener('change', event => {
         const change = JSON.parse((event as MessageEvent).data);
         if (change.type === 'task.archived') setNotice('Карточка скрыта. Результат остановки и история доступны в архиве.');
+        if (change.type === 'task.results-reset') setNotice('Все результаты сброшены. Задача в Backlog; новый запуск — отдельным действием.');
         if (change.type === 'task.restored') setNotice('Карточка возвращена на доску. Исполнение автоматически не возобновляется.');
       });
       events.onerror = () => setConnection('Live-обновления недоступны. Переподключаемся. Это само по себе не означает остановку задачи. Обновите страницу, чтобы получить актуальное состояние');

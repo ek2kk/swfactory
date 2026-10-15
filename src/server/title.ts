@@ -70,6 +70,7 @@ export class Titles {
   private active = new Map<string, { controller: AbortController; scope: ProcessScope; done: Promise<void> }>();
   private stopped = false;
   error: string | null = null;
+  hasWork(taskId: string) { return this.active.has(taskId) || (this.scopes.get(taskId) ?? []).some(scope => !scope.knownGroupsStopped()); }
   constructor(private store: Store, private publish: () => void,
     private generate = generateTitle, private onError: (error: unknown) => void = console.error,
     private scheduler = new Scheduler(), private executionFailure: (error: unknown) => void = () => {}) {}
