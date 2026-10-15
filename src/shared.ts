@@ -33,7 +33,7 @@ export function resultsResetBlocker(task: Task): string | null {
 }
 export type Revision = { task_id: string; revision: number; description: string; created_at: string };
 export type SavedEvent = { id: number; type: string; task_id: string | null; payload: string; created_at: string };
-export type Snapshot = { issue_syncing?: string[]; issue_errors?: { project_id: string; message: string }[]; archived_tasks?: Task[]; execution_pause?: ExecutionPause; projects: Project[]; tasks: Task[]; runs: AgentRun[]; human_requests: HumanRequest[]; execution_error?: string | null; title_error?: string | null; cursor: number };
+export type Snapshot = { statistics_runs?: import('./statistics.js').StatisticsRun[]; issue_syncing?: string[]; issue_errors?: { project_id: string; message: string }[]; archived_tasks?: Task[]; execution_pause?: ExecutionPause; projects: Project[]; tasks: Task[]; runs: AgentRun[]; human_requests: HumanRequest[]; execution_error?: string | null; title_error?: string | null; cursor: number };
 
 export const roles = ['spec', 'build', 'review-code', 'review-security', 'review-ui-ux', 'approve'] as const;
 export const legacyReviewRoles = ['review-code', 'review-security', 'review-ui', 'review-ux'] as const;
@@ -91,7 +91,7 @@ export function dependencyActionBlocker(task: Task): string | null {
   if (!['interrupted', 'waiting', 'idle'].includes(task.run_state) || ['pending', 'running'].includes(task.title_state)) return 'Дождитесь завершения исполнения.';
   return null;
 }
-export type RunDiagnostic = DependencyDiagnostic & { last_activity_at?: string; stream_chars?: number; stream_updates?: number; can_interrupt?: boolean; interrupt_requested_at?: string; result_saved?: boolean; result_run_id?: string; error_kind?: FailureKind; execution_finished?: boolean; reset_at?: string | null; cli_version?: string; session_id?: string; turn_id?: string; usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number } };
+export type RunDiagnostic = DependencyDiagnostic & { model_started_at?: string; usage_accounting?: import('./usage.js').UsageAccounting; stop_pending?: boolean; last_activity_at?: string; stream_chars?: number; stream_updates?: number; can_interrupt?: boolean; interrupt_requested_at?: string; result_saved?: boolean; result_run_id?: string; error_kind?: FailureKind; execution_finished?: boolean; reset_at?: string | null; cli_version?: string; session_id?: string; turn_id?: string; usage?: import('./usage.js').TokenUsage };
 export type ExecutionPause = { paused: number; reset_at: string | null; state_version: number };
 export type ReviewPlan = { policy_version?: 2; build_id: string; head_sha: string; source_hash: string; revision: number; diff_base: string; diff: string; requirements: string; checks: { role: ReviewRole; required: boolean; reason: string; reuse_run_id?: string }[] };
 export const requiredReviews = (run: AgentRun): readonly ReviewRole[] => run.review_plan ? run.review_plan.checks.filter(c => c.required && !c.reuse_run_id).map(c => c.role) : reviewsFor(run.config);

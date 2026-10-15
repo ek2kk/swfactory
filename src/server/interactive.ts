@@ -1,3 +1,4 @@
+import { observedUsage, threadUsageSnapshot, type UsageAccounting } from '../usage.js';
 import { prepareFast, FastModeFailure } from './fast.js';
 import { execFile, spawn } from './processes.js';
 import { openSync, writeSync, closeSync } from 'node:fs';
@@ -27,6 +28,8 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
   try {
     return await new Promise<T>((resolve, reject) => {
       const child = spawn(executable, ['app-server', '--listen', 'stdio://', ...fastArgs], { cwd: input.cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+      child.once('spawn', () => input.metadata?.({ model_started_at: new Date().toISOString() }));
+      let accounting: Extract<UsageAccounting, { source: 'thread-total' }> = { version: 1, source: 'thread-total' };
       let sequence = 0, buffer = '', stderr = '', bytes = 0, threadId = '', turnId = '', message = '';
       let finished = false, failure: Error | undefined, result: T;
       let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -108,8 +111,10 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
               try { flushProgress(); } catch { stop(new CodexFailure('protocol_error')); }
             }, 1000);
             if (event.method === 'thread/tokenUsage/updated' && p.tokenUsage?.total) {
+              if (p.turnId !== turnId) continue;
               const usage = p.tokenUsage.total;
-              input.metadata?.({ usage: Object.fromEntries([['input_tokens', usage.inputTokens], ['output_tokens', usage.outputTokens], ['cached_input_tokens', usage.cachedInputTokens]].filter(([, value]) => Number.isSafeInteger(value) && Number(value) >= 0)) });
+              accounting = threadUsageSnapshot(accounting, p.threadId, { input_tokens: usage.inputTokens, output_tokens: usage.outputTokens, cached_input_tokens: usage.cachedInputTokens });
+              input.metadata?.({ usage_accounting: accounting, usage: observedUsage({ usage_accounting: accounting }) });
             }
             if (event.method === 'turn/started') {
               turnId = p.turn.id;
@@ -173,7 +178,9 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
         if (input.fast !== undefined && response.serviceTier !== (input.fast ? 'priority' : 'default')) throw new FastModeFailure(`Codex не подтвердил режим ${input.fast ? 'Fast' : 'обычный'}: получено ${response.serviceTier ?? 'неизвестно'}. Запуск остановлен без fallback.`);
         if (input.fast !== undefined) writeSync(out, JSON.stringify({ method: 'run/serviceTier', params: { requested: input.fast ? 'fast' : 'default', confirmed: response.serviceTier } }) + '\n');
         threadId = response.thread.id;
-        input.metadata?.({ session_id: threadId });
+        // thread/start creates a fresh session; last is one model request, not the whole turn.
+        accounting = { version: 1, source: 'thread-total', baseline: { session_id: threadId, usage: { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0 } } };
+        input.metadata?.({ session_id: threadId, usage_accounting: accounting });
         await rpc('turn/start', { threadId, ...(input.reasoningEffort ? { effort: input.reasoningEffort } : {}), input: [{ type: 'text', text: input.prompt }], outputSchema: schema });
       })().catch(error => { if (!finished) stop(error instanceof CodexFailure ? error : new CodexFailure('protocol_error')); });
     });

@@ -336,8 +336,18 @@ export class SpecController {
   }
   private recordMetadata(run: AgentRun, value: RunDiagnostic) {
     if (!this.store.hasRun(run)) {
-      for (const key of ['session_id', 'turn_id'] as const) if (value[key]) this.store.db.prepare('UPDATE runs SET diagnostic = json_set(diagnostic, ?, ?) WHERE id = ?')
-        .run(`$.${key}`, value[key], run.id);
+      // Revocation blocks execution/results; final metrics may still arrive while Stop closes the CLI.
+      const metrics = Object.fromEntries((['session_id', 'turn_id', 'model_started_at', 'usage', 'usage_accounting'] as const)
+        .filter(key => value[key] !== undefined).map(key => [key, value[key]]));
+      const saved = this.store.db.prepare('SELECT diagnostic FROM runs WHERE id = ? AND task_id = ? AND project_id = ?')
+        .get(run.id, run.task_id, run.project_id) as { diagnostic: string } | undefined;
+      if (saved && Object.keys(metrics).length) {
+        this.store.db.transaction(() => {
+          this.store.db.prepare('UPDATE runs SET diagnostic = ? WHERE id = ?').run(JSON.stringify({ ...JSON.parse(saved.diagnostic), ...metrics }), run.id);
+          this.store.event('run.metadata', run.task_id, { run_id: run.id, ...metrics });
+        })();
+        this.publish();
+      }
       return;
     }
     if (this.store.blocked(run.task_id)) return;

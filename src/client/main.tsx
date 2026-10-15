@@ -1,3 +1,4 @@
+import { TaskStatistics, RunStatistics, StatisticsWindow } from './statistics.js';
 import { ModelPicker, ReasoningPicker } from './models.js';
 import { api } from './api.js';
 import { useEffect, useRef, useState } from 'react';
@@ -317,6 +318,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
       })}</div>
     </div>
     <div role="tabpanel" id={`${task.id}-panel-overview`} aria-labelledby={`${task.id}-tab-overview`} hidden={tab !== 'overview'} tabIndex={0}>
+    <TaskStatistics runs={runs} active={active && tab === 'overview'} />
     <TaskResultsRestart task={task} refresh={refresh} executionPaused={executionPaused} />
     {reviews && <section className="review-summary" aria-label="Результаты текущего Review">
       <h4>Текущий раунд Review</h4>
@@ -786,8 +788,10 @@ function App() {
       <button id="create-task-action" onClick={() => showWindow('create')}><ActionIcon kind="create" />Создать задачу</button>
       <span className="delete-project-action"><button className="secondary" disabled={!filteredProject} aria-describedby={!filteredProject ? 'delete-project-hint' : undefined} onClick={() => showWindow('delete')}><ActionIcon kind="delete" />Удалить проект</button>{!filteredProject && <small id="delete-project-hint">Выберите конкретный проект для удаления</small>}</span>
       <button className="secondary" onClick={() => showWindow('settings')}><ActionIcon kind="settings" />Модели и инструкции</button>
+      <button className="secondary" onClick={() => showWindow('statistics')}><ActionIcon kind="statistics" />Статистика</button>
       <button id="archive-action" className="secondary" onClick={() => showWindow('archive')}><ActionIcon kind="archive" />Архив ({archived.length})</button>
     </nav>
+    <Modal open={windowName === 'statistics'} title="Статистика" close={closeWindow}>{windowName === 'statistics' && <StatisticsWindow snapshot={snapshot} initialProject={filter} />}</Modal>
     <Modal open={windowName === 'connect'} title="Подключить проект" close={closeWindow}>
         <form onSubmit={async event => {
           event.preventDefault(); if (!ready || submitting.current || busy || selectingFolder.current) return;
@@ -896,7 +900,7 @@ function App() {
       {opened.map(id => {
         const task = [...snapshot.tasks, ...(snapshot.archived_tasks ?? [])].find(task => task.id === id);
         const project = task && snapshot.projects.find(project => project.id === task.project_id);
-        return task && project ? <TaskView key={id} hidden={id !== detailId} blocked={!!(task.archived || task.deletion_state)}>{task.archived || (task.deletion_state && task.deletion_state !== 'stopping') ? <ArchivedTask task={task} refresh={refresh} notify={setNotice} expanded draft={drafts[id]} /> : <TaskCard task={task} project={project} executionPaused={!!snapshot.execution_pause?.paused} runs={snapshot.runs.filter(run => run.task_id === id)} questions={snapshot.human_requests.filter(request => request.task_id === id)} refresh={refresh} active={id === detailId} cursor={snapshot.cursor} notify={setNotice} draft={drafts[id]} setDraft={draft => setTaskDraft(id, draft)} />}</TaskView> : null;
+        return task && project ? <TaskView key={id} hidden={id !== detailId} blocked={!!(task.archived || task.deletion_state)}>{task.archived || (task.deletion_state && task.deletion_state !== 'stopping') ? <><RunStatistics records={snapshot.statistics_runs?.filter(run => run.task_id === id && run.project_id === project.id)} active={id === detailId} calendar breakdown /><ArchivedTask task={task} refresh={refresh} notify={setNotice} expanded draft={drafts[id]} /></> : <TaskCard task={task} project={project} executionPaused={!!snapshot.execution_pause?.paused} runs={snapshot.runs.filter(run => run.task_id === id && run.project_id === project.id)} questions={snapshot.human_requests.filter(request => request.task_id === id)} refresh={refresh} active={id === detailId} cursor={snapshot.cursor} notify={setNotice} draft={drafts[id]} setDraft={draft => setTaskDraft(id, draft)} />}</TaskView> : null;
       })}
     </div>
   </main>;
