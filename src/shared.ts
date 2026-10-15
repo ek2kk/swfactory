@@ -40,6 +40,7 @@ export type SpecResult = {
   acceptance_criteria: string[]; assumptions: string[]; out_of_scope: string[]; questions: Question[];
 };
 export type BuildResult = {
+  dependencies?: Dependency[];
   outcome: 'READY' | 'NEEDS_INPUT' | 'BLOCKED'; summary: string; changed_paths: string[]; actions: string[]; checks: string[]; questions: Question[];
 };
 export const reviewRoles = ['review-code', 'review-security', 'review-ui-ux'] as const;
@@ -48,6 +49,7 @@ export const reviewsFor = (config: Settings): readonly ReviewRole[] => config.mo
 export type ReviewRole = typeof reviewRoles[number] | typeof legacyReviewRoles[number];
 export type ReviewSection = { summary: string; findings: string[]; evidence: string[] };
 export type ReviewResult = {
+  dependencies?: Dependency[];
   ui?: ReviewSection; ux?: ReviewSection;
   outcome: 'PASS' | 'CHANGES' | 'NEEDS_INPUT' | 'BLOCKED'; summary: string;
   findings: string[]; evidence: string[]; applicable: boolean; applicability: string; questions: Question[];
@@ -56,7 +58,34 @@ export type ApproveResult = {
   outcome: 'APPROVE' | 'ESCALATE' | 'NEEDS_INPUT'; summary: string; risks: string[]; affected_paths: string[]; questions: Question[];
 };
 export type FailureKind = 'authentication' | 'model_unavailable' | 'rate_limit' | 'protocol_error' | 'missing_artifact' | 'interrupted';
-export type RunDiagnostic = { last_activity_at?: string; stream_chars?: number; stream_updates?: number; can_interrupt?: boolean; interrupt_requested_at?: string; result_saved?: boolean; result_run_id?: string; error_kind?: FailureKind; execution_finished?: boolean; reset_at?: string | null; cli_version?: string; session_id?: string; usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number } };
+export type Dependency = {
+  kind: 'code' | 'condition'; issue_url: string | null; pr_url: string | null;
+  issue_must_be_closed?: boolean;
+  reason: string; condition: string;
+};
+export type DependencyState = {
+  dependency: Dependency; state: 'blocked' | 'cleared' | 'unknown'; reason: string; evidence: string[];
+};
+export type DependencyCheck = {
+  id: string; status: 'pending' | 'blocked' | 'cleared' | 'error' | 'stale' | 'interrupted';
+  started_at: string; finished_at?: string; revision: number; task_version: number; project_version: number;
+  head_sha?: string; source_hash?: string; target_sha?: string;
+  results: DependencyState[]; reason: string; questions: Question[]; confirmation: string;
+  continuation_run_id?: string; resume_role?: AgentRun['role'];
+};
+export type DependencyDiagnostic = {
+  dependency_block?: { reason: string; dependencies: Dependency[] };
+  dependency_checks?: DependencyCheck[];
+  dependency_resume?: { blocked_run_id: string; check_id: string; target_sha: string; preserved_worktree: string | null; reason: string };
+};
+export function dependencyActionBlocker(task: Task): string | null {
+  if (task.reset_pending || task.archived || task.deletion_state) return 'Карточка архивирована, удаляется или сбрасывается.';
+  if (task.publication_status) return 'Сначала сверьте публикацию; снятие зависимости не повторяет публикацию.';
+  if (task.execution_unverified || task.stop_unverified) return 'Сначала используйте «Остановить исполнение / сверить» и подтвердите остановку процессов.';
+  if (!['interrupted', 'waiting', 'idle'].includes(task.run_state) || ['pending', 'running'].includes(task.title_state)) return 'Дождитесь завершения исполнения.';
+  return null;
+}
+export type RunDiagnostic = DependencyDiagnostic & { last_activity_at?: string; stream_chars?: number; stream_updates?: number; can_interrupt?: boolean; interrupt_requested_at?: string; result_saved?: boolean; result_run_id?: string; error_kind?: FailureKind; execution_finished?: boolean; reset_at?: string | null; cli_version?: string; session_id?: string; usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number } };
 export type ExecutionPause = { paused: number; reset_at: string | null; state_version: number };
 export type ReviewPlan = { policy_version?: 2; build_id: string; head_sha: string; source_hash: string; revision: number; diff_base: string; diff: string; requirements: string; checks: { role: ReviewRole; required: boolean; reason: string; reuse_run_id?: string }[] };
 export const requiredReviews = (run: AgentRun): readonly ReviewRole[] => run.review_plan ? run.review_plan.checks.filter(c => c.required && !c.reuse_run_id).map(c => c.role) : reviewsFor(run.config);
