@@ -84,7 +84,12 @@ test('scheduler reports capacity, same-task and rate-limit blocking without poll
 
 test('process logs distinguish stop request, leader exit, confirmed group stop and unknown stop without raw error', async t => {
   const { app, log, lines } = captureLogs();
+  t.after(() => app.close());
   const scope = new ProcessScope(undefined, log.child({ task_id: 'process-task' }));
+  await scope.run(async () => {
+    await once(spawn(process.execPath, ['-e', ''], { stdio: 'ignore' }), 'close');
+  }, log.child({ task_id: 'process-task', run_id: 'previous-run', role: 'spec' }));
+  assert.equal(scope.knownGroupsStopped(), true);
   let role = 'spec';
   const job = scope.run(async () => {
     role = 'build';
@@ -92,19 +97,27 @@ test('process logs distinguish stop request, leader exit, confirmed group stop a
     await once(child, 'close');
   }, () => log.child({ task_id: 'process-task', run_id: 'process-run', role }));
   await scope.stop(); await job;
-  const started = lines.find(line => line.event === 'process.started')!;
+  const current = lines.filter(line => line.task_id === 'process-task' && line.run_id === 'process-run');
+  const started = current.find(line => line.event === 'process.started')!;
   assert.equal(started.run_id, 'process-run'); assert.equal(started.role, 'build');
   assert.equal(typeof started.pid, 'number'); assert.equal(started.pid, started.pgid);
-  assert.ok(lines.some(line => line.event === 'process.stop-requested'));
-  assert.ok(lines.some(line => line.event === 'process.signal-sent'));
-  assert.ok(lines.some(line => line.event === 'process.exited' && line.run_id === 'process-run'));
-  assert.ok(lines.some(line => line.event === 'process.stop-confirmed' && line.execution_finished === true));
+  for (const event of ['process.stop-requested', 'process.signal-sent', 'process.exited', 'process.stop-confirmed']) {
+    assert.ok(current.some(line => line.event === event && line.role === 'build'), event);
+  }
+  assert.ok(current.some(line => line.event === 'process.stop-confirmed' && line.execution_finished === true));
+  assert.ok(!lines.some(line => line.run_id === 'previous-run' && (String(line.event).startsWith('process.stop-') || line.event === 'process.signal-sent')));
   const unknown = new ProcessScope(undefined, log);
+  let release!: () => void;
+  const callback = unknown.run(() => new Promise<void>(resolve => { release = resolve; }),
+    log.child({ task_id: 'process-task', run_id: 'unknown-run', role: 'review-code' }));
   t.mock.method(unknown as any, 'discoverDescendantGroups', async () => { throw new Error('PRIVATE PROMPT api_key=credential'); });
   await assert.rejects(unknown.stop());
-  assert.ok(lines.some(line => line.event === 'process.stop-unknown' && line.execution_finished === false));
+  release(); await callback;
+  for (const event of ['process.stop-requested', 'process.stop-unknown']) {
+    assert.ok(lines.some(line => line.event === event && line.task_id === 'process-task' && line.run_id === 'unknown-run' && line.role === 'review-code'), event);
+  }
+  assert.ok(lines.some(line => line.event === 'process.stop-unknown' && line.run_id === 'unknown-run' && line.execution_finished === false));
   assert.ok(!JSON.stringify(lines).includes('PRIVATE PROMPT'));
-  await app.close();
 });
 
 test('main keeps bootstrap URL on stderr, stdout is JSON and SIGTERM drains shutdown logs', { timeout: 15000 }, async t => {

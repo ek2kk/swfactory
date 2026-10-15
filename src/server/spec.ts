@@ -86,8 +86,9 @@ export class SpecController {
         const saved = this.store.specRun(run.project_id, run.task_id, run.id);
         const task = this.store.rawTask(run.project_id, run.task_id);
         log?.info({ event: publication ? 'publication.finished' : 'run.finished', duration_ms: Date.now() - started,
-          role: saved.role, outcome: publication ? task.publication_status : saved.outcome ?? saved.status, execution_finished: saved.diagnostic?.execution_finished ?? false,
-          error_kind: saved.diagnostic?.error_kind ?? (['queued', 'running'].includes(saved.status) ? 'state_unconfirmed' : saved.status === 'failed' ? 'internal_error' : null),
+          role: saved.role, outcome: publication ? task.publication_status : saved.outcome ?? saved.status,
+          ...(publication ? {} : { execution_finished: saved.diagnostic?.execution_finished ?? false,
+            error_kind: saved.diagnostic?.error_kind ?? (['queued', 'running'].includes(saved.status) ? 'state_unconfirmed' : saved.status === 'failed' ? 'internal_error' : null) }),
           stage: task.stage, run_state: task.run_state, publication_status: task.publication_status,
           state_confirmed: publication ? ['confirmed', 'unknown'].includes(task.publication_status ?? '') : !['queued', 'running'].includes(saved.status) });
       } catch { log?.error({ event: 'run.state-unavailable', duration_ms: Date.now() - started, state_confirmed: false }); }

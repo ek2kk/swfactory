@@ -506,6 +506,8 @@ for (const mode of ['success', 'existing', 'existing-changed-during-fetch', 'unk
   assert.equal(store.task(project.id, task.id).publication_status, null);
   store.db.exec('DROP TRIGGER fail_publication');
   if (mode === 'save') store.db.exec("CREATE TRIGGER fail_confirmation BEFORE INSERT ON events WHEN NEW.type = 'publication.confirmed' BEGIN SELECT RAISE(ABORT, 'disk'); END");
+  if (mode === 'unknown') store.db.prepare('UPDATE runs SET diagnostic = ? WHERE id = ?')
+    .run(JSON.stringify({ ...approval.diagnostic, execution_finished: true, error_kind: 'interrupted' }), approval.id);
   const run = store.mutate('publication', 'publish', () => store.beginPublication(project.id, task.id, version)) as typeof approval;
   assert.equal((store.replay('publication', 'publish') as typeof approval).id, run.id);
   assert.throws(() => store.beginPublication(project.id, task.id, version));
@@ -518,7 +520,9 @@ for (const mode of ['success', 'existing', 'existing-changed-during-fetch', 'unk
   assert.ok(logs.some(line => line.event === 'publication.pending'));
   assert.ok(logs.some(line => line.event === (success ? 'publication.confirmed' : 'publication.unknown') && line.state_confirmed === true));
   assert.ok(!logs.some(line => line.event === (success ? 'publication.unknown' : 'publication.confirmed')));
-  assert.ok(logs.some(line => line.event === 'publication.finished' && typeof line.duration_ms === 'number' && line.outcome === saved.publication_status));
+  const finished = logs.find(line => line.event === 'publication.finished')!;
+  assert.equal(typeof finished.duration_ms, 'number'); assert.equal(finished.outcome, saved.publication_status);
+  assert.ok(!('execution_finished' in finished)); assert.ok(!('error_kind' in finished));
   assert.equal(saved.stage, success ? 'pr-created' : 'needs-human');
   assert.equal(saved.pr_url, success || mode === 'save' ? pr.html_url : null);
   assert.equal(creates, ['success', 'unknown', 'save'].includes(mode) ? 1 : 0);
