@@ -61,6 +61,27 @@ test('paused scheduler releases finished slots and resumes FIFO; shutdown settle
   const waiting = scheduler.enqueue('6', async () => { assert.fail('must not start'); }); scheduler.close(); await waiting;
 });
 
+test('survivor exit releases only its reservation while the same task job is active', async t => {
+  const scheduler = new Scheduler();
+  let releaseJob!: () => void, releaseSurvivor!: () => void, releaseOthers!: () => void;
+  const jobGate = new Promise<void>(resolve => { releaseJob = resolve; });
+  const survivorGate = new Promise<void>(resolve => { releaseSurvivor = resolve; });
+  const othersGate = new Promise<void>(resolve => { releaseOthers = resolve; });
+  t.after(() => { scheduler.close(); releaseJob(); releaseSurvivor(); releaseOthers(); });
+  const job = scheduler.enqueue('same-task', () => jobGate);
+  const others = ['other-1', 'other-2'].map(id => scheduler.enqueue(id, () => othersGate));
+  scheduler.retain('same-task', () => survivorGate);
+  scheduler.retain('same-task', async () => { assert.fail('repeated retention must not reserve another slot'); });
+  let started = false;
+  const next = scheduler.enqueue('next-task', async () => { started = true; });
+  releaseSurvivor(); await survivorGate;
+  assert.equal(scheduler.hasWork('same-task'), true, 'the active job still owns its slot');
+  assert.equal(started, false, 'three active jobs still fill capacity');
+  releaseJob(); await job; await next;
+  assert.equal(started, true);
+  releaseOthers(); await Promise.all(others);
+});
+
 test('logs page bounded UTF-8 safely and reject symlinks; saved input is unmodified', t => {
   const { directory, run } = fixture(t); const path = artifactDirectory(directory, run.id);
   const text = 'я'.repeat(40000); writeFileSync(join(path, 'events.jsonl'), text);

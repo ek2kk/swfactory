@@ -95,11 +95,11 @@ for (const currentProcess of [false, true]) test(`restart stops a revoked surviv
   assert.ok(sent.includes(-oldChild.pid!)); assert.equal(store.hasRun(fresh), true);
   if (currentChild) {
     assert.ok(!sent.includes(-currentChild.pid!)); kill(currentChild.pid!, 0);
-    assert.equal(started, false); assert.equal((controller as any).scheduler.active.has(task.id), true);
+    assert.equal(started, false); assert.equal((controller as any).scheduler.isActive(task.id), true);
     kill(-currentChild.pid!, 'SIGKILL');
   }
   await waitFor(() => started);
-  await waitFor(() => !(controller as any).scheduler.active.has(task.id));
+  await waitFor(() => !(controller as any).scheduler.isActive(task.id));
   assert.equal(controller.error, null);
 });
 
@@ -134,7 +134,7 @@ for (const variant of ['recorded', 'legacy', 'current-title'] as const) test(`re
     assert.equal(started, false, 'the current generation keeps its own slot');
     process.kill(current.pid!, 0); process.kill(-current.pid!, 'SIGKILL');
   }
-  await waitFor(() => started && !(controller as any).scheduler.active.has(task.id));
+  await waitFor(() => started && !(controller as any).scheduler.isActive(task.id));
   assert.equal(store.hasRun(fresh), true);
   assert.equal(store.executionProcesses(task.id).find(row => row.pid === child.pid)?.execution_generation, variant === 'legacy' ? null : 0);
 });
@@ -163,21 +163,71 @@ for (const reused of [false, true]) test(`restart retries an unavailable census 
   controller = new SpecController(store, directory, () => {});
   await delay(100);
   assert.equal(store.executionProcesses(task.id)[0].state, 'unknown');
-  assert.equal((controller as any).scheduler.active.has(task.id), false);
+  assert.equal((controller as any).scheduler.isActive(task.id), false);
   assert.equal(sent.length, 0, 'an outage cannot authorize signals or a live slot');
   writeFileSync(ps, `#!/bin/sh\nprintf '987654 1 987654 S Thu Oct 15 00:00:0${reused ? 1 : 0} 2026\\n'\n`);
   if (reused) {
     await delay(700);
     assert.equal(store.executionProcesses(task.id)[0].state, 'unknown');
-    assert.equal(sent.length, 0); assert.equal((controller as any).scheduler.active.has(task.id), false);
+    assert.equal(sent.length, 0); assert.equal((controller as any).scheduler.isActive(task.id), false);
   } else {
-    await waitFor(() => store.executionProcesses(task.id)[0].state === 'running' && (controller as any).scheduler.active.has(task.id));
+    await waitFor(() => store.executionProcesses(task.id)[0].state === 'running' && (controller as any).scheduler.isActive(task.id));
     await waitFor(() => sent.some(([pid, signal]) => pid === -987654 && signal === 'SIGKILL'));
     assert.equal(store.task(project.id, task.id).stage, 'backlog');
   }
   writeFileSync(ps, empty);
   await waitFor(() => store.executionProcesses(task.id)[0].state === 'exited');
-  await waitFor(() => !(controller as any).scheduler.active.has(task.id));
+  await waitFor(() => !(controller as any).scheduler.isActive(task.id));
+});
+
+test('recovered survivor retains capacity independently of an active fresh run of the same task', async t => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'factory-stop-recovery-race-'))), ps = join(directory, 'ps');
+  let store = new Store(directory), controller: SpecController | undefined;
+  const previousPath = process.env.PATH;
+  const empty = "#!/bin/sh\nprintf '987654 1 987654 Z Thu Oct 15 00:00:00 2026\\n'\n";
+  let releaseFresh!: () => void, releaseOthers!: () => void;
+  const freshGate = new Promise<void>(resolve => { releaseFresh = resolve; });
+  const othersGate = new Promise<void>(resolve => { releaseOthers = resolve; });
+  t.after(async () => {
+    try {
+      writeFileSync(ps, empty); releaseFresh(); releaseOthers(); await delay(400);
+      await controller?.close(); await delay(300);
+    } finally { process.env.PATH = previousPath; store.close(); rmSync(directory, { recursive: true, force: true }); }
+  });
+  const project = store.addProject(projectInput), task = store.createTask(project.id, 'Recovery during fresh run', 1);
+  const old = store.queueSpec(project.id, task.id, 1, directory);
+  store.recordProcess(task.id, { pid: 987654, pgid: 987654, started_at: 'Thu Oct 15 00:00:00 2026', state: 'running', run_id: old.id });
+  store.beginDeletion(project.id, task.id, store.task(project.id, task.id).state_version);
+  store.finishDeletion(task.id, 'Известный процесс ещё работает.', true); store.releaseStoppedTask(project.id, task.id);
+  store.close(); store = new Store(directory);
+  writeFileSync(ps, '#!/bin/sh\nexit 1\n', { mode: 0o700 }); process.env.PATH = `${directory}:${previousPath}`;
+  const sent: [number, NodeJS.Signals | number | undefined][] = [];
+  t.mock.method(process, 'kill', (pid: number, signal?: NodeJS.Signals | number) => { sent.push([pid, signal]); return true; });
+  controller = new SpecController(store, directory, () => {});
+  const scheduler = (controller as any).scheduler;
+  const retain = t.mock.method(scheduler, 'retain');
+  const fresh = store.queueSpec(project.id, task.id, store.task(project.id, task.id).state_version, directory);
+  const perform = t.mock.method(controller as any, 'perform', () => freshGate);
+  controller.enqueue(fresh);
+  const freshDone = Promise.all([...(controller as any).active]);
+  await waitFor(() => perform.mock.callCount() === 1);
+  assert.equal(sent.length, 0);
+  const others = ['other-1', 'other-2'].map(id => scheduler.enqueue(id, () => othersGate));
+  writeFileSync(ps, "#!/bin/sh\nprintf '987654 1 987654 S Thu Oct 15 00:00:00 2026\\n'\n");
+  await waitFor(() => retain.mock.callCount() > 0);
+  await waitFor(() => sent.some(([pid, signal]) => pid === -987654 && signal === 'SIGKILL'));
+  assert.equal(store.executionProcesses(task.id)[0].state, 'running');
+  const started: string[] = [];
+  const next = scheduler.enqueue('next-task', async () => { started.push('next'); });
+  const sameTask = scheduler.enqueue(task.id, async () => { started.push('same-task'); });
+  releaseFresh(); await freshDone;
+  assert.deepEqual(started, [], 'survivor plus two other jobs still fill capacity after fresh completion');
+  releaseOthers(); await Promise.all(others); await next;
+  assert.deepEqual(started, ['next'], 'same-task work remains blocked by the survivor even with free capacity');
+  writeFileSync(ps, empty);
+  await waitFor(() => store.executionProcesses(task.id)[0].state === 'exited');
+  await sameTask;
+  assert.deepEqual(started, ['next', 'same-task']);
 });
 
 test('legacy Stop releases lifecycle without manual proof, preserves publication and rejects stale run callbacks at the same revision', async t => {
@@ -236,7 +286,7 @@ test('live survivor keeps its slot after bounded Stop, preserves edits and queue
   assert.ok(Date.now() - started < 5000, 'card deadline includes census and signals');
   const stopped = store.task(project.id, task.id);
   assert.equal(stopped.stage, 'backlog'); assert.match(stopped.execution_warning!, /ещё работает/);
-  assert.equal((controller as any).scheduler.active.has(task.id), true);
+  assert.equal((controller as any).scheduler.isActive(task.id), true);
   assert.equal(store.executionProcesses(task.id).find(row => row.pid === pid)?.run_id, old.id);
   assert.ok(store.executionProcesses(task.id).find(row => row.pid === pid)?.started_at);
   assert.throws(() => controller.assertResultsResetIdle(task.id), /Процессы|callbacks/);
@@ -244,7 +294,7 @@ test('live survivor keeps its slot after bounded Stop, preserves edits and queue
   assert.equal(freshStarted, false); assert.notEqual(fresh.worktree, old.worktree);
   assert.equal(readFileSync(join(old.worktree, 'partial.txt'), 'utf8'), 'keep partial edits');
   nativeKill(-pid, 'SIGKILL');
-  await waitFor(() => !(controller as any).scheduler.active.has(task.id));
+  await waitFor(() => !(controller as any).scheduler.isActive(task.id));
   assert.equal(freshStarted, false, 'pause still applies after survivor exits');
   store.resumeExecution(store.executionPause().state_version); controller.resume();
   await waitFor(() => freshStarted);
@@ -264,7 +314,7 @@ for (const reused of [false, true]) test(`restart ${reused ? 'rejects reused ide
   store.recordProcess(task.id, { ...identity, started_at: reused ? 'incorrect historical start' : identity.started_at, state: 'running', run_id: run.id });
   store.close(); store = new Store(directory);
   controller = new SpecController(store, directory, () => {});
-  assert.equal((controller as any).scheduler.active.has(task.id), !reused);
+  assert.equal((controller as any).scheduler.isActive(task.id), !reused);
   store.beginDeletion(project.id, task.id, store.rawTask(project.id, task.id).state_version);
   const sent: number[] = [], kill = process.kill.bind(process);
   t.mock.method(process, 'kill', (pid: number, signal?: NodeJS.Signals | number) => { if (signal && signal !== 0) sent.push(pid); return kill(pid, signal); });
