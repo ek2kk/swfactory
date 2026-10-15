@@ -425,6 +425,8 @@ test('archive hides an old NeedsHuman task without asserting stop, keeps history
   const response = await send(path + '/archive');
   assert.equal(response.statusCode, 200);
   assert.equal(response.json().archived, 1);
+  const archivedEvent = store.events(0).find(event => event.type === 'task.archived' && event.task_id === task.id)!;
+  assert.equal(JSON.parse(archivedEvent.payload).state_version, response.json().state_version, 'API and SSE carry the same archive notification key');
   assert.equal(store.snapshot().tasks.length, 0);
   await setImmediate();
   assert.equal(store.snapshot().archived_tasks?.[0].deletion_state, 'failed');

@@ -106,6 +106,16 @@ export async function createApp(options: {
     return result;
   });
   const projectParams = object({ projectId: uuid });
+  app.delete<{ Params: { projectId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId', {
+    schema: { params: projectParams, body: object({ request_id: uuid, state_version: version }) },
+  }, async request => {
+    const { projectId } = request.params;
+    const { request_id, state_version } = request.body;
+    const result = store.mutate(request_id, JSON.stringify(['project.delete', projectId, state_version]), () => store.deleteProject(projectId, state_version));
+    issues.disconnect(projectId);
+    publish();
+    return result;
+  });
   app.post<{ Params: { projectId: string } }>('/api/projects/:projectId/issues/refresh', { schema: { params: projectParams } }, async request => {
     void issues.refresh(request.params.projectId);
     return { ok: true };
