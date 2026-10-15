@@ -777,3 +777,81 @@ for (const localOnly of [false, true]) test(`Build repair targets diagnostics an
     assert.equal(store.publicationRun(project.id, task.id).role, 'approve');
   }
 });
+
+for (const changed of ['none', 'head', 'dirty', 'source-hash'] as const) test(`reset Review starts fresh with preserved independent PASS; source=${changed}`, async t => {
+  const { store, project, task, directory, build, queue, controller, git } = await fixture(t);
+  const reviewIds: string[] = [];
+  for (let i = 0; i < 3; i++) {
+    const review = queue(); reviewIds.push(review.id);
+    review.status = 'completed'; review.outcome = 'PASS';
+    store.updateRun(review, i === 2 ? 'approve' : 'review', 'idle');
+  }
+  const approval = store.queueApprove(project.id, task.id, store.task(project.id, task.id).state_version);
+  approval.status = 'completed'; approval.outcome = 'APPROVE'; store.updateRun(approval, 'approve', 'completed');
+  // Fixture Git commands have all exited; there are no agent subprocesses to reconcile.
+  store.db.prepare('UPDATE tasks SET stop_unverified = 0 WHERE id = ?').run(task.id);
+  const resetId = crypto.randomUUID();
+  store.mutate(resetId, 'review-reset', () => store.beginResultsReset(project.id, task.id, store.task(project.id, task.id).state_version, resetId, 'review-code'));
+  const cleaner = new SpecController(store, directory, () => {});
+  cleaner.completeResultsReset(task.id, resetId); await cleaner.close();
+  assert.equal(store.runs().some(run => run.id === reviewIds[0]), false);
+  assert.ok(reviewIds.slice(1).every(id => store.runs().some(run => run.id === id && !run.stale)));
+  const fresh = store.queueResultsRestart(project.id, task.id, store.task(project.id, task.id).state_version, directory);
+  assert.equal(fresh.role, 'review-code'); assert.deepEqual(fresh.diagnostic, {}); assert.equal(fresh.round_id, build.id);
+  if (changed === 'head') { writeFileSync(join(build.worktree, 'README.md'), 'new head'); git(build.worktree, 'add', '.'); git(build.worktree, 'commit', '-m', 'changed head'); }
+  if (changed === 'dirty') writeFileSync(join(build.worktree, 'README.md'), 'dirty');
+  if (changed === 'source-hash') { fresh.source_hash = 'wrong'; store.db.prepare('UPDATE runs SET source_hash = ? WHERE id = ?').run(fresh.source_hash, fresh.id); }
+  let executed = 0;
+  const runner = controller(async () => { executed++; return pass; });
+  runner.enqueue(fresh); await runner.close();
+  const result = store.readRun(project.id, task.id, fresh.id);
+  assert.equal(executed, changed === 'none' ? 1 : 0);
+  assert.equal(result.status, changed === 'none' ? 'completed' : 'failed', result.error ?? '');
+  assert.equal(store.reviewPasses(result), changed === 'none');
+  if (changed === 'none') {
+    assert.equal(store.runs().filter(run => run.role === 'review-security').length, 1);
+    assert.equal(store.runs().filter(run => run.role === 'review-ui-ux').length, 1);
+    const next = store.queueApprove(project.id, task.id, store.task(project.id, task.id).state_version);
+    assert.notEqual(next.id, approval.id); assert.deepEqual(next.diagnostic, {});
+  }
+});
+
+test('rerunning Code preserves independent Security CHANGES as a repair prerequisite', async t => {
+  const { store, project, task, directory, queue, controller } = await fixture(t);
+  const code = queue(); code.status = 'completed'; code.outcome = 'PASS'; store.updateRun(code, 'review', 'idle');
+  const security = queue(); security.status = 'completed'; security.outcome = 'CHANGES'; store.updateRun(security, 'needs-human', 'interrupted');
+  store.db.prepare('UPDATE tasks SET stop_unverified = 0 WHERE id = ?').run(task.id);
+  const resetId = crypto.randomUUID();
+  store.mutate(resetId, 'reset-code', () => store.beginResultsReset(project.id, task.id, store.task(project.id, task.id).state_version, resetId, 'review-code'));
+  const cleaner = new SpecController(store, directory, () => {}); cleaner.completeResultsReset(task.id, resetId); await cleaner.close();
+  const fresh = store.queueResultsRestart(project.id, task.id, store.task(project.id, task.id).state_version, directory);
+  const seen: (string | undefined)[] = [];
+  const runner = controller(async input => { seen.push(input.reviewRole); return pass; });
+  runner.enqueue(fresh); await runner.close();
+  assert.deepEqual(seen, ['review-code']);
+  assert.equal(store.readRun(project.id, task.id, security.id).outcome, 'CHANGES');
+  assert.equal(store.task(project.id, task.id).stage, 'needs-human');
+  assert.throws(() => store.publicationRun(project.id, task.id), /актуальные PASS/);
+});
+
+test('reset with no usable Build worktree exposes a fresh Build prerequisite during snapshot verification', async t => {
+  const { store, project, task, directory, build, queue } = await fixture(t);
+  for (let i = 0; i < 3; i++) {
+    const r = queue(); r.status = 'completed'; r.outcome = 'PASS'; store.updateRun(r, i === 2 ? 'approve' : 'review', 'idle');
+  }
+  store.db.prepare('UPDATE tasks SET stop_unverified = 0 WHERE id = ?').run(task.id);
+  const resetId = crypto.randomUUID();
+  store.mutate(resetId, 'reset-code-before-source-check', () => store.beginResultsReset(project.id, task.id, store.task(project.id, task.id).state_version, resetId, 'review-code'));
+  const runner = new SpecController(store, directory, () => {}, command);
+  runner.completeResultsReset(task.id, resetId);
+  writeFileSync(join(build.worktree, 'README.md'), 'repair changed the shared worktree');
+  await runner.refreshReviewState();
+  const saved = store.task(project.id, task.id);
+  assert.equal(saved.results_restart?.role, 'build'); assert.equal(saved.stage, 'build'); assert.equal(saved.run_state, 'idle');
+  assert.match(saved.results_restart!.reason, /новом worktree/);
+  assert.equal(store.readRun(project.id, task.id, build.id).stale, 1);
+  assert.ok(store.runs().filter(r => r.role.startsWith('review-')).every(r => r.stale));
+  const fresh = store.queueResultsRestart(project.id, task.id, saved.state_version, directory);
+  assert.equal(fresh.role, 'build'); assert.notEqual(fresh.worktree, build.worktree); assert.equal(fresh.base_sha, null);
+  await runner.close();
+});

@@ -7,6 +7,7 @@ export type ProjectInput = Pick<Project, 'checkout' | 'remote' | 'hosting' | 'ta
 export type SpecMode = 'auto' | 'spec' | 'skip';
 export type SpecDecision = { revision: number; mode: SpecMode; required: boolean | null; reason: string; missing: string[] };
 export type Task = {
+  results_restart?: import('./resultsReset.js').ResultsRestart | null;
   has_results?: number; reset_pending?: number; reset_error?: string | null;
   spec_decision?: SpecDecision | null;
   issue_number?: number | null; issue_url?: string | null;

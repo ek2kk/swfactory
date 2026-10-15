@@ -580,7 +580,7 @@ ${JSON.stringify(context)}`;
       await verifyRepository(this.store.project(run.project_id), run.worktree, this.command);
       if (await this.command('git', ['rev-parse', 'HEAD'], run.worktree) !== run.head_sha
         || await this.command('git', ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'], run.worktree)
-        || await sourceHash(run, this.command) !== run.source_hash) throw new Problem(422, 'Source изменился. Старые Review неактуальны; нужна ручная сверка.');
+        || await sourceHash(run, this.command) !== run.source_hash) throw new Problem(422, 'Source изменился. Старые Review неактуальны; для новой реализации сбросьте Build и запустите его заново.');
     } catch (error) { this.store.invalidateReviews(run); this.stateLog(run); throw error; }
     finally {
       const remaining = this.verifications.get(run.task_id)! - 1;
@@ -642,12 +642,15 @@ ${JSON.stringify(context)}`;
         const paused = ['NEEDS_INPUT', 'BLOCKED'].includes(result.outcome);
         this.store.updateRun(run, paused ? 'needs-human' : 'review', result.outcome === 'NEEDS_INPUT' ? 'waiting' : paused ? 'interrupted' : 'idle', undefined, result);
         if (!paused && this.store.task(run.project_id, run.task_id).revision === run.description_revision) {
-          if (result.outcome === 'CHANGES' || run.role === requiredReviews(run).at(-1)) {
+          const blockingReview = this.store.reviewRound(run).find(review => review?.status === 'completed' && !review.stale
+            && review.outcome === 'CHANGES' && review.description_revision === run.description_revision
+            && review.head_sha === run.head_sha && review.source_hash === run.source_hash);
+          if (result.outcome === 'CHANGES' || blockingReview || this.store.reviewPasses(run)) {
             const pass = this.store.reviewPasses(run);
             this.store.db.prepare("UPDATE tasks SET stage = ?, run_state = ?, state_version = state_version + 1 WHERE id = ?")
               .run(pass ? 'approve' : 'needs-human', pass ? 'idle' : 'interrupted', task.id);
             this.store.event('review.completed', task.id, { run_id: run.id, round_id: run.round_id, outcome: pass ? 'PASS' : 'CHANGES', reason: pass ? 'Все PASS; ожидается Approve'
-              : `${run.role} требует доработок: ${result.summary}. ${result.findings.join('; ')}${run.repair_attempt >= 2 ? ' Две доработки исчерпаны; нужен человек.' : ''}` });
+              : `${blockingReview?.role ?? run.role} требует доработок: ${result.outcome === 'CHANGES' ? `${result.summary}. ${result.findings.join('; ')}` : 'сохранённые независимые замечания остаются актуальными.'}${run.repair_attempt >= 2 ? ' Две доработки исчерпаны; нужен человек.' : ''}` });
             if (pass && !this.closing) next = this.store.queueApprove(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
             if (!pass && run.repair_attempt < 2 && !this.closing) next = this.store.queueRepair(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
           } else if (!this.closing) next = this.store.queueReview(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);

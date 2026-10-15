@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync, chmodSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { applicableReview, planResultsReset, type ResultsResetPlan } from '../resultsReset.js';
 import { dependencyActionBlocker, type DependencyCheck, resultsResetBlocker, defaultModels, reviewsFor, requiredReviews, type ReviewRole, type ReviewPlan, type SpecMode, type SpecDecision, type ApproveResult, type ReviewResult, type BuildResult, type HumanRequest, type SpecResult, type Settings, type AgentRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision, type ExecutionPause } from '../shared.js';
 
 const taskSelect = `SELECT t.*, g.issue_number, g.issue_url,
@@ -9,7 +10,7 @@ const taskSelect = `SELECT t.*, g.issue_number, g.issue_url,
     OR EXISTS (SELECT 1 FROM runs WHERE task_id = t.id)
     OR EXISTS (SELECT 1 FROM chat_messages WHERE task_id = t.id)) AS has_results
   FROM tasks t LEFT JOIN github_issues g ON g.task_id = t.id`;
-type ResultsCleanup = { task_id: string; reset_id: string; run_ids: string; previous_pr: string | null };
+type ResultsCleanup = { task_id: string; reset_id: string; run_ids: string; previous_pr: string | null; plan: string | null };
 
 function reviewMetadata(plan: ReviewPlan) {
   const { diff, requirements, ...metadata } = plan;
@@ -17,7 +18,8 @@ function reviewMetadata(plan: ReviewPlan) {
 }
 
 function parseTask(task: Task): Task {
-  return { ...task, spec_decision: typeof task.spec_decision === 'string' ? JSON.parse(task.spec_decision) : task.spec_decision };
+  return { ...task, results_restart: typeof task.results_restart === 'string' ? JSON.parse(task.results_restart) : task.results_restart,
+    spec_decision: typeof task.spec_decision === 'string' ? JSON.parse(task.spec_decision) : task.spec_decision };
 }
 
 export class Problem extends Error {
@@ -49,7 +51,7 @@ export class Store {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       const version = this.db.pragma('user_version', { simple: true });
-      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13 && version !== 14 && version !== 15 && version !== 16 && version !== 17 && version !== 18 && version !== 19) throw new Error('Версия базы новее приложения. Обновите приложение.');
+      if (!Number.isInteger(version) || Number(version) < 0 || Number(version) > 20) throw new Error('Версия базы новее приложения. Обновите приложение.');
       this.db.transaction(() => {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS projects (
@@ -153,6 +155,8 @@ export class Store {
         this.db.exec(`CREATE TABLE IF NOT EXISTS result_cleanups (
           task_id TEXT PRIMARY KEY REFERENCES tasks(id), reset_id TEXT NOT NULL UNIQUE,
           run_ids TEXT NOT NULL, previous_pr TEXT);`);
+        if (!taskColumns.some(c => c.name === 'results_restart')) this.db.exec('ALTER TABLE tasks ADD COLUMN results_restart TEXT');
+        if (!(this.db.pragma('table_info(result_cleanups)') as { name: string }[]).some(c => c.name === 'plan')) this.db.exec('ALTER TABLE result_cleanups ADD COLUMN plan TEXT');
         // Historical review events expose only plan metadata, as new events do.
         for (const row of this.db.prepare("SELECT id, payload FROM events WHERE type = 'review.plan'").all() as { id: number; payload: string }[]) {
           const payload = JSON.parse(row.payload) as { plan: ReviewPlan };
@@ -168,7 +172,7 @@ export class Store {
           this.db.prepare('UPDATE tasks SET state_version = state_version + 1 WHERE id = ?').run(run.task_id);
           this.event('dependency.interrupted', run.task_id, { run_id: run.id });
         }
-        this.db.pragma('user_version = 19');
+        this.db.pragma('user_version = 20');
         // No OS proof survives restart. Never infer termination from SQLite run status.
         if (Number(version) < 13) {
           this.db.exec(`UPDATE tasks SET stop_unverified = 1
@@ -331,7 +335,10 @@ export class Store {
       this.event('task.execution-unblocked', id, {});
     }).immediate();
   }
-  beginResultsReset(projectId: string, id: string, version: number, resetId: string) {
+  resultsResetPlan(projectId: string, id: string, role: AgentRun['role']) {
+    return planResultsReset(this.rawTask(projectId, id), this.runs(), role, this.project(projectId).state_version);
+  }
+  beginResultsReset(projectId: string, id: string, version: number, resetId: string, role: AgentRun['role'] = 'spec') {
     const task = this.rawTask(projectId, id);
     if (task.state_version !== version) throw new Problem(409, 'Карточка изменилась. Обновите её перед сбросом результатов.');
     const reason = resultsResetBlocker(task);
@@ -343,24 +350,49 @@ export class Store {
       || this.db.prepare("SELECT 1 FROM chat_messages WHERE task_id = ? AND status = 'sending'").get(id)) {
       throw new Problem(409, 'Исполнение или доставка сообщений ещё не завершены. Сначала остановите исполнение и выполните сверку.');
     }
-    const runIds = this.runs().filter(run => run.task_id === id).map(run => run.id);
+    const plan = this.resultsResetPlan(projectId, id, role);
+    if (role !== 'spec' && !plan.runs.length) throw new Problem(409, 'У выбранного этапа нет результатов для сброса.');
+    const runIds = plan.runs.map(run => run.id), ids = JSON.stringify(runIds);
     const previousPr = task.publication_status === 'confirmed'
       ? { number: task.pr_number, url: task.pr_url, host: this.project(projectId).host, repository: this.project(projectId).repository } : null;
-    this.db.prepare('INSERT INTO result_cleanups VALUES (?, ?, ?, ?)').run(id, resetId, JSON.stringify(runIds), previousPr ? JSON.stringify(previousPr) : null);
-    this.db.prepare('DELETE FROM human_requests WHERE task_id = ?').run(id);
-    this.db.prepare('DELETE FROM chat_messages WHERE task_id = ?').run(id);
-    this.db.prepare('DELETE FROM run_output WHERE run_id IN (SELECT id FROM runs WHERE task_id = ?)').run(id);
-    this.db.prepare('DELETE FROM review_plans WHERE build_id IN (SELECT id FROM runs WHERE task_id = ?)').run(id);
-    this.db.prepare('DELETE FROM runs WHERE task_id = ?').run(id);
+    this.db.prepare('INSERT INTO result_cleanups (task_id, reset_id, run_ids, previous_pr, plan) VALUES (?, ?, ?, ?, ?)')
+      .run(id, resetId, ids, previousPr ? JSON.stringify(previousPr) : null, JSON.stringify(plan));
+    const removedReferences = [...runIds,
+      ...(this.db.prepare('SELECT id FROM human_requests WHERE run_id IN (SELECT value FROM json_each(?))').all(ids) as { id: string }[]).map(r => r.id),
+      ...(this.db.prepare('SELECT id FROM chat_messages WHERE task_id = ? AND (run_id IS NULL OR run_id IN (SELECT value FROM json_each(?)))').all(id, ids) as { id: string }[]).map(r => r.id)];
+    this.db.prepare('DELETE FROM human_requests WHERE run_id IN (SELECT value FROM json_each(?))').run(ids);
+    this.db.prepare('DELETE FROM chat_messages WHERE task_id = ? AND (run_id IS NULL OR run_id IN (SELECT value FROM json_each(?)))').run(id, ids);
+    this.db.prepare('DELETE FROM run_output WHERE run_id IN (SELECT value FROM json_each(?))').run(ids);
+    this.db.prepare('DELETE FROM review_plans WHERE build_id IN (SELECT value FROM json_each(?))').run(ids);
+    for (const run of this.runs().filter(run => run.task_id === id && !runIds.includes(run.id))) {
+      if (run.parent_run_id && runIds.includes(run.parent_run_id)) {
+        this.db.prepare('UPDATE runs SET parent_run_id = ? WHERE id = ?').run(run.round_id ?? run.spec_run_id, run.id);
+      }
+      const savedPlan = this.reviewPlan(run.id);
+      if (savedPlan) {
+        for (const check of savedPlan.checks) if (check.reuse_run_id && (runIds.includes(check.reuse_run_id)
+          || !this.runs().some(review => review.id === check.reuse_run_id && applicableReview(review, run)))) {
+          delete check.reuse_run_id; check.required = true; check.reason = 'Результат сброшен; требуется новый независимый Review.';
+        }
+        this.db.prepare('UPDATE review_plans SET plan = ? WHERE build_id = ?').run(JSON.stringify(savedPlan), run.id);
+      }
+      const diagnostic = run.diagnostic!;
+      diagnostic.dependency_checks = diagnostic.dependency_checks?.filter(check => !check.continuation_run_id || !runIds.includes(check.continuation_run_id));
+      this.db.prepare('UPDATE runs SET diagnostic = ? WHERE id = ?').run(JSON.stringify(diagnostic), run.id);
+    }
+    this.db.prepare('DELETE FROM runs WHERE id IN (SELECT value FROM json_each(?))').run(ids);
     this.db.prepare(`UPDATE requests SET response = '{"results_reset":true}'
       WHERE json_valid(fingerprint) AND json_extract(fingerprint, '$[1]') = ?
         AND json_extract(fingerprint, '$[2]') = ? AND json_extract(fingerprint, '$[0]') <> 'task.reset-results'`).run(projectId, id);
-    // Keep requirements history and previous resets; execution events can contain session IDs and old feedback.
-    this.db.prepare("DELETE FROM events WHERE task_id = ? AND type NOT IN ('task.created','task.edited','task.issue-updated','task.results-reset')").run(id);
-    this.db.prepare(`UPDATE tasks SET stage = 'backlog', run_state = 'idle', spec_decision = NULL,
+    // Execution events may embed sessions, feedback, plans and deleted result references.
+    for (const event of this.db.prepare("SELECT id, payload FROM events WHERE task_id = ? AND type NOT IN ('task.created','task.edited','task.issue-updated','task.results-reset')").all(id) as { id: number; payload: string }[]) {
+      if (role === 'spec' || removedReferences.some(ref => event.payload.includes(ref))) this.db.prepare('DELETE FROM events WHERE id = ?').run(event.id);
+    }
+    this.db.prepare(`UPDATE tasks SET stage = ?, run_state = 'idle', spec_decision = ?, results_restart = ?,
       publication_status = NULL, pr_url = NULL, pr_number = NULL, reset_pending = 1, reset_error = NULL,
       title_state = CASE WHEN title IS NULL THEN 'interrupted' ELSE 'completed' END,
-      state_version = state_version + 1 WHERE id = ?`).run(id);
+      state_version = state_version + 1 WHERE id = ?`).run(plan.restart.role === 'spec' ? 'backlog' : plan.restart.role.startsWith('review-') ? 'review' : plan.restart.role,
+        role === 'spec' ? null : task.spec_decision ? JSON.stringify(task.spec_decision) : null, JSON.stringify(plan.restart), id);
     this.event('task.results-reset-started', id, { reset_id: resetId });
     return { reset_id: resetId };
   }
@@ -373,10 +405,41 @@ export class Store {
       if (!cleanup || cleanup.reset_id !== resetId) return;
       this.db.prepare('UPDATE tasks SET reset_pending = 0, reset_error = NULL, state_version = state_version + 1 WHERE id = ?').run(taskId);
       this.event('task.results-reset', taskId, { removed_runs: JSON.parse(cleanup.run_ids).length,
+        stage: cleanup.plan ? (JSON.parse(cleanup.plan) as ResultsResetPlan).role : 'spec',
         previous_pr: cleanup.previous_pr ? JSON.parse(cleanup.previous_pr) : null,
-        reason: 'Все результаты сброшены. Требования и Git-результаты сохранены. Новый запуск — отдельным действием.' });
+        reason: 'Выбранные результаты и их зависимости сброшены. Требования и Git-результаты сохранены. Новый запуск — отдельным действием.' });
       this.db.prepare('DELETE FROM result_cleanups WHERE task_id = ?').run(taskId);
     }).immediate();
+  }
+  queueResultsRestart(projectId: string, taskId: string, version: number, directory: string) {
+    const task = this.task(projectId, taskId);
+    if (task.state_version !== version || task.run_state !== 'idle' || !task.results_restart
+      || task.publication_status || task.execution_unverified || task.stop_unverified) throw new Problem(409, 'Новый запуск после сброса недоступен. Обновите карточку или выполните сверку.');
+    const next = this.resultsResetPlan(projectId, taskId, 'approve').restart;
+    if (next.role !== task.results_restart.role || next.spec_run_id !== task.results_restart.spec_run_id
+      || next.build_id !== task.results_restart.build_id) throw new Problem(409, `Prerequisites изменились. ${next.reason} Повторите сброс соответствующего этапа.`);
+    if (next.role === 'spec') return this.queueSpec(projectId, taskId, version, directory, 'spec');
+    const source = this.readRun(projectId, taskId, (next.build_id ?? next.spec_run_id)!);
+    const id = randomUUID();
+    const run: AgentRun = { ...source, id, role: next.role, parent_run_id: next.role === 'build' ? null : source.id,
+      spec_run_id: next.role === 'build' ? source.id : source.spec_run_id, round_id: next.build_id ?? null,
+      repair_round_id: source.repair_round_id, repair_attempt: source.repair_attempt, stale: 0, diagnostic: {}, output_preview: null, output_at: null, output_version: null, output_length: null,
+      started_at: null, finished_at: null, status: 'queued', outcome: null, error: null, report: 0 };
+    if (next.role === 'build') {
+      run.repair_round_id = null; run.repair_attempt = 0;
+      run.branch = `swfactory/${taskId}/${id}`; run.worktree = join(directory, 'worktrees', projectId, id);
+      run.base_sha = null; run.head_sha = null; run.source_hash = null;
+      run.config = this.settings(projectId); run.project_version = this.project(projectId).state_version;
+      delete run.review_plan;
+    } else if (next.role === 'approve' && !this.reviewPasses(run)) throw new Problem(409, 'Сначала требуются все актуальные Review PASS.');
+    this.db.prepare(`INSERT INTO runs (id, task_id, project_id, description_revision, config, project_version,
+      status, branch, worktree, base_sha, outcome, error, report, parent_run_id, role, head_sha, source_hash, spec_run_id, round_id, stale, repair_round_id, repair_attempt)
+      VALUES (@id, @task_id, @project_id, @description_revision, @config, @project_version,
+      @status, @branch, @worktree, @base_sha, @outcome, @error, @report, @parent_run_id, @role, @head_sha, @source_hash, @spec_run_id, @round_id, @stale, @repair_round_id, @repair_attempt)`)
+      .run({ ...run, config: JSON.stringify(run.config) });
+    this.db.prepare("UPDATE tasks SET results_restart = NULL, run_state = 'queued', state_version = state_version + 1 WHERE id = ?").run(taskId);
+    this.event(`${run.role}.queued`, taskId, { run_id: id, reason: 'Новый запуск после сброса; свежая session.' });
+    return run;
   }
   createTask(projectId: string, description: string, version: number) {
     if (this.project(projectId).state_version !== version) throw new Problem(409, 'Настройки проекта изменились. Обновите страницу.');
@@ -438,7 +501,7 @@ export class Store {
     const reviewed = this.runs().find(r => r.task_id === id && r.role.startsWith('review-'));
     if (reviewed) this.invalidateReviews(reviewed);
     this.db.prepare("UPDATE human_requests SET status = 'revoked' WHERE task_id = ? AND status = 'pending'").run(id);
-    this.db.prepare("UPDATE tasks SET stage = 'backlog', run_state = 'idle', description = ?, title = NULL, title_state = 'pending', revision = revision + 1, state_version = state_version + 1 WHERE id = ?").run(description, id);
+    this.db.prepare("UPDATE tasks SET results_restart = NULL, stage = 'backlog', run_state = 'idle', description = ?, title = NULL, title_state = 'pending', revision = revision + 1, state_version = state_version + 1 WHERE id = ?").run(description, id);
     this.db.prepare('INSERT INTO task_revisions(task_id, revision, description) VALUES (?, ?, ?)').run(id, task.revision + 1, description);
     this.db.prepare("UPDATE chat_messages SET status = 'revoked' WHERE task_id = ? AND status = 'queued'").run(id);
     this.event('task.edited', id, { revision: task.revision + 1 });
@@ -666,7 +729,7 @@ export class Store {
     this.db.prepare(`INSERT INTO runs (id, task_id, project_id, description_revision, config, project_version,
       status, branch, worktree, base_sha, outcome, error, report, parent_run_id, role, head_sha, source_hash, spec_run_id, round_id, stale, repair_round_id, repair_attempt) VALUES (@id, @task_id, @project_id, @description_revision, @config, @project_version,
       @status, @branch, @worktree, @base_sha, @outcome, @error, @report, @parent_run_id, @role, @head_sha, @source_hash, @spec_run_id, @round_id, @stale, @repair_round_id, @repair_attempt)`).run({ ...run, config: JSON.stringify(run.config) });
-    this.db.prepare("UPDATE tasks SET run_state = 'queued', state_version = state_version + 1 WHERE id = ?").run(taskId);
+    this.db.prepare("UPDATE tasks SET results_restart = NULL, run_state = 'queued', state_version = state_version + 1 WHERE id = ?").run(taskId);
     if (task.title_state === 'pending' || task.title_state === 'running') {
       this.db.prepare("UPDATE tasks SET title_state = 'interrupted' WHERE id = ?").run(taskId);
       this.event('title.interrupted', taskId, { revision: task.revision, reason: 'spec' });
@@ -682,6 +745,7 @@ export class Store {
   }
   queueBuild(projectId: string, taskId: string, version: number) {
     const task = this.task(projectId, taskId);
+    if (task.results_restart) throw new Problem(409, 'После сброса используйте «Запустить заново»: новый Build требует нового worktree.');
     const previous = this.runs().filter(run => run.task_id === taskId).at(-1);
     if (task.state_version !== version || task.stage !== 'build' || task.run_state !== 'idle'
       || !previous || previous.role !== 'spec' || previous.outcome !== 'READY' || previous.status !== 'completed'
@@ -699,6 +763,7 @@ export class Store {
   queueReview(projectId: string, taskId: string, version: number) {
     return this.db.transaction(() => {
       const task = this.task(projectId, taskId);
+      if (task.results_restart) throw new Problem(409, 'После сброса используйте «Запустить заново».');
       const previous = this.runs().filter(run => run.task_id === taskId).at(-1);
       if (task.state_version !== version || task.stage !== 'review' || task.run_state !== 'idle'
         || !previous || previous.status !== 'completed' || previous.description_revision !== task.revision
@@ -714,10 +779,12 @@ export class Store {
         this.db.prepare("UPDATE tasks SET stage = 'approve' WHERE id = ?").run(taskId);
         return this.queueApprove(projectId, taskId, version);
       }
-      const index = previous.role === 'build' ? 0 : reviewRoles.indexOf(previous.role as typeof reviewRoles[number]) + 1;
-      if (index >= reviewRoles.length) throw new Problem(409, 'Раунд Review уже завершён.');
+      const roundId = previous.round_id ?? previous.id;
+      const build = this.readRun(projectId, taskId, roundId);
+      const nextRole = reviewRoles.find(role => !this.runs().some(run => run.task_id === taskId && run.round_id === roundId && run.role === role && applicableReview(run, build)));
+      if (!nextRole) throw new Problem(409, 'Раунд Review уже завершён.');
       const run: AgentRun = { ...previous, output_preview: null, output_at: null, output_version: null, output_length: null, diagnostic: {}, started_at: null, finished_at: null, id: randomUUID(), parent_run_id: previous.id,
-        round_id: previous.round_id ?? previous.id, role: reviewRoles[index], status: 'queued', outcome: null, error: null, report: 0 };
+        round_id: roundId, role: nextRole, status: 'queued', outcome: null, error: null, report: 0 };
       this.db.prepare(`INSERT INTO runs (id, task_id, project_id, description_revision, config, project_version,
         status, branch, worktree, base_sha, outcome, error, report, parent_run_id, role, head_sha, source_hash, spec_run_id, round_id, stale, repair_round_id, repair_attempt)
         VALUES (@id, @task_id, @project_id, @description_revision, @config, @project_version,
@@ -766,9 +833,10 @@ export class Store {
   queueApprove(projectId: string, taskId: string, version: number) {
     return this.db.transaction(() => {
       const task = this.task(projectId, taskId);
+      if (task.results_restart) throw new Problem(409, 'После сброса используйте «Запустить заново».');
       const previous = this.runs().filter(r => r.task_id === taskId).at(-1);
       if (task.state_version !== version || task.stage !== 'approve' || task.run_state !== 'idle'
-        || !previous || previous.role !== (requiredReviews(previous).at(-1) ?? 'build') || !this.reviewPasses(previous)) throw new Problem(409, 'Нужны все актуальные PASS.');
+        || !previous || !this.reviewPasses(previous)) throw new Problem(409, 'Нужны все актуальные PASS.');
       const run: AgentRun = { ...previous, output_preview: null, output_at: null, output_version: null, output_length: null, diagnostic: {}, started_at: null, finished_at: null, id: randomUUID(), parent_run_id: previous.id, role: 'approve', status: 'queued', outcome: null, error: null, report: 0 };
       this.db.prepare(`INSERT INTO runs (id, task_id, project_id, description_revision, config, project_version,
         status, branch, worktree, base_sha, outcome, error, report, parent_run_id, role, head_sha, source_hash, spec_run_id, round_id, stale, repair_round_id, repair_attempt)
@@ -875,6 +943,12 @@ export class Store {
       this.db.prepare("UPDATE runs SET stale = 1 WHERE task_id = ? AND (role LIKE 'review-%' OR role = 'approve')").run(run.task_id);
       this.db.prepare("UPDATE tasks SET stage = 'needs-human', run_state = 'interrupted', state_version = state_version + 1 WHERE id = ? AND stage IN ('review','approve','needs-human') AND run_state IN ('idle','completed','waiting')").run(run.task_id);
       this.db.prepare("UPDATE human_requests SET status = 'revoked' WHERE task_id = ? AND role = 'approve' AND (status = 'pending' OR json_extract(answers, '$[0]') = 'publish')").run(run.task_id);
+      if (this.rawTask(run.project_id, run.task_id).results_restart) {
+        this.db.prepare('UPDATE runs SET stale = 1 WHERE id = ?').run(run.round_id ?? run.id);
+        const next = this.resultsResetPlan(run.project_id, run.task_id, 'approve').restart;
+        this.db.prepare("UPDATE tasks SET results_restart = ?, stage = ?, run_state = 'idle' WHERE id = ?")
+          .run(JSON.stringify(next), next.role === 'spec' ? 'backlog' : next.role.startsWith('review-') ? 'review' : next.role, run.task_id);
+      }
       this.event('review.stale', run.task_id, { run_id: run.id, reason: 'Git state или source изменён' });
     })();
   }
