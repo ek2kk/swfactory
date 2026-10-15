@@ -1,3 +1,4 @@
+import { normalizeUsage } from '../usage.js';
 import { prepareFast } from './fast.js';
 import { dependenciesSchema, validateDependencies } from './dependencies.js';
 import { executeInteractive, type Steer } from './interactive.js';
@@ -71,6 +72,7 @@ async function executeResult<T>(input: CodexInput, schema: object, validate: (va
       const child = spawn(executable, ['exec', ...fastArgs, '--json', '--dangerously-bypass-approvals-and-sandbox',
         '--model', input.model, ...(input.reasoningEffort ? ['-c', `model_reasoning_effort=${JSON.stringify(input.reasoningEffort)}`] : []), '--output-schema', join(input.directory, 'schema.json'), '--color', 'never', '-'],
       { cwd: input.cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+      child.once('spawn', () => input.metadata?.({ model_started_at: new Date().toISOString() }));
       let stderrBuffer = '', stderrTail = '';
       let buffer = '', message = '', started = false, completed = false, thread = false, failed: Error | undefined;
       // shortcut: logs are capped at 32 MiB per run; add rotation for larger workloads.
@@ -100,8 +102,8 @@ async function executeResult<T>(input: CodexInput, schema: object, validate: (va
               message = event.item.text;
               if (message.trim()) input.output?.(message);
             }
-            if (event.type === 'turn.completed') { if (!started) throw new Error('Incomplete turn'); if (!message) throw new CodexFailure('missing_artifact'); completed = true;
-              if (event.usage) { const usage = Object.fromEntries(['input_tokens', 'output_tokens', 'cached_input_tokens'].filter(k => Number.isSafeInteger(event.usage[k]) && event.usage[k] >= 0).map(k => [k, event.usage[k]])); input.metadata?.({ usage }); } }
+            if (event.type === 'turn.completed') { if (!started) throw new Error('Incomplete turn'); if (event.usage) input.metadata?.({ usage: normalizeUsage(event.usage), usage_accounting: { version: 1, source: 'exec-turn' } });
+              if (!message) throw new CodexFailure('missing_artifact'); completed = true; }
           }
           if (buffer.length > 2 * 1024 * 1024) throw new Error('Oversized event');
         } catch (error) { fail(error instanceof Problem ? error : new CodexFailure('protocol_error')); }

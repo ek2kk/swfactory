@@ -19,7 +19,7 @@ assert.equal(process.argv[2], 'app-server');
 assert.deepEqual(process.argv.slice(2), ['app-server', '--listen', 'stdio://']);
 const send = data => console.log(JSON.stringify(data));
 const reply = (id, result) => send({ id, result });
-const event = (method, params) => send({ method, params: { threadId: 'thread-1', ...params } });
+const event = (method, params) => send({ method, params: { threadId: 'thread-1', turnId: 'turn-1', ...params } });
 let initialized = false;
 require('node:readline').createInterface({input:process.stdin}).on('line', line => {
  const r = JSON.parse(line);
