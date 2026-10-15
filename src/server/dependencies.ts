@@ -94,7 +94,7 @@ export async function verifyDependencies(project: Project, dependencies: Depende
         if (identity.host !== project.host || identity.repository.toLowerCase() !== project.repository.toLowerCase()) throw new Problem(422, 'Host/repository зависимости не совпадает с сохранённым проектом.');
       }
       const issue = dependency.issue_url ? await api(`issues/${githubLink(dependency.issue_url, 'issues').number}`) : null;
-      if (issue && (issue.number !== githubLink(dependency.issue_url!, 'issues').number || typeof issue.html_url !== 'string' || issue.html_url.toLowerCase() !== dependency.issue_url!.toLowerCase() || issue.pull_request || !['open', 'closed'].includes(issue.state) || typeof issue.body !== 'string' && issue.body !== null)) throw new Problem(422, 'Ответ GitHub issue неоднозначен.');
+      if (dependency.issue_url && (!issue || typeof issue !== 'object' || Array.isArray(issue) || issue.number !== githubLink(dependency.issue_url, 'issues').number || typeof issue.html_url !== 'string' || issue.html_url.toLowerCase() !== dependency.issue_url.toLowerCase() || issue.pull_request || !['open', 'closed'].includes(issue.state) || typeof issue.body !== 'string' && issue.body !== null)) throw new Problem(422, 'Ответ GitHub issue неоднозначен.');
       if (dependency.issue_must_be_closed && issue.state !== 'closed') {
         result.state = 'blocked'; result.reason = 'Закрытие issue задано отдельным условием; issue ещё открыта.'; results.push(result); continue;
       }
@@ -143,7 +143,8 @@ export async function verifyDependencies(project: Project, dependencies: Depende
           const changed = (await command('git', ['diff', '--name-only', '--no-renames', '-z', `${pr.merge_commit_sha}^1`, pr.merge_commit_sha], project.checkout)).split('\0').filter(Boolean);
           if (!changed.length) { result.evidence.push(`${url}: PR не содержит доказанных изменений кода`); continue; }
           if (await command('git', ['--literal-pathspecs', 'diff', '--name-only', '--no-ext-diff', '--no-textconv', '--ignore-submodules=none', '-z', pr.merge_commit_sha, target, '--', ...changed], project.checkout)) {
-            throw new Problem(422, `${url}: файлы PR изменены или отменены в target branch; наличие требуемых изменений неоднозначно. Нужна точная актуальная implementing PR, обход подтверждением запрещён.`);
+            result.state = 'unknown'; result.reason = `${url}: файлы PR изменены или отменены в target branch; наличие требуемых изменений неоднозначно. Нужна точная актуальная implementing PR, обход подтверждением запрещён.`;
+            result.evidence.push(result.reason); continue;
           }
           result.state = 'cleared'; result.reason = `Merged PR доступен в ${project.target_branch} (${target}).`;
           result.evidence.push(`${url} · merge ${pr.merge_commit_sha} · ${pr.merged_at}`); break;

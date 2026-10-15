@@ -134,6 +134,51 @@ test('malformed GitHub PR answers are unknown even when their commit is in targe
   }
 });
 
+test('malformed GitHub issue answers cannot skip issue validation or the issue–PR relationship', async t => {
+  const f = repository(t), merged = f.merge(), gh = github(f.project, () => merged);
+  for (const value of [null, false, 0, '', [], {}]) {
+    let followupRequests = 0;
+    const command: Run = async (...args) => {
+      if (args[0] === 'gh' && args[1][3] === 'repos/test/repo/issues/10') return JSON.stringify(value);
+      if (args[0] === 'gh' && args[1][0] !== 'auth') followupRequests++;
+      return gh.command(...args);
+    };
+    for (const d of [dependency, { ...dependency, pr_url: null }, { ...dependency, kind: 'condition' as const, pr_url: null }]) {
+      const checked = await verifyDependencies(f.project, [d], merged, '', 'model', signal(), command,
+        async () => { assert.fail('invalid issue must not reach non-code verification'); });
+      assert.equal(checked.results[0].state, 'unknown', JSON.stringify(value));
+      assert.match(checked.results[0].reason, /Ответ GitHub issue неоднозначен/);
+    }
+    assert.equal(followupRequests, 0, 'invalid issue must stop before PR discovery or verification');
+  }
+  const prOnly = await verifyDependencies(f.project, [{ ...dependency, issue_url: null }], merged, '', 'model', signal(), gh.command);
+  assert.equal(prOnly.results[0].state, 'cleared');
+});
+
+test('issue-only discovery checks replacement PR after superseded PR and stays unknown without one', async t => {
+  const f = repository(t), superseded = f.merge(), gh = github(f.project, () => superseded);
+  writeFileSync(join(f.checkout, 'api.ts'), 'export const api = 2;');
+  f.git('add', '.'); f.git('commit', '-m', 'replace API implementation'); f.git('push', 'origin', 'main');
+  const replacement = f.git('rev-parse', 'HEAD');
+  for (const numbers of [[11, 12], [11]]) {
+    const command: Run = async (...args) => {
+      if (args[0] === 'gh' && args[1][3]?.includes('/timeline?')) return JSON.stringify([numbers.map(number => ({
+        event: 'cross-referenced', source: { issue: { number, html_url: `https://github.com/test/repo/pull/${number}`, pull_request: {} } },
+      }))]);
+      if (args[0] === 'gh' && args[1][3] === 'repos/test/repo/pulls/12') {
+        const old = JSON.parse(await gh.command('gh', args[1].map(arg => arg.replace('pulls/12', 'pulls/11')), args[2]));
+        return JSON.stringify({ ...old, number: 12, html_url: 'https://github.com/test/repo/pull/12', merge_commit_sha: replacement });
+      }
+      return gh.command(...args);
+    };
+    const checked = await verifyDependencies(f.project, [{ ...dependency, pr_url: null }], replacement, '', 'model', signal(), command);
+    assert.equal(checked.results[0].state, numbers.length === 1 ? 'unknown' : 'cleared');
+    assert.ok(checked.results[0].evidence.some(e => e.includes(`${pr}: файлы PR изменены`)));
+    if (numbers.length === 1) assert.match(checked.results[0].reason, /наличие требуемых изменений неоднозначно/);
+    else assert.ok(checked.results[0].evidence.some(e => e.includes(`pull/12 · merge ${replacement}`)));
+  }
+});
+
 async function application(t: { after(fn: () => void | Promise<void>): void }, options: { legacy?: boolean; noCode?: boolean; diagnosticEmpty?: boolean; useSpec?: boolean; reviewBlocked?: boolean } = {}) {
   const f = repository(t); let merged = f.base, buildCalls = 0, diagnoseCalls = 0, hold: Promise<void> | undefined;
   let commandHook: ((file: string, args: string[]) => void) | undefined;
