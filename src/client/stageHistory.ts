@@ -19,7 +19,7 @@ export function stageTabStatus(role: AgentRun['role'], runs: AgentRun[], revisio
   if (!role.startsWith('review-')) return stageStatus(history, revision, requests);
   const latest = runs.at(-1);
   const plan = latest?.review_plan;
-  const check = latest && !latest.stale && latest.description_revision === revision && plan?.revision === revision
+  const check = latest && !latest.revoked && !latest.stale && latest.description_revision === revision && plan?.revision === revision
     ? plan.checks.find(check => check.role === role) : undefined;
   if (check?.reuse_run_id) {
     const status = stageStatus(history.filter(run => run.id === check.reuse_run_id), revision, requests);
@@ -33,7 +33,7 @@ export function stageStatus(runs: AgentRun[], revision: number, requests: HumanR
   const run = runs.at(-1);
   let state: keyof typeof states = 'idle';
   if (run) {
-    if (run.stale || run.description_revision !== revision) state = 'stale';
+    if (run.revoked || run.stale || run.description_revision !== revision) state = 'stale';
     else if (run.status === 'queued' || run.status === 'running') state = run.status;
     else if (run.status === 'completed' && !requests.some(q => q.run_id === run.id && q.status === 'pending')
       && run.outcome === (run.role.startsWith('review-') ? 'PASS' : run.role === 'approve' ? 'APPROVE' : 'READY')) state = 'success';

@@ -132,3 +132,9 @@ test('legacy UI and UX reports remain on distinct history tabs alongside new com
   assert.ok(stageRoles([...history, run('combined', { role: 'review-ui-ux' })]).includes('review-ui-ux'));
   assert.ok(stageRoles([...history, run('combined', { role: 'review-ui-ux' })]).includes('review-ux'));
 });
+
+// Stop preserves a report without granting it authority in another cycle.
+test('revoked successful reports remain historical at the same revision', () => {
+  const run = { role: 'spec', status: 'completed', outcome: 'READY', description_revision: 1, revoked: 1 } as AgentRun;
+  assert.equal(stageStatus([run], 1, []).state, 'stale');
+});

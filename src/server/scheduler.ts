@@ -31,6 +31,12 @@ export class Scheduler {
     this.load();
   }
 
+  retain(taskId: string, work: () => Promise<void>) {
+    if (this.active.has(taskId)) return;
+    this.active.add(taskId);
+    void work().finally(() => { this.active.delete(taskId); this.drain(); });
+  }
+
   enqueue(taskId: string, work: () => Promise<void>, log = this.log?.child({ task_id: taskId })): Promise<void> {
     return new Promise((resolve, reject) => {
       this.pending.push({ taskId, work, resolve, reject, enqueued: Date.now(), log });

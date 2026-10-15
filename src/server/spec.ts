@@ -6,7 +6,7 @@ import { classifySpec, validateDecision } from './specDecision.js';
 import { Chat } from './chat.js';
 import { mkdirSync, realpathSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { requiredReviews, type ReviewRole, type AgentRun, type RunDiagnostic } from '../shared.js';
+import { publicationBlocksLocal, requiredReviews, type ReviewRole, type AgentRun, type RunDiagnostic } from '../shared.js';
 import { Store, Problem } from './store.js';
 import { preflight, verifyRepository, fetchBase, run as git, type Run } from './git.js';
 import { executeApprove, validateApprove, type ExecuteApprove, executeSpec, validateSpec, executeBuild, validateBuild, executeReview, validateReview, type ExecuteReview, type ExecuteBuild, type ExecuteSpec } from './codex.js';
@@ -22,6 +22,7 @@ import type { DependencyCheck } from '../shared.js';
 
 export class SpecController {
   private scopes = new Map<string, ProcessScope>();
+  private retired = new Map<string, Set<ProcessScope>>();
   private interrupts = new Map<string, { run: AgentRun; stop: () => void }>();
   private deletions = new Map<string, Promise<void>>();
   private verifications = new Map<string, number>();
@@ -46,15 +47,28 @@ export class SpecController {
         log?.warn({ event: 'execution.paused', reset_at: error.resetAt, state_confirmed: true, reason: 'rate_limit' });
       }
     }, log);
+    // Recover only identities recorded by this backend; legacy flags never reserve a slot.
+    const taskIds = store.db.prepare("SELECT DISTINCT task_id FROM execution_processes WHERE state <> 'exited'").all() as { task_id: string }[];
+    for (const { task_id } of taskIds) {
+      const scope = this.scope(task_id);
+      scope.restore(store.executionProcesses(task_id).filter(row => row.state !== 'exited'));
+      if (scope.hasLiveProcesses()) this.scheduler.retain(task_id, async () => {
+        while (!this.closing && scope.hasLiveProcesses()) await new Promise(resolve => setTimeout(resolve, 100));
+      });
+      const task = store.db.prepare('SELECT deletion_state, execution_generation FROM tasks WHERE id = ?').get(task_id) as { deletion_state: string | null; execution_generation: number };
+      if (task.execution_generation > 0 && store.runs().filter(r => r.task_id === task_id).every(r => r.revoked)) {
+        this.retired.set(task_id, new Set([scope])); this.scopes.delete(task_id);
+        void scope.stop().catch(() => {});
+      }
+    }
   }
 
   private scope(taskId: string, log?: FastifyBaseLogger) {
     let scope = this.scopes.get(taskId);
     if (!scope) {
-      scope = new ProcessScope(pid => {
-        this.store.db.prepare('UPDATE tasks SET stop_unverified = 1 WHERE id = ?').run(taskId);
-        this.store.event('execution.process-started', taskId, { pid, pgid: pid });
-      }, log);
+      const generation = (this.store.db.prepare('SELECT execution_generation FROM tasks WHERE id = ?').get(taskId) as { execution_generation: number }).execution_generation;
+      scope = new ProcessScope((_pid, row) => { this.store.recordProcess(taskId, row); this.publish(); }, log,
+        () => (this.store.db.prepare('SELECT execution_generation FROM tasks WHERE id = ?').get(taskId) as { execution_generation: number } | undefined)?.execution_generation === generation);
       this.scopes.set(taskId, scope);
     }
     return scope;
@@ -83,9 +97,9 @@ export class SpecController {
     const started = Date.now();
     log?.info({ event: publication ? 'publication.started' : 'run.started' });
     // Auto Spec can choose Build in this same run; bind the current role when a process starts.
-    try { await scope.run(work, () => this.runLog(run, log)); }
+    try { await scope.run(work, () => this.runLog(run, log), run.id); }
     finally {
-      if (scope.knownGroupsStopped()) this.store.db.prepare('UPDATE tasks SET execution_unverified = 0 WHERE id = ?').run(run.task_id);
+      if (this.store.hasRun(run) && scope.knownGroupsStopped() && this.store.executionProcesses(run.task_id).every(row => row.state === 'exited')) this.store.db.prepare('UPDATE tasks SET execution_unverified = 0, stop_unverified = legacy_execution_unknown WHERE id = ?').run(run.task_id);
       try {
         const saved = this.store.specRun(run.project_id, run.task_id, run.id);
         const task = this.store.rawTask(run.project_id, run.task_id);
@@ -101,9 +115,9 @@ export class SpecController {
   }
   assertResultsResetIdle(taskId: string) {
     if (this.dependencyWork.has(taskId) || this.scheduler.hasWork(taskId) || this.titles.hasWork(taskId) || this.chat.hasWork(taskId)
-      || this.scopes.get(taskId)?.hasWork() || this.deletions.has(taskId) || this.verifications.has(taskId)
+      || this.scopes.get(taskId)?.hasWork() || [...(this.retired.get(taskId) ?? [])].some(scope => scope.hasWork()) || this.deletions.has(taskId) || this.verifications.has(taskId)
       || [...this.interrupts.values()].some(control => control.run.task_id === taskId)) {
-      throw new Problem(409, 'Процессы или callbacks ещё не завершены. Дождитесь завершения или используйте «Остановить исполнение / сверить».');
+      throw new Problem(409, 'Процессы или callbacks ещё не завершены. Дождитесь завершения или используйте «Остановить».');
     }
   }
   completeResultsReset(taskId: string, resetId: string) {
@@ -131,18 +145,38 @@ export class SpecController {
     const done = (async () => {
       this.scheduler.cancel(taskId);
       this.chat.cancel(taskId);
+      for (const [id, control] of this.interrupts) if (control.run.task_id === taskId) {
+        try { control.stop(); } catch { /* ProcessScope also aborts the turn and process group. */ }
+        this.interrupts.delete(id);
+      }
+      const scope = this.scopes.get(taskId);
+      const scopes = new Set([...(this.retired.get(taskId) ?? []), ...(scope ? [scope] : [])]);
+      const stopDeadline = started + 4500;
+      if ([...scopes].some(scope => scope.hasKnownProcess)) this.scheduler.retain(taskId, async () => {
+        while (!this.closing && [...scopes].some(scope => scope.hasKnownProcess && scope.hasLiveProcesses())) await new Promise(resolve => setTimeout(resolve, 100));
+      });
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      let warning: string | undefined;
       try {
-        const scope = this.scopes.get(taskId);
-        const titleStop = this.titles.cancel(taskId);
-        await Promise.all([scope?.stop(), titleStop]);
-        const task = this.store.db.prepare('SELECT execution_unverified, stop_unverified FROM tasks WHERE id = ?').get(taskId) as { execution_unverified: number; stop_unverified: number };
-        if (task.stop_unverified || (task.execution_unverified && !scope)) throw new Error('Остановка всех потомков не подтверждена: detached-процесс мог потерять связь с родителем. Нужна ручная сверка процессов и remote публикации; автоматический повтор запрещён.');
-        this.store.finishDeletion(taskId, undefined, preserveVisibility);
-        this.scopes.delete(taskId);
-      } catch (error) { this.store.finishDeletion(taskId, (error as Error).message, preserveVisibility); }
+        await Promise.race([
+          Promise.all([...scopes].map(scope => scope.stop(Math.max(0, Math.min(4000, stopDeadline - Date.now())))).concat(this.titles.cancel(taskId, stopDeadline))),
+          new Promise<never>((_resolve, reject) => { deadline = setTimeout(() => reject(new Error('Остановка заняла больше 5 секунд. Известное исполнение продолжает учитываться и останавливаться.')), Math.max(0, started + 4900 - Date.now())); }),
+        ]);
+        const saved = this.store.rawTask(task.project_id, taskId);
+        if (saved.legacy_execution_unknown || (!this.store.executionProcesses(taskId).length && (saved.stop_unverified || (saved.execution_unverified && !scopes.size)))) {
+          this.store.db.prepare('UPDATE tasks SET legacy_execution_unknown = 1 WHERE id = ?').run(taskId);
+          warning = 'Данных о процессах прежнего запуска недостаточно для проверки. Его завершение неизвестно; новый запуск будет изолирован.';
+        }
+      } catch (error) { warning = (error as Error).message; }
+      finally { clearTimeout(deadline); }
+      if (!warning) this.store.db.prepare('UPDATE tasks SET execution_unverified = 0, stop_unverified = legacy_execution_unknown WHERE id = ?').run(taskId);
+      this.store.finishDeletion(taskId, warning, preserveVisibility);
+      if (preserveVisibility) this.store.releaseStoppedTask(task.project_id, taskId);
+      if (scope) { this.scopes.delete(taskId); scopes.add(scope); }
+      this.retired.set(taskId, new Set([...scopes].filter(scope => scope.hasPendingWork)));
       const saved = this.store.rawTask(task.project_id, taskId);
-      log?.info({ event: saved.deletion_state === 'deleted' ? 'task.stop-confirmed' : 'task.stop-unknown',
-        duration_ms: Date.now() - started, state_confirmed: true, execution_finished: saved.deletion_state === 'deleted',
+      log?.info({ event: warning ? 'task.stop-unknown' : 'task.stop-confirmed',
+        duration_ms: Date.now() - started, state_confirmed: true, execution_finished: !warning,
         stage: saved.stage, run_state: saved.run_state,
         publication_status: saved.publication_status });
       this.publish();
@@ -210,7 +244,7 @@ export class SpecController {
         check.status = check.results.some(r => r.state === 'unknown') ? 'error' : check.results.every(r => r.state === 'cleared') ? 'cleared' : 'blocked';
         check.reason = check.status === 'cleared' ? 'Все зависимости сняты.' : 'Продолжение запрещено: см. результат каждой зависимости.';
         if (await sourceHash(origin, this.command) !== check.source_hash) throw new Problem(409, 'Source изменился во время проверки; повторите её.');
-      });
+      }, undefined, origin.id);
       // Only this tool-free/read-only check may clear its own process marker after live OS proof.
       if (!scope.knownGroupsStopped() || scope.hasWork()) throw new Problem(409, 'Остановка процессов проверки не подтверждена.');
       if (this.closing || this.store.rawTask(origin.project_id, origin.task_id).state_version !== check.task_version) throw new Problem(409, 'Состояние изменилось во время проверки; результат не применён.');
@@ -242,7 +276,7 @@ export class SpecController {
         continuation = this.store.queueDependencyContinuation(origin, check, this.directory, role, fresh, reason);
       }
     } catch (error) {
-      if (error instanceof CodexFailure && error.kind === 'rate_limit') this.store.pauseExecution(error.resetAt);
+      if (this.store.hasRun(origin) && error instanceof CodexFailure && error.kind === 'rate_limit') this.store.pauseExecution(error.resetAt);
       check.status = error instanceof Problem && error.statusCode === 409 ? 'stale' : 'error';
       check.reason = error instanceof Problem ? error.message : 'Проверка GitHub или диагностика не завершена. Проверьте доступ и повторите действие; работа не продолжена.';
     } finally {
@@ -266,9 +300,9 @@ export class SpecController {
     control.stop();
   }
   private registerInterrupt(run: AgentRun, stop: (() => void) | null) {
+    if (!stop) this.interrupts.delete(run.id);
     if (!this.store.hasRun(run)) return;
     if (stop) this.interrupts.set(run.id, { run, stop });
-    else this.interrupts.delete(run.id);
     if (run.diagnostic?.can_interrupt !== !!stop) this.recordMetadata(run, { can_interrupt: !!stop });
   }
   private chatContext(run: AgentRun) {
@@ -283,7 +317,12 @@ export class SpecController {
     this.publish();
   }
   private recordMetadata(run: AgentRun, value: RunDiagnostic) {
-    if (this.store.blocked(run.task_id) || !this.store.hasRun(run)) return;
+    if (!this.store.hasRun(run)) {
+      for (const key of ['session_id', 'turn_id'] as const) if (value[key]) this.store.db.prepare('UPDATE runs SET diagnostic = json_set(diagnostic, ?, ?) WHERE id = ?')
+        .run(`$.${key}`, value[key], run.id);
+      return;
+    }
+    if (this.store.blocked(run.task_id)) return;
     run.diagnostic = { ...run.diagnostic, ...value };
     this.store.db.transaction(() => {
       this.store.db.prepare("UPDATE runs SET diagnostic = ? WHERE id = ? AND status = 'running'").run(JSON.stringify(run.diagnostic), run.id);
@@ -327,6 +366,8 @@ export class SpecController {
       if (realpathSync(path) !== path || !statSync(path).isFile() || statSync(path).size > 2 * 1024 * 1024) throw new Problem(422, 'Небезопасный путь результата агента.');
       result = validate(JSON.parse(readFileSync(path, 'utf8')));
     } else result = validate(await execute());
+    checkExecution();
+    if (!this.store.hasRun(run)) throw new Error('Task execution aborted');
     saveArtifact(directory, 'agent-result.json', JSON.stringify(result));
     this.recordMetadata(run, { result_saved: true, execution_finished: true });
     return result;
@@ -339,7 +380,7 @@ export class SpecController {
     const work = this.scheduler.enqueue(run.task_id, () => this.owned(run, async () => {
       if (this.closing || this.error || this.titles.error) return;
       await released;
-      if (this.store.blocked(run.task_id)) return;
+      if (this.store.blocked(run.task_id) || !this.store.hasRun(run)) return;
       if (this.titles.error) return;
       if (run.diagnostic?.dependency_resume) {
         try { await this.verifyDependencyContinuation(run); }
@@ -364,12 +405,15 @@ export class SpecController {
       try {
         if (this.closing || this.error || this.titles.error) return;
         const verify = async () => {
+          checkExecution();
+          if (!this.store.hasRun(run)) throw new Problem(409, 'Публикация отменена.');
           this.store.publicationRun(run.project_id, run.task_id);
           await this.verifyReviewSource(run);
         };
         const identity = await publishGithub(this.store.project(run.project_id), this.store.task(run.project_id, run.task_id),
           run, this.store.reviewRound(run) as AgentRun[], this.directory, this.command, verify, (operation, result) => {
-            this.store.event('publication.remote-operation', run.task_id, { operation, result: result ?? 'unknown', branch: run.branch, head_sha: run.head_sha });
+            this.store.event('publication.remote-operation', run.task_id, { run_id: run.id, operation, result: result ?? 'in-flight', branch: run.branch, head_sha: run.head_sha });
+            if (operation === 'pr-confirmed' && result) this.store.finishPublication(run, JSON.parse(result));
             if (operation === 'pr-url' && result) this.store.db.prepare('UPDATE tasks SET pr_url = ? WHERE id = ?').run(result, run.task_id);
           });
         this.store.finishPublication(run, identity);
@@ -403,7 +447,7 @@ export class SpecController {
     const project = this.store.project(run.project_id);
     if (!check || check.status !== 'cleared' || check.continuation_run_id !== run.id || !origin.diagnostic?.dependency_block
       || task.revision !== run.description_revision || project.state_version !== run.project_version
-      || task.run_state !== 'queued' || task.publication_status || task.archived || task.deletion_state || task.reset_pending || task.stop_unverified
+      || task.run_state !== 'queued' || publicationBlocksLocal(task) || task.archived || task.deletion_state || task.reset_pending || task.stop_unverified
       || this.store.executionPause().paused || this.store.runs().filter(r => r.task_id === task.id).at(-1)?.id !== run.id) throw new Problem(409, 'Продолжение устарело; повторите проверку зависимостей.');
     await preflight(project, this.command);
     if (await fetchBase(project, `${run.id}-verify`, this.command) !== resume.target_sha) throw new Problem(409, 'Target branch изменилась после проверки. Повторите проверку зависимостей.');
@@ -412,7 +456,7 @@ export class SpecController {
     if (!verified.results.length || verified.results.some(r => r.state !== 'cleared')) throw new Problem(409, 'Зависимости больше не подтверждены; повторите проверку.');
     if (await sourceHash(origin, this.command) !== check.source_hash) throw new Problem(409, 'Source изменился после проверки; partial edits сохранены.');
     const current = this.store.task(run.project_id, run.task_id);
-    if (current.state_version !== task.state_version || current.revision !== run.description_revision || current.publication_status
+    if (current.state_version !== task.state_version || current.revision !== run.description_revision || publicationBlocksLocal(current)
       || this.store.project(run.project_id).state_version !== run.project_version || this.store.executionPause().paused) throw new Problem(409, 'Prerequisites изменились перед исполнением; повторите проверку зависимостей.');
   }
 
@@ -462,7 +506,7 @@ export class SpecController {
         } catch (error) { this.store.finishTitle(task, null); throw error; }
         this.publish();
       }
-      const context = this.store.humanRequests().filter(r => r.task_id === task.id && r.revision === task.revision && r.status === 'answered');
+      const context = this.store.humanRequests().filter(r => r.task_id === task.id && r.revision === task.revision && r.status === 'answered' && this.store.hasRun({ id: r.run_id, task_id: task.id }));
       const feedback = run.repair_round_id ? this.store.reviewRound({ ...run, round_id: run.repair_round_id }).map(review => {
         if (!review) return null;
         const path = join(this.directory, 'artifacts', review.id, 'result.json');
@@ -533,12 +577,12 @@ ${JSON.stringify(context)}`;
       this.store.db.transaction(() => {
         this.store.updateRun(run, result.outcome === 'READY' ? 'review' : 'needs-human',
           result.outcome === 'READY' ? 'idle' : result.outcome === 'NEEDS_INPUT' ? 'waiting' : 'interrupted', undefined, result);
-        if (result.outcome === 'READY' && !this.closing && this.store.task(run.project_id, run.task_id).revision === run.description_revision) next = this.store.queueReview(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
+        if (this.store.hasRun(run) && result.outcome === 'READY' && !this.closing && this.store.task(run.project_id, run.task_id).revision === run.description_revision) next = this.store.queueReview(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
       })();
       this.stateLog(run);
       if (next) this.enqueue(next);
     } catch (error) {
-      if (this.store.blocked(run.task_id)) return;
+      if (this.store.blocked(run.task_id) || !this.store.hasRun(run)) return;
       await this.diagnose(run, error);
       run.status = 'failed'; run.outcome = null; run.report = 0;
       run.repair_attempt = this.store.specRun(run.project_id, run.task_id, run.id).repair_attempt;
@@ -552,9 +596,9 @@ ${JSON.stringify(context)}`;
 
   async refreshReviewState() {
     this.canRun();
-    for (const task of this.store.snapshot().tasks.filter(t => !t.deletion_state && !['queued', 'running'].includes(t.run_state) && !t.publication_status)) {
+    for (const task of this.store.snapshot().tasks.filter(t => !t.deletion_state && !['queued', 'running'].includes(t.run_state) && !publicationBlocksLocal(t))) {
       const run = this.store.runs().filter(r => r.task_id === task.id && r.description_revision === task.revision && (r.role.startsWith('review-') || r.role === 'approve')).at(-1);
-      if (!run || run.stale || this.store.runs().filter(r => r.task_id === task.id).at(-1)?.role === 'build') continue;
+      if (!run || !this.store.hasRun(run) || run.stale || this.store.runs().filter(r => r.task_id === task.id).at(-1)?.role === 'build') continue;
       try { await this.verifyReviewSource(run); }
       catch {
         if (this.store.blocked(task.id) || !this.store.hasRun(run)) continue;
@@ -568,6 +612,7 @@ ${JSON.stringify(context)}`;
 
   // Reuse this check immediately before future Approve execution, never trust stored PASS alone.
   async verifyReviewSource(run: AgentRun) {
+    if (!this.store.hasRun(run)) throw new Problem(409, 'Запуск отозван.');
     const task = this.store.task(run.project_id, run.task_id);
     const build = this.store.specRun(run.project_id, run.task_id, run.round_id!);
     this.requirements(run);
@@ -581,6 +626,8 @@ ${JSON.stringify(context)}`;
       if (await this.command('git', ['rev-parse', 'HEAD'], run.worktree) !== run.head_sha
         || await this.command('git', ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'], run.worktree)
         || await sourceHash(run, this.command) !== run.source_hash) throw new Problem(422, 'Source изменился. Старые Review неактуальны; нужна ручная сверка.');
+      if (!this.store.hasRun(run)) throw new Problem(409, 'Запуск отозван.');
+      checkExecution();
     } catch (error) { this.store.invalidateReviews(run); this.stateLog(run); throw error; }
     finally {
       const remaining = this.verifications.get(run.task_id)! - 1;
@@ -594,7 +641,7 @@ ${JSON.stringify(context)}`;
       const task = this.store.task(run.project_id, run.task_id);
       const directory = artifactDirectory(this.directory, run.id);
       const specification = this.requirements(run);
-      const context = this.store.humanRequests().filter(r => r.task_id === task.id && r.revision === task.revision && r.status === 'answered');
+      const context = this.store.humanRequests().filter(r => r.task_id === task.id && r.revision === task.revision && r.status === 'answered' && this.store.hasRun({ id: r.run_id, task_id: task.id }));
       const prior = run.repair_round_id ? this.store.reviewRound({ ...run, round_id: run.repair_round_id }).find(r => r?.role === run.role) : undefined;
       const priorPath = prior ? join(this.directory, 'artifacts', prior.id, 'result.json') : null;
       if (priorPath && realpathSync(priorPath) !== priorPath) throw new Problem(422, 'Небезопасный путь предыдущего Review.');
@@ -641,7 +688,7 @@ ${JSON.stringify(context)}`;
       this.store.db.transaction(() => {
         const paused = ['NEEDS_INPUT', 'BLOCKED'].includes(result.outcome);
         this.store.updateRun(run, paused ? 'needs-human' : 'review', result.outcome === 'NEEDS_INPUT' ? 'waiting' : paused ? 'interrupted' : 'idle', undefined, result);
-        if (!paused && this.store.task(run.project_id, run.task_id).revision === run.description_revision) {
+        if (this.store.hasRun(run) && !paused && this.store.task(run.project_id, run.task_id).revision === run.description_revision) {
           if (result.outcome === 'CHANGES' || run.role === requiredReviews(run).at(-1)) {
             const pass = this.store.reviewPasses(run);
             this.store.db.prepare("UPDATE tasks SET stage = ?, run_state = ?, state_version = state_version + 1 WHERE id = ?")
@@ -656,7 +703,7 @@ ${JSON.stringify(context)}`;
       this.stateLog(run);
       if (next) this.enqueue(next);
     } catch (error) {
-      if (this.store.blocked(run.task_id)) return;
+      if (this.store.blocked(run.task_id) || !this.store.hasRun(run)) return;
       await this.diagnose(run, error);
       run.status = 'failed'; run.outcome = null; run.report = 0;
       run.error = error instanceof Problem ? error.message : 'Ошибка исполнения или сохранения Review. Нужна ручная проверка; изменения сохранены.';
@@ -680,7 +727,7 @@ ${JSON.stringify(context)}`;
       };
       const specification = this.requirements(run);
       const reports = this.store.reviewRound(run).map(r => ({ role: r!.role, run_id: r!.id, result: validateReview(read(r!.id), r!.role as ReviewRole) }));
-      const context = this.store.humanRequests().filter(r => r.task_id === task.id && r.revision === task.revision && r.status === 'answered');
+      const context = this.store.humanRequests().filter(r => r.task_id === task.id && r.revision === task.revision && r.status === 'answered' && this.store.hasRun({ id: r.run_id, task_id: task.id }));
       let prompt = `You are the Approve role in a fresh independent session. Reconcile current versioned requirements, mandatory results and unresolved findings from all required reviews. Do not repeat Code, Security or UI/UX audits; use their evidence and report gaps honestly.
 Consult the changes only as needed to reconcile requirements or unresolved findings in this worktree between immutable base_sha ${run.base_sha} and head_sha ${run.head_sha}, without repeating independent acceptance checks.
 Read applicable AGENTS.md. Do not modify source, index, branch or commits. Never publish, push or merge.
@@ -703,7 +750,7 @@ Context: ${JSON.stringify({ review_plan: run.review_plan, run, description: task
       this.store.updateRun(run, result.outcome === 'APPROVE' ? 'approve' : 'needs-human', result.outcome === 'APPROVE' ? 'completed' : 'waiting', undefined, result);
       this.stateLog(run);
     } catch (error) {
-      if (this.store.blocked(run.task_id)) return;
+      if (this.store.blocked(run.task_id) || !this.store.hasRun(run)) return;
       await this.diagnose(run, error);
       run.status = 'failed'; run.outcome = null; run.report = 0;
       run.error = error instanceof Problem ? error.message : 'Ошибка исполнения или сохранения Approve. Нужна ручная проверка.';
@@ -754,7 +801,7 @@ Context: ${JSON.stringify({ review_plan: run.review_plan, run, description: task
       }
       if (run.role === 'build') { await this.performBuild(run); return; }
       const directory = artifactDirectory(this.directory, run.id);
-      const context = this.store.humanRequests().filter(request => request.task_id === task.id && request.revision === task.revision && request.status === 'answered');
+      const context = this.store.humanRequests().filter(request => request.task_id === task.id && request.revision === task.revision && request.status === 'answered' && this.store.hasRun({ id: request.run_id, task_id: task.id }));
       let prompt = `You are the Spec role. Inspect the repository and applicable AGENTS.md instructions in this worktree.
 Define requirements and testable acceptance criteria only; do not implement or perform full acceptance testing. Do not change source, create commits, publish, merge, or run Build. Return only the requested JSON result.
 Return a concise title (1–120 characters) in the description language, based only on the description.
@@ -781,14 +828,14 @@ ${context.length ? `Previous Spec results and human answers (same revision):\n${
       let next: AgentRun | undefined;
       this.store.db.transaction(() => {
         this.store.updateRun(run, result.outcome === 'READY' ? 'build' : 'needs-human', result.outcome === 'READY' ? 'idle' : 'waiting', result.title, result);
-        if (result.outcome === 'READY' && !this.closing && this.store.task(run.project_id, run.task_id).revision === run.description_revision) {
+        if (this.store.hasRun(run) && result.outcome === 'READY' && !this.closing && this.store.task(run.project_id, run.task_id).revision === run.description_revision) {
           next = this.store.queueBuild(run.project_id, run.task_id, this.store.task(run.project_id, run.task_id).state_version);
         }
       })();
       this.stateLog(run);
       if (next) this.enqueue(next);
     } catch (error) {
-      if (this.store.blocked(run.task_id)) return;
+      if (this.store.blocked(run.task_id) || !this.store.hasRun(run)) return;
       await this.diagnose(run, error);
       run.status = 'failed'; run.outcome = null; run.report = 0;
       run.error = error instanceof Problem ? error.message : 'Ошибка сохранения или исполнения. Проверьте data directory и локальные логи; автоматического продолжения нет.';

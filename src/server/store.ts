@@ -1,8 +1,9 @@
 import Database from 'better-sqlite3';
+import type { ExecutionProcess } from './processes.js';
 import { mkdirSync, chmodSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { dependencyActionBlocker, type DependencyCheck, resultsResetBlocker, defaultModels, reviewsFor, requiredReviews, type ReviewRole, type ReviewPlan, type SpecMode, type SpecDecision, type ApproveResult, type ReviewResult, type BuildResult, type HumanRequest, type SpecResult, type Settings, type AgentRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision, type ExecutionPause } from '../shared.js';
+import { publicationBlocksLocal, dependencyActionBlocker, type DependencyCheck, resultsResetBlocker, defaultModels, reviewsFor, requiredReviews, type ReviewRole, type ReviewPlan, type SpecMode, type SpecDecision, type ApproveResult, type ReviewResult, type BuildResult, type HumanRequest, type SpecResult, type Settings, type AgentRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision, type ExecutionPause } from '../shared.js';
 
 const taskSelect = `SELECT t.*, g.issue_number, g.issue_url,
   (t.spec_decision IS NOT NULL OR t.publication_status IS NOT NULL
@@ -49,7 +50,7 @@ export class Store {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       const version = this.db.pragma('user_version', { simple: true });
-      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13 && version !== 14 && version !== 15 && version !== 16 && version !== 17 && version !== 18 && version !== 19) throw new Error('Версия базы новее приложения. Обновите приложение.');
+      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13 && version !== 14 && version !== 15 && version !== 16 && version !== 17 && version !== 18 && version !== 19 && version !== 20) throw new Error('Версия базы новее приложения. Обновите приложение.');
       this.db.transaction(() => {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS projects (
@@ -97,7 +98,7 @@ export class Store {
             this.db.exec("UPDATE tasks SET title_state = 'completed' WHERE title IS NOT NULL;");
           }
         }
-        for (const [name, definition] of [['role', "TEXT NOT NULL DEFAULT 'spec'"], ['head_sha', 'TEXT'], ['source_hash', 'TEXT'], ['spec_run_id', 'TEXT'], ['round_id', 'TEXT'], ['stale', 'INTEGER NOT NULL DEFAULT 0'], ['repair_round_id', 'TEXT'], ['repair_attempt', 'INTEGER NOT NULL DEFAULT 0']]) {
+        for (const [name, definition] of [['role', "TEXT NOT NULL DEFAULT 'spec'"], ['head_sha', 'TEXT'], ['source_hash', 'TEXT'], ['spec_run_id', 'TEXT'], ['round_id', 'TEXT'], ['stale', 'INTEGER NOT NULL DEFAULT 0'], ['repair_round_id', 'TEXT'], ['repair_attempt', 'INTEGER NOT NULL DEFAULT 0'], ['revoked', 'INTEGER NOT NULL DEFAULT 0']]) {
           if (!runColumns.some(column => column.name === name)) this.db.exec(`ALTER TABLE runs ADD COLUMN ${name} ${definition}`);
         }
         if (Number(version) < 6) {
@@ -108,7 +109,7 @@ export class Store {
           }
         }
         const taskColumns = this.db.pragma('table_info(tasks)') as { name: string }[];
-        for (const [name, type] of [['spec_decision', 'TEXT'], ['publication_status', 'TEXT'], ['pr_url', 'TEXT'], ['pr_number', 'INTEGER'], ['deletion_state', 'TEXT'], ['deletion_error', 'TEXT'], ['execution_unverified', 'INTEGER NOT NULL DEFAULT 0'], ['stop_unverified', 'INTEGER NOT NULL DEFAULT 0'], ['archived', 'INTEGER NOT NULL DEFAULT 0'], ['archive_source', 'TEXT'], ['archive_reason', 'TEXT'], ['reset_pending', 'INTEGER NOT NULL DEFAULT 0'], ['reset_error', 'TEXT']]) {
+        for (const [name, type] of [['execution_generation', 'INTEGER NOT NULL DEFAULT 0'], ['legacy_execution_unknown', 'INTEGER NOT NULL DEFAULT 0'], ['execution_warning', 'TEXT'], ['publication_run_id', 'TEXT'], ['publication_generation', 'INTEGER NOT NULL DEFAULT 0'], ['spec_decision', 'TEXT'], ['publication_status', 'TEXT'], ['pr_url', 'TEXT'], ['pr_number', 'INTEGER'], ['deletion_state', 'TEXT'], ['deletion_error', 'TEXT'], ['execution_unverified', 'INTEGER NOT NULL DEFAULT 0'], ['stop_unverified', 'INTEGER NOT NULL DEFAULT 0'], ['archived', 'INTEGER NOT NULL DEFAULT 0'], ['archive_source', 'TEXT'], ['archive_reason', 'TEXT'], ['reset_pending', 'INTEGER NOT NULL DEFAULT 0'], ['reset_error', 'TEXT']]) {
           if (!taskColumns.some(c => c.name === name)) this.db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${type}`);
         }
         for (const task of this.db.prepare("SELECT id FROM tasks WHERE publication_status = 'pending'").all() as { id: string }[]) {
@@ -168,7 +169,15 @@ export class Store {
           this.db.prepare('UPDATE tasks SET state_version = state_version + 1 WHERE id = ?').run(run.task_id);
           this.event('dependency.interrupted', run.task_id, { run_id: run.id });
         }
-        this.db.pragma('user_version = 19');
+        this.db.exec(`CREATE TABLE IF NOT EXISTS execution_processes (
+          task_id TEXT NOT NULL REFERENCES tasks(id), run_id TEXT, pid INTEGER NOT NULL, pgid INTEGER NOT NULL,
+          started_at TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(task_id, pid, started_at));`);
+        if (Number(version) < 20) {
+          this.db.exec(`UPDATE runs SET revoked = 1 WHERE task_id IN (SELECT id FROM tasks WHERE deletion_state IS NOT NULL OR archived = 1);
+            UPDATE tasks SET execution_generation = execution_generation + 1 WHERE deletion_state IS NOT NULL;
+            UPDATE tasks SET legacy_execution_unknown = 1 WHERE (stop_unverified = 1 OR execution_unverified = 1) AND NOT EXISTS (SELECT 1 FROM execution_processes WHERE task_id = tasks.id);`);
+        }
+        this.db.pragma('user_version = 20');
         // No OS proof survives restart. Never infer termination from SQLite run status.
         if (Number(version) < 13) {
           this.db.exec(`UPDATE tasks SET stop_unverified = 1
@@ -179,7 +188,9 @@ export class Store {
             AND NOT EXISTS (SELECT 1 FROM events WHERE events.task_id = tasks.id AND type = 'task.stop-verified-by-human')`);
         }
         this.db.prepare("UPDATE tasks SET stop_unverified = 1 WHERE execution_unverified = 1 OR title_state = 'running' OR run_state = 'running'").run();
-        this.db.prepare("UPDATE tasks SET deletion_state = 'failed', deletion_error = 'Backend перезапущен во время удаления. Проверьте процессы вручную; остановка не подтверждена.', stop_unverified = 1 WHERE deletion_state = 'stopping'").run();
+        this.db.prepare("UPDATE tasks SET deletion_state = CASE WHEN archived = 1 THEN 'failed' ELSE NULL END, stage = CASE WHEN archived = 0 THEN 'backlog' ELSE stage END, run_state = 'idle', execution_warning = 'Backend перезапущен во время остановки. Диагностика исполнения будет повторена.', deletion_error = 'Backend перезапущен во время остановки.', stop_unverified = 1 WHERE deletion_state = 'stopping'").run();
+        this.db.exec(`UPDATE tasks SET legacy_execution_unknown = 1 WHERE (stop_unverified = 1 OR execution_unverified = 1)
+          AND NOT EXISTS (SELECT 1 FROM execution_processes WHERE task_id = tasks.id);`);
         for (const build of this.runs().filter(run => run.role === 'build' && run.review_plan && run.review_plan.policy_version !== 2 && !run.stale)) {
           this.invalidateReviews(build);
           this.db.prepare('UPDATE runs SET stale = 1 WHERE id = ?').run(build.id);
@@ -292,15 +303,16 @@ export class Store {
   beginDeletion(projectId: string, id: string, version: number, reconciliation?: string) {
     const task = this.rawTask(projectId, id);
     if (task.reset_pending) throw new Problem(409, 'Сначала завершите очистку результатов.');
-    if (task.deletion_state === 'deleted' && task.archived) return task;
+    if (task.deletion_state === 'deleted' && task.archived && !task.stop_unverified && !task.execution_unverified && !task.legacy_execution_unknown) return task;
     if (task.state_version !== version) throw new Problem(409, 'Карточка изменилась. Обновите её перед удалением.');
-    if (task.deletion_state === 'deleted') return task;
+    if (task.deletion_state === 'stopping') return task;
     if (reconciliation) {
-      if (task.deletion_state !== 'failed' || !task.stop_unverified) throw new Problem(409, 'Ручная сверка доступна только для неподтверждённой остановки процессов.');
-      this.db.prepare('UPDATE tasks SET stop_unverified = 0, execution_unverified = 0 WHERE id = ?').run(id);
+      if (!task.stop_unverified) throw new Problem(409, 'Нет неподтверждённого исполнения для ручной сверки.');
+      this.db.prepare('UPDATE tasks SET stop_unverified = 0, execution_unverified = 0, legacy_execution_unknown = 0 WHERE id = ?').run(id);
       this.event('task.stop-verified-by-human', id, { evidence: reconciliation, state_version: task.state_version, revision: task.revision });
     }
-    this.db.prepare("UPDATE tasks SET deletion_state = 'stopping', deletion_error = NULL, state_version = state_version + 1 WHERE id = ?").run(id);
+    this.db.prepare("UPDATE tasks SET deletion_state = 'stopping', deletion_error = NULL, execution_generation = execution_generation + 1, state_version = state_version + 1 WHERE id = ?").run(id);
+    this.db.prepare("UPDATE runs SET revoked = 1, status = CASE WHEN status IN ('queued','running') THEN 'interrupted' ELSE status END WHERE task_id = ?").run(id);
     this.db.prepare("UPDATE human_requests SET status = 'revoked' WHERE task_id = ? AND status = 'pending'").run(id);
     this.db.prepare("UPDATE chat_messages SET status = 'revoked', error = 'Задача удаляется; доставка и применение запрещены.' WHERE task_id = ? AND status IN ('queued','sending')").run(id);
     this.event('task.deletion-requested', id, {});
@@ -310,6 +322,7 @@ export class Store {
     this.db.transaction(() => {
       this.db.prepare('UPDATE tasks SET deletion_state = ?, deletion_error = ?, state_version = state_version + 1 WHERE id = ?')
         .run(error ? 'failed' : 'deleted', error ?? null, id);
+      this.db.prepare('UPDATE tasks SET execution_warning = ? WHERE id = ?').run(error ?? null, id);
       this.db.prepare("UPDATE runs SET status = 'interrupted', error = 'Исполнение остановлено при архивировании.', finished_at = ? WHERE task_id = ? AND status IN ('queued','running')").run(new Date().toISOString(), id);
       // Visibility belongs to archive/restore, never to a late stop callback (except legacy /delete).
       this.db.prepare(`UPDATE tasks SET archived = CASE WHEN ? = 0 AND archive_source IS NOT 'github-filter' THEN 1 ELSE archived END,
@@ -322,14 +335,21 @@ export class Store {
   releaseStoppedTask(projectId: string, id: string) {
     this.db.transaction(() => {
       const task = this.rawTask(projectId, id);
-      if (task.archived || task.deletion_state !== 'deleted' || task.stop_unverified || task.execution_unverified) return;
-      // A new Spec is explicit; interrupted runs and unknown publication remain in history.
-      const dependencyBlocked = this.runs().filter(r => r.task_id === id).at(-1);
-      const restartable = task.run_state === 'interrupted' && !task.publication_status && dependencyBlocked?.outcome !== 'BLOCKED' && !dependencyBlocked?.diagnostic?.dependency_resume;
-      this.db.prepare('UPDATE tasks SET deletion_state = NULL, stage = ?, run_state = ?, state_version = state_version + 1 WHERE id = ?')
-        .run(restartable ? 'backlog' : task.stage, restartable ? 'idle' : task.run_state, id);
+      if (task.archived || task.deletion_state === 'stopping') return;
+      this.db.prepare("UPDATE tasks SET deletion_state = NULL, stage = 'backlog', run_state = 'idle', state_version = state_version + 1 WHERE id = ?").run(id);
       this.event('task.execution-unblocked', id, {});
     }).immediate();
+  }
+  executionProcesses(taskId: string): ExecutionProcess[] {
+    return this.db.prepare('SELECT run_id, pid, pgid, started_at, state FROM execution_processes WHERE task_id = ?').all(taskId) as ExecutionProcess[];
+  }
+  recordProcess(taskId: string, row: ExecutionProcess) {
+    this.db.prepare(`INSERT INTO execution_processes (task_id, run_id, pid, pgid, started_at, state) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(task_id, pid, started_at) DO UPDATE SET state = excluded.state, pgid = excluded.pgid`).run(taskId, row.run_id ?? null, row.pid, row.pgid, row.started_at, row.state);
+    this.db.prepare(`UPDATE tasks SET execution_unverified = EXISTS(SELECT 1 FROM execution_processes WHERE task_id = ? AND state = 'running'),
+      stop_unverified = legacy_execution_unknown OR EXISTS(SELECT 1 FROM execution_processes WHERE task_id = ? AND state = 'unknown') WHERE id = ?`).run(taskId, taskId, taskId);
+    if (!this.executionProcesses(taskId).some(row => row.state !== 'exited')) this.db.prepare("UPDATE tasks SET execution_warning = NULL, deletion_error = NULL WHERE id = ? AND execution_warning LIKE 'Известный процесс ещё работает.%'").run(taskId);
+    this.event('execution.process-state', taskId, row);
   }
   beginResultsReset(projectId: string, id: string, version: number, resetId: string) {
     const task = this.rawTask(projectId, id);
@@ -351,6 +371,7 @@ export class Store {
     this.db.prepare('DELETE FROM chat_messages WHERE task_id = ?').run(id);
     this.db.prepare('DELETE FROM run_output WHERE run_id IN (SELECT id FROM runs WHERE task_id = ?)').run(id);
     this.db.prepare('DELETE FROM review_plans WHERE build_id IN (SELECT id FROM runs WHERE task_id = ?)').run(id);
+    this.db.prepare('DELETE FROM execution_processes WHERE task_id = ?').run(id);
     this.db.prepare('DELETE FROM runs WHERE task_id = ?').run(id);
     this.db.prepare(`UPDATE requests SET response = '{"results_reset":true}'
       WHERE json_valid(fingerprint) AND json_extract(fingerprint, '$[1]') = ?
@@ -358,7 +379,7 @@ export class Store {
     // Keep requirements history and previous resets; execution events can contain session IDs and old feedback.
     this.db.prepare("DELETE FROM events WHERE task_id = ? AND type NOT IN ('task.created','task.edited','task.issue-updated','task.results-reset')").run(id);
     this.db.prepare(`UPDATE tasks SET stage = 'backlog', run_state = 'idle', spec_decision = NULL,
-      publication_status = NULL, pr_url = NULL, pr_number = NULL, reset_pending = 1, reset_error = NULL,
+      publication_status = NULL, publication_run_id = NULL, pr_url = NULL, pr_number = NULL, reset_pending = 1, reset_error = NULL, execution_warning = NULL, deletion_error = NULL,
       title_state = CASE WHEN title IS NULL THEN 'interrupted' ELSE 'completed' END,
       state_version = state_version + 1 WHERE id = ?`).run(id);
     this.event('task.results-reset-started', id, { reset_id: resetId });
@@ -448,7 +469,7 @@ export class Store {
     if (this.blocked(task.id)) return;
     return this.db.transaction(() => {
       const current = this.task(task.project_id, task.id);
-      if (current.revision !== task.revision || current.title_state !== 'pending'
+      if (current.execution_generation !== task.execution_generation || current.revision !== task.revision || current.title_state !== 'pending'
         || current.stage !== 'backlog' || current.run_state !== 'idle') return;
       this.db.prepare("UPDATE tasks SET title_state = 'running' WHERE id = ?").run(task.id);
       this.event('title.started', task.id, { revision: task.revision });
@@ -459,7 +480,7 @@ export class Store {
     if (this.blocked(task.id)) return;
     this.db.transaction(() => {
       const current = this.task(task.project_id, task.id);
-      if (current.revision !== task.revision || current.title_state !== 'running') return;
+      if (current.execution_generation !== task.execution_generation || current.revision !== task.revision || current.title_state !== 'running') return;
       this.db.prepare('UPDATE tasks SET title = ?, title_state = ? WHERE id = ?').run(title, title === null ? 'failed' : 'completed', task.id);
       this.event(title === null ? 'title.failed' : 'title.completed', task.id, { revision: task.revision });
     })();
@@ -507,7 +528,7 @@ export class Store {
   requestInterrupt(projectId: string, taskId: string, runId: string, version: number) {
     const task = this.task(projectId, taskId);
     const run = this.specRun(projectId, taskId, runId);
-    if (task.state_version !== version || task.run_state !== 'running' || task.publication_status
+    if (task.state_version !== version || task.run_state !== 'running' || publicationBlocksLocal(task)
       || run.status !== 'running' || !run.diagnostic?.can_interrupt || run.diagnostic.interrupt_requested_at
       || run.diagnostic.result_saved || this.runs().filter(r => r.task_id === taskId).at(-1)?.id !== runId) throw new Problem(409, 'Этот этап уже завершён, прерывается или недоступен.');
     run.diagnostic = { ...run.diagnostic, interrupt_requested_at: new Date().toISOString() };
@@ -519,7 +540,7 @@ export class Store {
   retryRun(projectId: string, taskId: string, version: number) {
     const task = this.task(projectId, taskId);
     const previous = this.runs().filter(r => r.task_id === taskId).at(-1);
-    if (task.state_version !== version || task.run_state !== 'interrupted' || task.publication_status || task.execution_unverified
+    if (task.state_version !== version || task.run_state !== 'interrupted' || publicationBlocksLocal(task) || task.execution_unverified
       || !previous || previous.status !== 'failed' || !previous.diagnostic?.execution_finished || previous.stale
       || !previous.source_hash || !previous.base_sha || previous.description_revision !== task.revision) {
       throw new Problem(409, 'Повтор запрещён: требуется ручная проверка неизвестного исполнения, публикации или worktree.');
@@ -548,7 +569,7 @@ export class Store {
     const latest = runs.at(-1);
     const origin = latest && ['failed', 'interrupted'].includes(latest.status) && latest.diagnostic?.dependency_resume
       ? runs.find(r => r.id === latest.diagnostic!.dependency_resume!.blocked_run_id) : latest;
-    if (!origin || origin.status !== 'completed' || origin.outcome !== 'BLOCKED'
+    if (!origin || !this.hasRun(origin) || origin.status !== 'completed' || origin.outcome !== 'BLOCKED'
       || !['build', 'review-code', 'review-security', 'review-ui-ux', 'review-ui', 'review-ux'].includes(origin.role)) throw new Problem(409, 'Нет остановленного BLOCKED для проверки причины.');
     return origin;
   }
@@ -635,6 +656,7 @@ export class Store {
     return row ? JSON.parse(row.plan) : undefined;
   }
   saveReviewPlan(run: AgentRun, plan: ReviewPlan) {
+    if (!this.hasRun(run)) return;
     this.db.prepare('INSERT INTO review_plans VALUES (?, ?)').run(run.id, JSON.stringify(plan));
     run.review_plan = reviewMetadata(plan);
     this.event('review.plan', run.task_id, { run_id: run.id, plan: run.review_plan });
@@ -644,7 +666,7 @@ export class Store {
     return this.readRun(projectId, taskId, id);
   }
   hasRun(run: Pick<AgentRun, 'id' | 'task_id'>) {
-    return !!this.db.prepare('SELECT 1 FROM runs WHERE id = ? AND task_id = ?').get(run.id, run.task_id);
+    return !!this.db.prepare('SELECT 1 FROM runs WHERE id = ? AND task_id = ? AND revoked = 0').get(run.id, run.task_id);
   }
   readRun(projectId: string, taskId: string, id: string) {
     this.rawTask(projectId, taskId);
@@ -656,10 +678,11 @@ export class Store {
     const task = this.task(projectId, taskId);
     if (task.state_version !== version || task.stage !== 'backlog' || task.run_state !== 'idle') throw new Problem(409, 'Задача изменилась или уже запущена.');
     const decision: SpecDecision = mode === 'auto' && task.spec_decision?.revision === task.revision && task.spec_decision.mode === 'auto'
+      && !this.runs().some(r => r.task_id === taskId && r.revoked)
       ? task.spec_decision : { revision: task.revision, mode, required: mode === 'auto' ? null : mode === 'spec',
         reason: mode === 'auto' ? 'Ожидается оценка достаточности требований.' : mode === 'skip' ? 'Выбран прямой Build по сохранённым требованиям.' : 'Spec запрошена пользователем', missing: [] };
     const id = randomUUID();
-    const run: AgentRun = { output_preview: null, output_at: null, output_version: null, output_length: null, diagnostic: {}, started_at: null, finished_at: null, repair_round_id: null, repair_attempt: 0, spec_run_id: null, round_id: null, stale: 0, role: decision.required === true ? 'spec' : 'build', head_sha: null, source_hash: null, id, task_id: taskId, project_id: projectId, description_revision: task.revision,
+    const run: AgentRun = { revoked: 0, output_preview: null, output_at: null, output_version: null, output_length: null, diagnostic: {}, started_at: null, finished_at: null, repair_round_id: null, repair_attempt: 0, spec_run_id: null, round_id: null, stale: 0, role: decision.required === true ? 'spec' : 'build', head_sha: null, source_hash: null, id, task_id: taskId, project_id: projectId, description_revision: task.revision,
       config: this.settings(projectId), project_version: this.project(projectId).state_version, status: 'queued', parent_run_id: null,
       branch: `swfactory/${taskId}/${id}`, worktree: join(directory, 'worktrees', projectId, id),
       base_sha: null, outcome: null, error: null, report: 0 };
@@ -676,6 +699,7 @@ export class Store {
     return run;
   }
   saveSpecDecision(run: AgentRun, decision: SpecDecision) {
+    if (!this.hasRun(run)) return;
     this.db.prepare('UPDATE tasks SET spec_decision = ? WHERE id = ? AND revision = ?')
       .run(JSON.stringify(decision), run.task_id, run.description_revision);
     this.event('spec.decision', run.task_id, { ...decision, run_id: run.id });
@@ -747,20 +771,23 @@ export class Store {
       }
       if (this.project(projectId).hosting !== 'github') throw new Problem(422, 'Публикация поддерживает GitHub.');
       const run = this.publicationRun(projectId, taskId);
-      this.db.prepare("UPDATE tasks SET publication_status = 'pending', run_state = 'queued', state_version = state_version + 1 WHERE id = ?").run(taskId);
+      this.db.prepare("UPDATE tasks SET publication_status = 'pending', publication_generation = execution_generation, publication_run_id = ?, run_state = 'queued', state_version = state_version + 1 WHERE id = ?").run(run.id, taskId);
       this.event('publication.started', taskId, { run_id: run.id, head_sha: run.head_sha, source_hash: run.source_hash, branch: run.branch });
       return run;
     })();
   }
   finishPublication(run: AgentRun, identity?: { number: number; url: string }) {
     const saved = this.rawTask(run.project_id, run.task_id);
+    if (saved.publication_run_id && saved.publication_run_id !== run.id) return;
     if (saved.publication_status === 'confirmed' && !identity) return;
     this.db.transaction(() => {
-      this.db.prepare("UPDATE tasks SET publication_status = ?, pr_number = ?, pr_url = ?, stage = ?, run_state = ?, state_version = state_version + 1 WHERE id = ?")
-        .run(identity ? 'confirmed' : 'unknown', identity?.number ?? null, identity?.url ?? saved.pr_url,
-          identity ? 'pr-created' : 'needs-human', identity ? 'completed' : 'interrupted', run.task_id);
+      this.db.prepare("UPDATE tasks SET publication_status = ?, pr_number = ?, pr_url = ?, state_version = state_version + 1 WHERE id = ?")
+        .run(identity ? 'confirmed' : 'unknown', identity?.number ?? null, identity?.url ?? saved.pr_url, run.task_id);
+      // External receipts outlive execution authority, but cannot move a new local cycle.
+      if (this.hasRun(run) && !this.blocked(run.task_id)) this.db.prepare('UPDATE tasks SET stage = ?, run_state = ? WHERE id = ?')
+        .run(identity ? 'pr-created' : 'needs-human', identity ? 'completed' : 'interrupted', run.task_id);
       this.event(identity ? 'publication.confirmed' : 'publication.unknown', run.task_id,
-        identity ?? { reason: 'Исход публикации не подтверждён. Проверьте GitHub и branch вручную; слепой повтор запрещён.' });
+        { run_id: run.id, branch: run.branch, head_sha: run.head_sha, ...(identity ?? { reason: 'Исход публикации не подтверждён. Проверьте GitHub и branch вручную; слепой повтор запрещён.' }) });
     })();
   }
   queueApprove(projectId: string, taskId: string, version: number) {
@@ -939,7 +966,7 @@ export class Store {
       const previous = this.specRun(projectId, taskId, request.run_id);
       const resuming = task.run_state === 'interrupted' && request.status === 'answered';
       if (task.state_version !== version || (request.status !== 'pending' && !resuming) || request.revision !== task.revision
-        || task.publication_status || previous.stale
+        || publicationBlocksLocal(task) || previous.stale
         || (task.run_state === 'interrupted' && (task.execution_unverified || !previous.diagnostic?.execution_finished))
         || task.stage !== 'needs-human' || !['waiting', 'interrupted'].includes(task.run_state)
         || previous.status !== 'completed' || previous.outcome !== 'NEEDS_INPUT'

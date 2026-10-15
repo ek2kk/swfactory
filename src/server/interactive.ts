@@ -111,6 +111,7 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
             }
             if (event.method === 'turn/started') {
               turnId = p.turn.id;
+              input.metadata?.({ session_id: threadId, turn_id: turnId });
               input.control?.(steer);
               input.interrupt?.(() => {
                 if (finished || interruptRequested) return;

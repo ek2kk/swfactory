@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import type { AgentRun, ChatMessage, Task, TranscriptEntry, HumanRequest, SavedEvent } from '../shared.js';
+import { publicationBlocksLocal, type AgentRun, type ChatMessage, type Task, type TranscriptEntry, type HumanRequest, type SavedEvent } from '../shared.js';
 
 import { HistoryFlow } from './taskView.js';
 import { stageTimeline } from './stageHistory.js';
@@ -92,7 +92,7 @@ export function Composer({ task, path, api, refresh }: { task: Task; path: strin
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [sent, setSent] = useState(false);
-  const blocked = !!task.publication_status || task.run_state === 'interrupted';
+  const blocked = publicationBlocksLocal(task) || task.run_state === 'interrupted';
   return <form className="composer" onSubmit={async event => {
     event.preventDefault(); setBusy(true); setError(''); setSent(false);
     try { await api(`${path}/messages`, 'POST', { state_version: task.state_version, text, kind: 'guidance' }); setText(''); setSent(true); await refresh(); }

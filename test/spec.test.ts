@@ -557,8 +557,8 @@ test('automatic archive and restore during Spec callback never start Build or pu
     assert.equal(store.runs().length, 1); assert.equal(store.runs()[0].status, 'interrupted');
     assert.equal(store.runs()[0].outcome, null);
     assert.equal(builds, 0); assert.equal(publications, 0);
-    assert.equal(store.rawTask(project.id, task.id).deletion_state, 'failed');
-    assert.equal(store.rawTask(project.id, task.id).stop_unverified, 1);
+    assert.equal(store.rawTask(project.id, task.id).deletion_state, 'deleted');
+    assert.equal(store.rawTask(project.id, task.id).stop_unverified, 0);
   } finally { release(); await runner.close(); }
 });
 

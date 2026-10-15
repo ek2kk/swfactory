@@ -13,6 +13,7 @@ import { runInNewContext } from 'node:vm';
 import { transformSync } from 'esbuild';
 import * as jsx from 'react/jsx-runtime';
 import * as stageHistory from '../src/client/stageHistory.js';
+import * as shared from '../src/shared.js';
 import type { AgentRun, TranscriptEntry } from '../src/shared.js';
 
 function conversationPolling(status: AgentRun['status'], pages: { entries: TranscriptEntry[]; next_offset: number; more: boolean }[]) {
@@ -29,7 +30,7 @@ function conversationPolling(status: AgentRun['status'], pages: { entries: Trans
       useRef(current: unknown) { return values[index++] ??= { current }; },
       useEffect(callback: () => () => void) { effect = callback; },
     },
-    './taskView.js': {}, './stageHistory.js': stageHistory,
+    './taskView.js': {}, './stageHistory.js': stageHistory, '../shared.js': shared,
   };
   const module = { exports: {} as any };
   runInNewContext(transformSync(readFileSync(new URL('../src/client/chat.tsx', import.meta.url), 'utf8'), { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code, {

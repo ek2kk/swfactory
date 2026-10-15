@@ -231,30 +231,23 @@ test('reset UI explains archive/execution/publication barriers and invalidates a
   assert.ok(elements(tree).some(node => node.props.role === 'status' && node.props.children.includes('Карточка изменилась')));
 });
 
-test('publication-only barriers expose stop verification without archiving and retain explicit archive', async () => {
+test('Stop is a single explicit action without observations, separate from archive and remote warning', async () => {
   for (const publication_status of ['pending', 'unknown', 'confirmed', null]) {
     const calls: any[][] = [], card = taskCard(async (...args) => { calls.push(args); return { deleted: true }; });
     Object.assign(card.props.task, { publication_status, title_state: 'completed' });
     const render = () => card.render('TaskDisposition');
-    const button = (tree: unknown, label: string) => elements(tree).find(node => node.type === 'button' && node.props['aria-label'] === label);
-    const stop = button(render().tree, 'Остановить исполнение / сверить');
-    if (publication_status === 'confirmed' || publication_status === null) {
-      assert.equal(stop, undefined);
-      assert.ok(button(render().tree, 'Архивировать'));
-      continue;
-    }
-    assert.ok(stop); assert.equal(stop.props.disabled, false);
-    stop.props.onClick();
+    const button = (tree: unknown, label: string) => elements(tree).find(node => node.type === 'button' && (node.props.children === label || node.props['aria-label'] === label));
     let view = render();
-    assert.ok(JSON.stringify(view.tree).includes('без изменения видимости карточки'));
-    await elements(view.tree).find(node => node.type === 'button' && node.props.children === 'Проверить остановку').props.onClick();
+    assert.ok(!elements(view.tree).some(node => node.type === 'textarea' || node.type === 'dialog'));
+    assert.ok(button(view.tree, 'Архивировать'));
+    await button(view.tree, 'Остановить').props.onClick();
     assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['/projects/project/tasks/task/stop', 'POST', { state_version: 1 }]]);
-    assert.ok(!elements(render().tree).some(node => node.type === 'dialog'));
-    elements(render().tree).find(node => node.type === 'button' && node.props.children === 'Архивировать вручную').props.onClick();
-    view = render();
-    await elements(view.tree).find(node => node.type === 'button' && node.props.children === 'Подтвердить архивирование').props.onClick();
+    button(render().tree, 'Архивировать').props.onClick(); view = render();
+    await button(view.tree, 'Подтвердить архивирование').props.onClick();
     assert.equal(calls[1][0], '/projects/project/tasks/task/archive');
   }
+  const card = taskCard(); Object.assign(card.props.task, { execution_warning: 'Known execution is still running' });
+  assert.ok(elements(card.render('TaskDisposition').tree).some(node => node.type === 'button' && node.props.children === 'Повторить остановку'));
 });
 
 test('reset history exposes the previous PR identity without links to deleted run results', async () => {
@@ -438,4 +431,17 @@ test('partial CHANGES names blocking reviewer and exposes report and manual repa
     Object.assign(run, { outcome });
     assert.ok(!elements(card.render().tree).some(n => n.type === 'button' && n.props.children === 'Доработать: новый цикл (до двух доработок)'));
   }
+});
+
+test('pending Stop keeps its keyboard target and ignores a second activation', async () => {
+  let finish!: (value: unknown) => void, calls = 0;
+  const pending = new Promise(resolve => { finish = resolve; });
+  const card = taskCard(async () => { calls++; return pending; });
+  const stop = (tree: unknown) => elements(tree).find(node => node.type === 'button' && (node.props.children === 'Остановить' || node.props.children === 'Останавливаем…'));
+  const request = stop(card.render('TaskDisposition').tree).props.onClick();
+  const waiting = stop(card.render('TaskDisposition').tree);
+  assert.equal(waiting.props.disabled, false); assert.equal(waiting.props['aria-disabled'], true); assert.equal(waiting.props['aria-busy'], true);
+  await waiting.props.onClick(); assert.equal(calls, 1);
+  finish({ deleted: true }); await request;
+  assert.equal(stop(card.render('TaskDisposition').tree).props['aria-disabled'], false);
 });

@@ -25,6 +25,17 @@ export async function publishGithub(project: Project, task: Task, run: AgentRun,
     }
     return { number: pr.number as number, url: pr.html_url as string };
   };
+  const finish = async (result: { number: number; url: string }) => {
+    observe('pr-receipt', JSON.stringify(result));
+    try { await verify(); }
+    catch (error) {
+      // Cancellation cannot erase a receipt; ordinary source validation still gates confirmation.
+      try { checkExecution(); } catch { observe('pr-confirmed', JSON.stringify(result)); }
+      throw error;
+    }
+    observe('pr-confirmed', JSON.stringify(result));
+    return result;
+  };
   await verify();
   // Query every state: a closed PR must not silently become a duplicate.
   const pages = JSON.parse(await command('gh', ['api', '--hostname', project.host, '--paginate', '--slurp',
@@ -35,8 +46,7 @@ export async function publishGithub(project: Project, task: Task, run: AgentRun,
     if (existing.length !== 1) throw new Problem(422, 'Найдено несколько PR; нужна ручная сверка.');
     await verify();
     const result = confirm(JSON.parse(await command('gh', ['api', '--hostname', project.host, `${api}/${existing[0].number}`], run.worktree)));
-    await verify();
-    return result;
+    return finish(result);
   }
   const body = [marker, ...(task.issue_number == null ? [] : [`Closes #${task.issue_number}`]), task.description, '## Summary', read(run.round_id!).summary, '## Review plan', JSON.stringify(run.review_plan ? { build_id: run.review_plan.build_id, head_sha: run.review_plan.head_sha, revision: run.review_plan.revision, diff_base: run.review_plan.diff_base, checks: run.review_plan.checks } : 'Legacy: all roles required', null, 2), '## Reviews',
     ...reviews.map(r => `${r.role}: ${r.outcome}\n${read(r.id).summary}`), '## Approval', read(run.id).summary,
@@ -60,6 +70,5 @@ export async function publishGithub(project: Project, task: Task, run: AgentRun,
   if (!url.startsWith(prefix) || !/^[1-9]\d*$/.test(url.slice(prefix.length))) throw new Problem(422, 'GitHub не подтвердил URL PR.');
   observe('pr-url', url);
   const result = confirm(JSON.parse(await command('gh', ['api', '--hostname', project.host, `${api}/${url.slice(prefix.length)}`], run.worktree)));
-  await verify();
-  return result;
+  return finish(result);
 }

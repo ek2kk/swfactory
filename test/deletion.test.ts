@@ -94,7 +94,7 @@ test('paused queue cancellation does not start the task and leaves other jobs ru
   assert.deepEqual(calls, [b.id]);
 });
 
-test('controlled groups stop before manual reconciliation; other task keeps running', async t => {
+test('controlled groups stop without reconciliation; other task keeps running', async t => {
   const { store, project, controller } = fixture(t);
   const task = store.createTask(project.id, 'Active', 1);
   let ready!: () => void; const started = new Promise<void>(resolve => { ready = resolve; });
@@ -102,6 +102,7 @@ test('controlled groups stop before manual reconciliation; other task keeps runn
   const other = store.createTask(project.id, 'Unrelated', 1);
   let releaseOther!: () => void, otherStarted = false;
   const otherBarrier = new Promise<void>(resolve => { releaseOther = resolve; });
+  t.after(() => releaseOther());
   t.mock.method(controller as any, 'perform', async (run: AgentRun) => {
     if (run.task_id === other.id) { otherStarted = true; await otherBarrier; return; }
     const child = spawn(process.execPath, ['-e', `const {spawn}=require('node:child_process'); process.on('SIGTERM',()=>{}); const c=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],{stdio:'ignore',detached:true});console.log(c.pid);setInterval(()=>{},1000);`], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -115,16 +116,15 @@ test('controlled groups stop before manual reconciliation; other task keeps runn
   store.beginDeletion(project.id, task.id, store.rawTask(project.id, task.id).state_version);
   assert.equal(store.snapshot().tasks.length, 2);
   await controller.deleteTask(task.id);
-  assert.equal(store.rawTask(project.id, task.id).deletion_state, 'failed');
+  assert.equal(store.rawTask(project.id, task.id).deletion_state, 'deleted');
+  assert.equal(store.rawTask(project.id, task.id).stop_unverified, 0);
   assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
   assert.throws(() => process.kill(descendant, 0), { code: 'ESRCH' });
-  store.beginDeletion(project.id, task.id, store.rawTask(project.id, task.id).state_version, 'Checked leader and descendants: stopped, no remote publication.');
-  await controller.deleteTask(task.id);
   assert.equal(store.snapshot().tasks[0].id, other.id);
   releaseOther();
 });
 
-for (const role of ['spec', 'title'] as const) test(`orphaned detached descendant prevents deletion after ${role} leader exits`, async t => {
+for (const role of ['spec', 'title'] as const) test(`Stop after ${role} leader exits returns to Backlog without requiring proof about hypothetical orphans`, async t => {
   const { store, project, controller } = fixture(t);
   const task = store.createTask(project.id, 'Orphan regression', 1);
   let descendant = 0;
@@ -135,31 +135,20 @@ for (const role of ['spec', 'title'] as const) test(`orphaned detached descendan
     return 'Title';
   };
   t.after(() => { if (descendant) { try { process.kill(-descendant, 'SIGKILL'); } catch {} } });
-  if (role === 'spec') {
-    await (controller as any).owned(store.queueSpec(project.id, task.id, 1, '/tmp'), work);
-  } else {
+  if (role === 'spec') await (controller as any).owned(store.queueSpec(project.id, task.id, 1, '/tmp'), work);
+  else {
     t.mock.method(controller.titles as any, 'generate', work);
     controller.titles.kick();
     for (let i = 0; i < 200 && store.rawTask(project.id, task.id).title_state !== 'completed'; i++) await delay(10);
     assert.equal(store.rawTask(project.id, task.id).title_state, 'completed');
   }
   assert.ok(descendant > 0);
-  process.kill(descendant, 0);
   store.beginDeletion(project.id, task.id, store.rawTask(project.id, task.id).state_version);
-  await controller.deleteTask(task.id);
-  assert.equal(store.rawTask(project.id, task.id).deletion_state, 'failed');
-  assert.equal(store.rawTask(project.id, task.id).stop_unverified, 1);
-  assert.equal(store.snapshot().tasks.length, 1);
-  process.kill(descendant, 0);
-  store.beginDeletion(project.id, task.id, store.rawTask(project.id, task.id).state_version);
-  await controller.deleteTask(task.id);
-  assert.equal(store.rawTask(project.id, task.id).deletion_state, 'failed', 'retry cannot infer termination');
-  process.kill(-descendant, 'SIGKILL');
-  while (true) { try { process.kill(descendant, 0); await delay(10); } catch { break; } }
-  descendant = 0;
-  store.beginDeletion(project.id, task.id, store.rawTask(project.id, task.id).state_version, 'Checked orphan PID: terminated; no remote publication occurred.');
-  await controller.deleteTask(task.id);
-  assert.equal(store.snapshot().tasks.length, 0);
+  await controller.deleteTask(task.id, true);
+  const stopped = store.task(project.id, task.id);
+  assert.equal(stopped.stage, 'backlog'); assert.equal(stopped.run_state, 'idle'); assert.equal(stopped.archived, 0);
+  const next = store.queueSpec(project.id, task.id, stopped.state_version, '/tmp');
+  assert.equal(next.parent_run_id, null);
 });
 
 test('scope holds scheduler slot after leader exit until detached descendants end', async t => {
@@ -200,12 +189,13 @@ test('unconfirmed callback leaves card visible and blocked; a fresh delete succe
   const task = store.createTask(project.id, 'Unresponsive', 1);
   let release!: () => void;
   const barrier = new Promise<void>(resolve => { release = resolve; });
+  t.after(() => release());
   t.mock.method(controller as any, 'perform', () => barrier);
   controller.enqueue(store.queueSpec(project.id, task.id, 1, '/tmp')); await setImmediate();
   store.beginDeletion(project.id, task.id, store.rawTask(project.id, task.id).state_version);
   await controller.deleteTask(task.id);
   assert.equal(store.rawTask(project.id, task.id).deletion_state, 'failed');
-  assert.match(store.snapshot().tasks[0].deletion_error!, /не подтверждена/);
+  assert.match(store.snapshot().tasks[0].deletion_error!, /не подтвержден/);
   assert.throws(() => store.queueSpec(project.id, task.id, 1, '/tmp'), /заблокированы/);
   release(); await setImmediate();
   store.beginDeletion(project.id, task.id, store.rawTask(project.id, task.id).state_version);
@@ -236,7 +226,7 @@ test('restart preserves deletion intent and refuses inferred process termination
   store = new Store(directory);
   const controller = new SpecController(store, directory, () => {});
   t.after(async () => { await controller.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
-  assert.equal(store.rawTask(project.id, task.id).deletion_state, 'failed');
+  assert.equal(store.rawTask(project.id, task.id).deletion_state, null);
   await controller.deleteTask(task.id);
   assert.equal(store.snapshot().tasks.length, 1); assert.equal(store.rawTask(project.id, task.id).publication_status, 'unknown');
   const evidence = 'Human checked PID tree: no surviving processes. GitHub checked manually; existing branch retained.';
@@ -293,7 +283,7 @@ for (const version of [11, 12]) for (const history of ['title', 'edited-title', 
   assert.equal(store.rawTask(project.id, task.id).deletion_state, 'deleted');
   await controller.close(); controller = undefined; store.close();
   store = new Store(directory);
-  assert.equal(store.db.pragma('user_version', { simple: true }), 19);
+  assert.equal(store.db.pragma('user_version', { simple: true }), 20);
   assert.equal(store.rawTask(project.id, task.id).stop_unverified, 0, 'migration must not repeat after reconciliation');
 });
 
@@ -466,6 +456,7 @@ test('archiving is durable before a pending callback stops and does not free its
   const task = store.createTask(project.id, 'Active callback', 1);
   let release!: () => void;
   const barrier = new Promise<void>(resolve => { release = resolve; });
+  t.after(() => release());
   t.mock.method(controller as any, 'perform', () => barrier);
   controller.enqueue(store.queueSpec(project.id, task.id, 1, '/tmp')); await setImmediate();
   store.db.transaction(() => store.archiveTask(project.id, task.id, store.rawTask(project.id, task.id).state_version))();
@@ -621,7 +612,7 @@ for (const state of ['backlog', 'local-edit', 'queued', 'running', 'needs-human'
     }
     if (state === 'needs-human') assert.equal(store.humanRequests()[0].status, 'revoked');
     if (state === 'completed' || state === 'needs-human') {
-      assert.deepEqual(store.runs(), preserved);
+      assert.deepEqual(store.runs(), preserved.map(run => ({ ...run, revoked: 1 })));
       assert.equal(store.snapshot().runs[0].report, 1, 'restored blocked card exposes saved reports');
     }
     if (state === 'completed') assert.equal(store.rawTask(project.id, task.id).run_state, 'completed');
@@ -655,7 +646,7 @@ for (const state of ['queued', 'running', 'needs-human'] as const) test(`restore
   assert.equal((await post('/start', { request_id: randomUUID(), state_version: blocked.state_version })).statusCode, 409);
   if (state === 'running') {
     store.releaseStoppedTask(project.id, task.id);
-    assert.equal(store.rawTask(project.id, task.id).deletion_state, 'failed');
+    assert.equal(store.rawTask(project.id, task.id).deletion_state, null);
   }
   const payload = { request_id: randomUUID(), state_version: store.rawTask(project.id, task.id).state_version,
     ...(state === 'running' ? { reconciliation: 'Checked processes and sessions: all stopped; no remote publication.' } : {}) };
@@ -688,21 +679,19 @@ for (const publication of ['pending', 'unknown', 'confirmed', null]) test(`publi
   const payload = { request_id: randomUUID(), state_version: before.state_version };
   const post = (suffix: string, body = payload) => app.inject({ method: 'POST', url: path + suffix, headers, payload: body });
   const response = await post('/stop');
-  if (publication === 'confirmed' || publication === null) {
-    assert.equal(response.statusCode, 409);
-    assert.deepEqual(store.rawTask(project.id, task.id), before);
-    return;
-  }
   assert.equal(response.statusCode, 200); assert.equal(response.json().deleted, true);
-  assert.match(response.json().warning, /Remote операция/);
+  if (publication === 'pending' || publication === 'unknown') assert.match(response.json().warning, /Remote операция/);
+  else assert.equal(response.json().warning, null);
   const after = store.rawTask(project.id, task.id);
   assert.equal(after.archived, 0); assert.equal(after.archive_source, null); assert.equal(after.deletion_state, null);
-  assert.equal(after.publication_status, 'unknown'); assert.ok(after.state_version > before.state_version);
+  assert.equal(after.publication_status, publication === 'pending' ? 'unknown' : publication); assert.ok(after.state_version > before.state_version);
+  assert.equal(after.stage, 'backlog'); assert.equal(after.run_state, 'idle');
   assert.equal(store.events(0).filter(event => event.type === 'task.archived').length, 0);
   assert.deepEqual((await post('/stop')).json(), response.json());
   assert.deepEqual(store.rawTask(project.id, task.id), after);
   const reset = await post('/reset-results', { request_id: randomUUID(), state_version: after.state_version });
-  assert.equal(reset.statusCode, 409);
+  assert.equal(reset.statusCode, publication === 'confirmed' ? 200 : 409);
+  if (publication === 'confirmed') return;
   assert.deepEqual(store.rawTask(project.id, task.id), after);
   assert.throws(() => store.beginPublication(project.id, task.id, after.state_version), /неизвестном исходе/);
 });
