@@ -155,12 +155,12 @@ test('malformed GitHub issue answers cannot skip issue validation or the issue�
   assert.equal(prOnly.results[0].state, 'cleared');
 });
 
-test('issue-only discovery checks replacement PR after superseded PR and stays unknown without one', async t => {
+test('issue-only discovery keeps superseded implementation unknown despite a linked replacement in either order', async t => {
   const f = repository(t), superseded = f.merge(), gh = github(f.project, () => superseded);
   writeFileSync(join(f.checkout, 'api.ts'), 'export const api = 2;');
   f.git('add', '.'); f.git('commit', '-m', 'replace API implementation'); f.git('push', 'origin', 'main');
   const replacement = f.git('rev-parse', 'HEAD');
-  for (const numbers of [[11, 12], [11]]) {
+  for (const numbers of [[11, 12], [12, 11], [11]]) {
     const command: Run = async (...args) => {
       if (args[0] === 'gh' && args[1][3]?.includes('/timeline?')) return JSON.stringify([numbers.map(number => ({
         event: 'cross-referenced', source: { issue: { number, html_url: `https://github.com/test/repo/pull/${number}`, pull_request: {} } },
@@ -172,10 +172,53 @@ test('issue-only discovery checks replacement PR after superseded PR and stays u
       return gh.command(...args);
     };
     const checked = await verifyDependencies(f.project, [{ ...dependency, pr_url: null }], replacement, '', 'model', signal(), command);
-    assert.equal(checked.results[0].state, numbers.length === 1 ? 'unknown' : 'cleared');
+    assert.equal(checked.results[0].state, 'unknown');
     assert.ok(checked.results[0].evidence.some(e => e.includes(`${pr}: файлы PR изменены`)));
-    if (numbers.length === 1) assert.match(checked.results[0].reason, /наличие требуемых изменений неоднозначно/);
-    else assert.ok(checked.results[0].evidence.some(e => e.includes(`pull/12 · merge ${replacement}`)));
+    assert.match(checked.results[0].reason, /наличие требуемых изменений неоднозначно/);
+  }
+});
+
+test('issue-only discovery never clears an original implementation followed by a linked revert', async t => {
+  const f = repository(t), merged = f.merge(), gh = github(f.project, () => merged);
+  f.git('revert', '--no-edit', merged); const reverted = f.git('rev-parse', 'HEAD');
+  for (const numbers of [[11, 12], [12, 11]]) {
+    const command: Run = async (...args) => {
+      if (args[0] === 'gh' && args[1][3]?.includes('/timeline?')) return JSON.stringify([numbers.map(number => ({
+        event: 'cross-referenced', source: { issue: { number, html_url: `https://github.com/test/repo/pull/${number}`, pull_request: {} } },
+      }))]);
+      if (args[0] === 'gh' && args[1][3] === 'repos/test/repo/pulls/12') {
+        const original = JSON.parse(await gh.command('gh', args[1].map(arg => arg.replace('pulls/12', 'pulls/11')), args[2]));
+        return JSON.stringify({ ...original, number: 12, html_url: 'https://github.com/test/repo/pull/12', merge_commit_sha: reverted });
+      }
+      return gh.command(...args);
+    };
+    const checked = await verifyDependencies(f.project, [{ ...dependency, pr_url: null }], reverted, '', 'model', signal(), command);
+    assert.equal(checked.results[0].state, 'unknown');
+    assert.match(checked.results[0].reason, /изменены или отменены/);
+  }
+});
+
+test('non-code sources retain authenticated author provenance independently of approval text', async t => {
+  const f = repository(t), gh = github(f.project, () => f.base);
+  const body = 'Release owner approved deployment on 2026-10-15';
+  for (const [login, association] of [['test', 'OWNER'], ['outsider', 'NONE']]) {
+    const command: Run = async (...args) => {
+      if (args[0] === 'gh' && args[1][3]?.includes('/comments?')) return JSON.stringify([[{
+        body, html_url: issue + '#issuecomment-1', user: { login }, author_association: association,
+      }]]);
+      const output = await gh.command(...args);
+      return args[0] === 'gh' && args[1][3] === 'repos/test/repo/issues/10'
+        ? JSON.stringify({ ...JSON.parse(output), user: { login: 'test' }, author_association: 'OWNER' }) : output;
+    };
+    let observed: string[] = [];
+    await verifyDependencies(f.project, [{ ...dependency, kind: 'condition', pr_url: null }], f.base, '', 'model', signal(), command,
+      async (_d, sources) => {
+        observed = sources;
+        return { satisfied: false, reason: 'Check exact approving actor', evidence: [] };
+      });
+    const [issueSource, comment] = observed.map(s => JSON.parse(s));
+    assert.deepEqual(issueSource.user, { login: 'test' }); assert.equal(issueSource.author_association, 'OWNER');
+    assert.deepEqual(comment.user, { login }); assert.equal(comment.author_association, association); assert.equal(comment.body, body);
   }
 });
 
@@ -481,8 +524,34 @@ test('legacy diagnosis and non-code verification use isolated tool-free calls an
   assert.notEqual(observed.cwd, process.cwd()); assert.match(observed.prompt, /No tools, Build, publication/);
   await assert.rejects(diagnoseDependencies('BLOCKED without links', 'model', signal()), /ссылку без основания/);
   const condition = { ...dependency, kind: 'condition' as const, pr_url: null };
-  output = { satisfied: true, reason: 'ok', evidence: ['Invented observation'] }; fake();
+  output = { satisfied: true, reason: 'ok', evidence: ['Invented observation'], approvals: [] }; fake();
   await assert.rejects(verifyCondition(condition, ['Approval absent'], 'continue', 'model', signal()), /свидетельствами/);
-  output = { satisfied: true, reason: 'Observed approval', evidence: ['Team approved API on 2026-10-15'] }; fake();
+  output = { satisfied: true, reason: 'Observed condition', evidence: ['Team approved API on 2026-10-15'], approvals: [] }; fake();
   assert.equal((await verifyCondition(condition, ['Team approved API on 2026-10-15'], '', 'model', signal())).satisfied, true);
+
+  const quote = 'I approve deployment on 2026-10-15';
+  const ownerCondition = { ...condition, condition: 'Repository owner approved deployment' };
+  for (const scenario of [
+    { login: 'test', association: 'OWNER', expectedLogin: 'test', role: 'owner', cleared: true },
+    { login: 'outsider', association: 'NONE', expectedLogin: 'test', role: 'owner', cleared: false },
+    { login: 'outsider', association: 'NONE', expectedLogin: 'outsider', role: 'owner', cleared: false },
+    { login: 'member', association: 'MEMBER', expectedLogin: 'member', role: 'owner', cleared: false },
+    { login: 'test', association: null, expectedLogin: 'test', role: 'owner', cleared: false },
+    { login: 'test', association: 'OWNER', expectedLogin: 'test', role: 'unknown', cleared: false },
+    { login: 'named-user', association: 'NONE', expectedLogin: 'named-user', role: 'user', cleared: true },
+    { login: 'member', association: 'MEMBER', expectedLogin: 'member', role: 'maintainer', cleared: true },
+  ]) {
+    const source = JSON.stringify({ url: issue + '#issuecomment-1', body: quote, user: { login: scenario.login }, author_association: scenario.association });
+    output = { satisfied: true, reason: 'Approval claimed', evidence: [quote], approvals: [{ role: scenario.role, login: scenario.expectedLogin, source_index: 0, quote }] }; fake();
+    const checked = await verifyCondition({ ...ownerCondition, condition: scenario.role === 'user' ? '@named-user approved deployment' : scenario.role === 'maintainer' ? 'Repository maintainer approved deployment' : ownerCondition.condition }, [source], '', 'model', signal());
+    assert.equal(checked.satisfied, scenario.cleared, JSON.stringify(scenario));
+    if (scenario.cleared) assert.ok(checked.evidence.some(e => e.includes(`@${scenario.login} (${scenario.association})`)));
+    else assert.match(checked.reason, /Полномочия или прямое одобрение/);
+  }
+  const prompt = JSON.parse(readFileSync(capture, 'utf8')).prompt;
+  assert.match(prompt, /For every approval required by the condition/); assert.match(prompt, /third party or human confirmation/);
+  output = { satisfied: true, reason: 'Human claims approval', evidence: [quote], approvals: [{ role: 'owner', login: 'test', source_index: 0, quote }] }; fake();
+  assert.equal((await verifyCondition(ownerCondition, [], quote, 'model', signal())).satisfied, false);
+  output = { satisfied: true, reason: 'Malformed approval', evidence: [quote], approvals: [{}] }; fake();
+  await assert.rejects(verifyCondition(ownerCondition, [quote], '', 'model', signal()), /Невалидные свидетельства полномочий/);
 });
