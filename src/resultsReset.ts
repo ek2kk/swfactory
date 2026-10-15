@@ -4,7 +4,7 @@ export type ResultsRestart = { role: AgentRun['role']; spec_run_id?: string; bui
 export type ResultsResetPlan = { state_version: number; role: AgentRun['role']; runs: { id: string; role: AgentRun['role'] }[]; restart: ResultsRestart };
 
 export function applicableReview(review: AgentRun, build: AgentRun) {
-  return review.task_id === build.task_id && review.status === 'completed' && review.outcome === 'PASS' && !review.stale
+  return !review.revoked && !build.revoked && review.task_id === build.task_id && review.status === 'completed' && review.outcome === 'PASS' && !review.stale
     && review.description_revision === build.description_revision && review.spec_run_id === build.spec_run_id
     && review.head_sha === build.head_sha && review.source_hash === build.source_hash && review.base_sha === build.base_sha
     && review.project_version === build.project_version && JSON.stringify(review.config) === JSON.stringify(build.config);
@@ -33,10 +33,10 @@ export function planResultsReset(task: Task, runs: AgentRun[], role: AgentRun['r
     }
   }
   const kept = runs.filter(run => !removed.has(run.id));
-  const specs = kept.filter(run => run.role === 'spec' && !run.stale && run.status === 'completed' && run.outcome === 'READY'
+  const specs = kept.filter(run => run.role === 'spec' && !run.revoked && !run.stale && run.status === 'completed' && run.outcome === 'READY'
     && run.description_revision === task.revision && run.project_version === projectVersion);
   const spec = specs.at(-1);
-  const build = kept.findLast(run => run.role === 'build' && !run.stale && run.status === 'completed' && run.outcome === 'READY'
+  const build = kept.findLast(run => run.role === 'build' && !run.revoked && !run.stale && run.status === 'completed' && run.outcome === 'READY'
     && run.description_revision === task.revision && run.project_version === projectVersion && run.head_sha && run.source_hash
     && (!run.review_plan || run.review_plan.policy_version === 2 && run.review_plan.head_sha === run.head_sha
       && run.review_plan.source_hash === run.source_hash && run.review_plan.revision === run.description_revision)

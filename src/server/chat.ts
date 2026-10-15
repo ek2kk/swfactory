@@ -1,6 +1,6 @@
 import type { FastifyBaseLogger } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import type { AgentRun, ChatMessage } from '../shared.js';
+import { publicationBlocksLocal, type AgentRun, type ChatMessage } from '../shared.js';
 import { Store, Problem } from './store.js';
 import { DeliveryError, type Steer } from './interactive.js';
 
@@ -15,13 +15,13 @@ export class Chat {
     return this.store.db.prepare('SELECT * FROM chat_messages WHERE task_id = ? ORDER BY rowid').all(taskId) as ChatMessage[];
   }
   context(run: AgentRun) {
-    return this.messages(run.task_id).filter(m => m.revision === run.description_revision && m.status === 'delivered').map(m => ({ text: m.text, run_id: m.run_id }));
+    return this.messages(run.task_id).filter(m => m.revision === run.description_revision && m.status === 'delivered' && (!m.run_id || this.store.hasRun({ id: m.run_id, task_id: run.task_id }))).map(m => ({ text: m.text, run_id: m.run_id }));
   }
   add(projectId: string, taskId: string, version: number, text: string, kind: ChatMessage['kind']) {
     const task = this.store.task(projectId, taskId);
     if (task.state_version !== version) throw new Problem(409, 'Карточка изменилась. Повторите отправку после обновления.');
     if (!text.trim() || text.length > 4096) throw new Problem(422, 'Сообщение должно содержать от 1 до 4096 символов.');
-    if (task.publication_status || task.run_state === 'interrupted') throw new Problem(409, 'После прерывания или публикации нужна ручная сверка; сообщение не отправлено.');
+    if (publicationBlocksLocal(task) || task.run_state === 'interrupted') throw new Problem(409, 'После прерывания или публикации нужна ручная сверка; сообщение не отправлено.');
     const id = randomUUID();
     const run = this.store.runs().filter(r => r.task_id === taskId).at(-1);
     this.store.db.prepare(`INSERT INTO chat_messages (id, task_id, revision, run_id, kind, text, status) VALUES (?, ?, ?, ?, ?, ?, 'queued')`)
@@ -38,8 +38,8 @@ export class Chat {
   flush(taskId: string) {
     if (this.store.blocked(taskId)) return;
     const active = this.controls.get(taskId);
-    if (!active) return;
-    for (const message of this.messages(taskId).filter(m => m.status === 'queued' && m.kind === 'guidance' && m.revision === active.run.description_revision)) {
+    if (!active || !this.store.hasRun(active.run)) return;
+    for (const message of this.messages(taskId).filter(m => m.status === 'queued' && m.kind === 'guidance' && m.revision === active.run.description_revision && (!m.run_id || m.run_id === active.run.id))) {
       this.store.db.transaction(() => {
         this.store.db.prepare("UPDATE chat_messages SET status = 'sending', run_id = ?, session_id = ? WHERE id = ?").run(active.run.id, active.run.diagnostic?.session_id ?? null, message.id);
         this.store.event('chat.sending', taskId, { message_id: message.id });

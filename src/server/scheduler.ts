@@ -6,13 +6,15 @@ type Job = { taskId: string; work: () => Promise<void>; resolve: () => void; rej
 
 export class Scheduler {
   private active = new Set<string>();
+  private retained = new Map<object, string>();
   private pending: Job[] = [];
   private closed = false;
   private timer?: ReturnType<typeof setTimeout>;
   private lastLoad = '';
   private blocked?: string;
   constructor(private available = () => true, private log?: FastifyBaseLogger, private blockedReason = () => 'unavailable') {}
-  hasWork(taskId: string) { return this.active.has(taskId) || this.pending.some(job => job.taskId === taskId); }
+  private isActive(taskId: string) { return this.active.has(taskId) || [...this.retained.values()].includes(taskId); }
+  hasWork(taskId: string) { return this.isActive(taskId) || this.pending.some(job => job.taskId === taskId); }
   cancel(taskId: string) {
     this.pending = this.pending.filter(job => {
       if (job.taskId !== taskId) return true;
@@ -31,6 +33,13 @@ export class Scheduler {
     this.load();
   }
 
+  retain(taskId: string, execution: object, work: () => Promise<void>) {
+    if (this.retained.has(execution)) return;
+    this.retained.set(execution, taskId);
+    this.load();
+    void work().finally(() => { this.retained.delete(execution); this.drain(); });
+  }
+
   enqueue(taskId: string, work: () => Promise<void>, log = this.log?.child({ task_id: taskId })): Promise<void> {
     return new Promise((resolve, reject) => {
       this.pending.push({ taskId, work, resolve, reject, enqueued: Date.now(), log });
@@ -40,9 +49,10 @@ export class Scheduler {
   }
 
   private load() {
-    const fields = { active: this.active.size, queued: this.pending.length, limit: 3,
+    const active = this.active.size + this.retained.size;
+    const fields = { active, queued: this.pending.length, limit: 3,
       reason: this.closed ? 'shutdown' : this.blocked ?? (this.pending.length
-        ? this.active.size >= 3 ? 'capacity' : this.active.has(this.pending[0].taskId) ? 'task_active' : 'available' : 'idle') };
+        ? active >= 3 ? 'capacity' : this.isActive(this.pending[0].taskId) ? 'task_active' : 'available' : 'idle') };
     const signature = JSON.stringify(fields);
     if (signature !== this.lastLoad) { this.lastLoad = signature; this.log?.info({ event: 'scheduler.changed', ...fields }); }
   }
@@ -56,7 +66,7 @@ export class Scheduler {
       return;
     }
     this.blocked = undefined;
-    while (this.active.size < 3 && this.pending.length && !this.active.has(this.pending[0].taskId)) {
+    while (this.active.size + this.retained.size < 3 && this.pending.length && !this.isActive(this.pending[0].taskId)) {
       const job = this.pending.shift()!;
       this.active.add(job.taskId);
       const started = Date.now();

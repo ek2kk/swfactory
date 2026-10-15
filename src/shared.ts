@@ -7,6 +7,7 @@ export type ProjectInput = Pick<Project, 'checkout' | 'remote' | 'hosting' | 'ta
 export type SpecMode = 'auto' | 'spec' | 'skip';
 export type SpecDecision = { revision: number; mode: SpecMode; required: boolean | null; reason: string; missing: string[] };
 export type Task = {
+  legacy_execution_unknown?: number; execution_generation?: number; publication_generation?: number; execution_warning?: string | null; publication_run_id?: string | null;
   results_restart?: import('./resultsReset.js').ResultsRestart | null;
   has_results?: number; reset_pending?: number; reset_error?: string | null;
   spec_decision?: SpecDecision | null;
@@ -19,11 +20,15 @@ export type Task = {
   state_version: number; revision: number;
   title_state: 'pending' | 'running' | 'completed' | 'failed' | 'interrupted';
 };
+export function publicationBlocksLocal(task: Task) {
+  return !!task.publication_status && (task.publication_generation ?? 0) === (task.execution_generation ?? 0);
+}
 export function resultsResetBlocker(task: Task): string | null {
   if (task.archived) return 'Для сброса архивной задачи необходимо восстановление карточки; для удаления карточки используйте полное удаление. Архив автоматически не снимается.';
   if (task.publication_status === 'pending' || task.publication_status === 'unknown') return 'Публикация не подтверждена. Сначала остановите исполнение и сверьте remote результат; сброс не снимает это ограничение.';
-  if (task.deletion_state || task.stop_unverified || task.execution_unverified) return 'Сначала используйте «Остановить исполнение / сверить» и подтвердите остановку процессов.';
-  if (['queued', 'running'].includes(task.run_state) || ['pending', 'running'].includes(task.title_state)) return 'Дождитесь завершения работы или используйте «Остановить исполнение / сверить».';
+  if (task.stop_unverified) return 'Состояние прежнего исполнения неизвестно. Сброс результатов недоступен; диагностика — в технических подробностях.';
+  if (task.deletion_state || task.execution_unverified) return 'Для сброса результатов требуется завершение известного исполнения. Используйте «Остановить».';
+  if (['queued', 'running'].includes(task.run_state) || ['pending', 'running'].includes(task.title_state)) return 'Дождитесь завершения работы или используйте «Остановить».';
   return null;
 }
 export type Revision = { task_id: string; revision: number; description: string; created_at: string };
@@ -81,16 +86,17 @@ export type DependencyDiagnostic = {
 };
 export function dependencyActionBlocker(task: Task): string | null {
   if (task.reset_pending || task.archived || task.deletion_state) return 'Карточка архивирована, удаляется или сбрасывается.';
-  if (task.publication_status) return 'Сначала сверьте публикацию; снятие зависимости не повторяет публикацию.';
-  if (task.execution_unverified || task.stop_unverified) return 'Сначала используйте «Остановить исполнение / сверить» и подтвердите остановку процессов.';
+  if (publicationBlocksLocal(task)) return 'Сначала остановите прежний цикл; снятие зависимости не повторяет публикацию.';
+  if (task.execution_unverified || task.stop_unverified) return 'Сначала используйте «Остановить». Для удаления результатов требуется завершение известного исполнения.';
   if (!['interrupted', 'waiting', 'idle'].includes(task.run_state) || ['pending', 'running'].includes(task.title_state)) return 'Дождитесь завершения исполнения.';
   return null;
 }
-export type RunDiagnostic = DependencyDiagnostic & { last_activity_at?: string; stream_chars?: number; stream_updates?: number; can_interrupt?: boolean; interrupt_requested_at?: string; result_saved?: boolean; result_run_id?: string; error_kind?: FailureKind; execution_finished?: boolean; reset_at?: string | null; cli_version?: string; session_id?: string; usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number } };
+export type RunDiagnostic = DependencyDiagnostic & { last_activity_at?: string; stream_chars?: number; stream_updates?: number; can_interrupt?: boolean; interrupt_requested_at?: string; result_saved?: boolean; result_run_id?: string; error_kind?: FailureKind; execution_finished?: boolean; reset_at?: string | null; cli_version?: string; session_id?: string; turn_id?: string; usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number } };
 export type ExecutionPause = { paused: number; reset_at: string | null; state_version: number };
 export type ReviewPlan = { policy_version?: 2; build_id: string; head_sha: string; source_hash: string; revision: number; diff_base: string; diff: string; requirements: string; checks: { role: ReviewRole; required: boolean; reason: string; reuse_run_id?: string }[] };
 export const requiredReviews = (run: AgentRun): readonly ReviewRole[] => run.review_plan ? run.review_plan.checks.filter(c => c.required && !c.reuse_run_id).map(c => c.role) : reviewsFor(run.config);
 export type AgentRun = {
+  revoked?: number;
   review_plan?: Omit<ReviewPlan, 'diff' | 'requirements'>;
   output_preview?: string | null; output_at?: string | null; output_version?: number | null; output_length?: number | null;
   diagnostic?: RunDiagnostic; started_at?: string | null; finished_at?: string | null;

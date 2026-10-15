@@ -84,10 +84,8 @@ export class Titles {
         if (task.title_state !== 'pending' || task.run_state !== 'idle' || task.stage !== 'backlog' || this.active.has(task.id)) continue;
         if (task.deletion_state) continue;
         const log = this.log?.child({ project_id: task.project_id, task_id: task.id, role: 'title' });
-        const scope = new ProcessScope(pid => {
-          this.store.db.prepare('UPDATE tasks SET stop_unverified = 1 WHERE id = ?').run(task.id);
-          this.store.event('execution.process-started', task.id, { pid, pgid: pid, role: 'title' });
-        }, log);
+        const scope = new ProcessScope((_pid, row) => { this.store.recordProcess(task.id, row); this.publish(); }, log,
+          () => this.store.rawTask(task.project_id, task.id).execution_generation === task.execution_generation, task.execution_generation);
         this.scopes.set(task.id, [...(this.scopes.get(task.id) ?? []).filter(scope => !scope.knownGroupsStopped()), scope]);
         const controller = scope.controller;
         const done = this.scheduler.enqueue(task.id, () => scope.run(async () => {
@@ -99,7 +97,7 @@ export class Titles {
             const title = await this.generate(task.description, controller.signal).then(title => parseTitle({ title })).catch(error => { log?.warn({ event: 'title.failure', error_kind: errorKind(error) }); this.executionFailure(error); return null; });
             if (!this.stopped) { this.store.finishTitle(task, title); log?.info({ event: 'title.finished', outcome: title === null ? 'failed' : 'completed', state_confirmed: true }); this.publish(); }
           } catch (error) { if (!this.store.blocked(task.id)) this.fail(error); }
-          finally { if (scope.knownGroupsStopped()) this.store.db.prepare('UPDATE tasks SET execution_unverified = 0 WHERE id = ?').run(task.id); }
+          finally { if (this.store.rawTask(task.project_id, task.id).execution_generation === task.execution_generation && scope.knownGroupsStopped() && this.store.executionProcesses(task.id).every(row => row.state === 'exited')) this.store.db.prepare('UPDATE tasks SET execution_unverified = 0, stop_unverified = legacy_execution_unknown WHERE id = ?').run(task.id); }
         }, log), log)
           .finally(() => { this.active.delete(task.id); this.kick(); });
         this.active.set(task.id, { controller, scope, done });
@@ -132,10 +130,14 @@ export class Titles {
     return active?.done ?? Promise.resolve();
   }
 
-  async cancel(taskId: string) {
+  async cancel(taskId: string, deadline = Date.now() + 4500) {
     this.scheduler.cancel(taskId);
-    await Promise.all((this.scopes.get(taskId) ?? []).map(scope => scope.stop()));
-    if (this.scopes.has(taskId)) this.store.db.prepare('UPDATE tasks SET execution_unverified = 0 WHERE id = ?').run(taskId);
+    const scopes = this.scopes.get(taskId) ?? [];
+    for (const scope of scopes) if (scope.hasKnownProcess) this.scheduler.retain(taskId, scope, async () => {
+      while (!this.stopped && scope.hasKnownProcess && scope.hasLiveProcesses()) await new Promise(resolve => setTimeout(resolve, 100));
+    });
+    await Promise.all(scopes.map(scope => scope.stop(Math.max(0, Math.min(4000, deadline - Date.now())))));
+    if (scopes.length && scopes.every(scope => scope.knownGroupsStopped())) this.store.db.prepare("UPDATE tasks SET execution_unverified = EXISTS(SELECT 1 FROM execution_processes WHERE task_id = ? AND state = 'running') WHERE id = ?").run(taskId, taskId);
   }
   async close() {
     this.stopped = true;

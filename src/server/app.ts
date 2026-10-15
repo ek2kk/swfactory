@@ -235,12 +235,13 @@ export async function createApp(options: {
   function deletionResult(projectId: string, taskId: string) {
     const task = store.rawTask(projectId, taskId);
     return {
-      deleted: task.deletion_state === 'deleted', error: task.deletion_error,
+      archived: !!task.archived,
+      deleted: !task.stop_unverified && !task.execution_unverified && (task.deletion_state === 'deleted' || (!task.deletion_state && !!task.execution_generation && !task.execution_warning)), error: task.execution_warning ?? task.deletion_error,
       warning: task.publication_status === 'unknown' ? 'Remote операция могла завершиться. Проверьте hosting вручную; автоматического повтора публикации нет.' : null,
       verification: { task_id: taskId, repository: store.project(projectId).repository, pr_url: task.pr_url,
-        processes: store.db.prepare("SELECT payload, created_at FROM events WHERE task_id = ? AND type = 'execution.process-started'").all(taskId),
+        processes: store.executionProcesses(taskId),
         remote_operations: store.db.prepare("SELECT payload, created_at FROM events WHERE task_id = ? AND type = 'publication.remote-operation'").all(taskId),
-        runs: store.runs().filter(r => r.task_id === taskId).map(r => ({ run_id: r.id, branch: r.branch, worktree: r.worktree, head_sha: r.head_sha })) },
+        runs: store.runs().filter(r => r.task_id === taskId).map(r => ({ run_id: r.id, branch: r.branch, worktree: r.worktree, head_sha: r.head_sha, revoked: r.revoked, status: r.status, thread_id: r.diagnostic?.session_id, turn_id: r.diagnostic?.turn_id })) },
     };
   }
   app.get<{ Params: { projectId: string; taskId: string } }>('/api/projects/:projectId/tasks/:taskId/deletion', { schema: { params: taskParams } }, async request => deletionResult(request.params.projectId, request.params.taskId));
@@ -251,19 +252,14 @@ export async function createApp(options: {
     const { request_id, state_version, reconciliation } = request.body;
     const fingerprint = JSON.stringify([`task.${action}`, projectId, taskId, state_version, reconciliation ?? null]);
     store.rawTask(projectId, taskId);
-    const prior = store.replay(request_id, fingerprint) as { stopping?: boolean } | undefined;
+    const prior = store.replay(request_id, fingerprint) as { stopping?: boolean; generation?: number } | undefined;
     if (prior && !prior.stopping) return prior;
-    if (action === 'stop') {
-      const task = store.rawTask(projectId, taskId);
-      if (!task.archived && !task.deletion_state && !task.execution_unverified && !task.stop_unverified
-        && task.publication_status !== 'pending' && task.publication_status !== 'unknown'
-        && !['queued','running'].includes(task.run_state) && !['pending','running'].includes(task.title_state)) throw new Problem(409, 'Нет исполнения для остановки или сверки.');
-    }
+    if (prior?.stopping && prior.generation !== store.rawTask(projectId, taskId).execution_generation) return prior;
     if (!prior) {
       store.mutate(request_id, fingerprint, () => {
         const task = store.beginDeletion(projectId, taskId, state_version, reconciliation);
         if (action === 'delete') store.archiveTask(projectId, taskId, task.state_version);
-        return { stopping: task.deletion_state !== 'deleted' };
+        return { stopping: task.deletion_state !== 'deleted', generation: task.execution_generation };
       });
       publish();
     }
@@ -271,7 +267,6 @@ export async function createApp(options: {
     if (task.deletion_state === 'stopping') await controller.deleteTask(taskId, action === 'stop', request.log);
     task = store.rawTask(projectId, taskId);
     const result = deletionResult(projectId, taskId);
-    if (action === 'stop') store.releaseStoppedTask(projectId, taskId);
     store.db.prepare('UPDATE requests SET response = ? WHERE id = ?').run(JSON.stringify(result), request_id);
     publish();
     return result;
@@ -287,7 +282,7 @@ export async function createApp(options: {
     return result;
   });
   app.get<{ Params: { projectId: string; taskId: string } }>('/api/projects/:projectId/tasks/:taskId/messages', { schema: { params: taskParams } }, async request => {
-    store.task(request.params.projectId, request.params.taskId);
+    store.rawTask(request.params.projectId, request.params.taskId);
     return controller.chat.messages(request.params.taskId);
   });
   app.get<{ Params: { projectId: string; taskId: string }; Querystring: { after: string } }>('/api/projects/:projectId/tasks/:taskId/events', {

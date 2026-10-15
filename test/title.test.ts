@@ -4,6 +4,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
+import { once } from 'node:events';
+import { spawn } from '../src/server/processes.js';
 import { Store } from '../src/server/store.js';
 import { Titles, parseTitle } from '../src/server/title.js';
 import type { Task } from '../src/shared.js';
@@ -26,6 +28,29 @@ function fixture(t: { after: (fn: () => Promise<void>) => void }) {
 test('title validation rejects malformed, empty, multiline and oversized results', () => {
   assert.equal(parseTitle({ title: ' Заголовок ' }), 'Заголовок');
   for (const value of [null, [], {}, { title: 1 }, { title: '' }, { title: 'x', extra: 1 }, { title: 'a\nb' }, { title: 'a'.repeat(121) }]) assert.throws(() => parseTitle(value));
+});
+
+test('title process keeps its execution generation when Stop advances the card', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'factory-title-generation-')), store = new Store(directory);
+  const project = store.addProject({ checkout: '/test', common_dir: '/test/.git', remote: 'origin', remote_url: 'git@github.com:owner/repo.git', hosting: 'github', host: 'github.com', repository: 'owner/repo', target_branch: 'main' });
+  const task = store.createTask(project.id, 'Title generation', 1);
+  store.db.prepare('UPDATE tasks SET execution_generation = 2 WHERE id = ?').run(task.id);
+  let ready!: () => void;
+  const entered = new Promise<void>(resolve => { ready = resolve; });
+  const titles = new Titles(store, () => {}, async () => {
+    const child = spawn(process.execPath, ['-e', "console.log('ready');setInterval(()=>{},1000)"], { stdio: ['ignore', 'pipe', 'ignore'] });
+    await once(child.stdout!, 'data'); ready(); await once(child, 'close'); return 'Late title';
+  });
+  t.after(async () => { await titles.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  titles.kick(); await entered;
+  assert.equal(store.executionProcesses(task.id)[0].run_id, null);
+  assert.equal(store.executionProcesses(task.id)[0].execution_generation, 2);
+  store.beginDeletion(project.id, task.id, store.task(project.id, task.id).state_version);
+  await titles.cancel(task.id);
+  assert.equal(store.executionProcesses(task.id)[0].execution_generation, 2);
+  assert.equal(store.executionProcesses(task.id)[0].state, 'exited');
+  assert.equal(store.rawTask(project.id, task.id).execution_generation, 3);
+  assert.equal(store.rawTask(project.id, task.id).title, null);
 });
 
 test('three shared slots, no duplicate title, stale revision discarded and current revision follows', async t => {
@@ -112,7 +137,7 @@ test('v1 database migration preserves descriptions and does not automatically ru
     store.close(); store = new Store(dir);
     assert.equal(store.task(p.id, task.id).description, 'old description');
     assert.equal(store.task(p.id, task.id).title_state, 'interrupted');
-    assert.equal(store.db.pragma('user_version', { simple: true }), 20);
+    assert.equal(store.db.pragma('user_version', { simple: true }), 22);
     assert.equal(store.claimTitle(store.task(p.id, task.id)), undefined);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
@@ -178,7 +203,7 @@ for (const variant of ['spec-v2', 'title-v2'] as const) test(`migration from ${v
     assert.equal(saved.description, 'keep description'); assert.equal(saved.title, 'Saved title');
     assert.equal(saved.title_state, 'completed');
     assert.equal(store.revisions(p.id, task.id).length, 1);
-    assert.equal(store.db.pragma('user_version', { simple: true }), 20);
+    assert.equal(store.db.pragma('user_version', { simple: true }), 22);
     assert.equal(Object.keys(store.settings(p.id).models).length, 6);
     if (runId) {
       assert.equal(store.specRun(p.id, task.id, runId).outcome, 'READY');

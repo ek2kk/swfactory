@@ -138,8 +138,7 @@ test('process logs distinguish stop request, leader exit, confirmed group stop a
   let release!: () => void;
   const callback = unknown.run(() => new Promise<void>(resolve => { release = resolve; }),
     log.child({ task_id: 'process-task', run_id: 'unknown-run', role: 'review-code' }));
-  t.mock.method(unknown as any, 'discoverDescendantGroups', async () => { throw new Error('PRIVATE PROMPT api_key=credential'); });
-  await assert.rejects(unknown.stop());
+  await assert.rejects(unknown.stop(30));
   release(); await callback;
   for (const event of ['process.stop-requested', 'process.stop-unknown']) {
     assert.ok(lines.some(line => line.event === event && line.task_id === 'process-task' && line.run_id === 'unknown-run' && line.role === 'review-code'), event);

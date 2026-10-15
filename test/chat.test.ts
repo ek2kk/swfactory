@@ -13,6 +13,7 @@ import { runInNewContext } from 'node:vm';
 import { transformSync } from 'esbuild';
 import * as jsx from 'react/jsx-runtime';
 import * as stageHistory from '../src/client/stageHistory.js';
+import * as shared from '../src/shared.js';
 import type { AgentRun, TranscriptEntry } from '../src/shared.js';
 
 function conversationPolling(status: AgentRun['status'], pages: { entries: TranscriptEntry[]; next_offset: number; more: boolean }[]) {
@@ -29,7 +30,7 @@ function conversationPolling(status: AgentRun['status'], pages: { entries: Trans
       useRef(current: unknown) { return values[index++] ??= { current }; },
       useEffect(callback: () => () => void) { effect = callback; },
     },
-    './taskView.js': {}, './stageHistory.js': stageHistory,
+    './taskView.js': {}, './stageHistory.js': stageHistory, '../shared.js': shared,
   };
   const module = { exports: {} as any };
   runInNewContext(transformSync(readFileSync(new URL('../src/client/chat.tsx', import.meta.url), 'utf8'), { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code, {
@@ -174,11 +175,11 @@ test('transcript handles legacy and app-server events, long UTF-8 lines, partial
   assert.equal(transcriptEntry({ method: 'item/started', params: { item: { type: 'commandExecution', command: 'npm test' } } }, 'id')?.status, 'in_progress');
 });
 
-test('Composer offers only guidance and requirements keep their separate application status', async t => {
+test('Composer offers only guidance and messages show their application and Stop revocation status', async t => {
   const { createElement } = await import('react');
   const { renderToStaticMarkup } = await import('react-dom/server');
   const { Composer, Message } = await import('../src/client/chat.js');
-  const { task, run, chat, add } = fixture(t);
+  const { store, task, run, chat, add } = fixture(t);
   const composer = renderToStaticMarkup(createElement(Composer, { task, path: '/task', api: async () => { throw new Error('unused'); }, refresh: async () => {} }));
   assert.match(composer, /Сообщение агенту/);
   assert.ok(!composer.includes('<select')); assert.ok(!composer.includes('Тип сообщения'));
@@ -188,4 +189,13 @@ test('Composer offers only guidance and requirements keep their separate applica
   assert.match(message, /Ожидает применения после текущего этапа/);
   assert.match(message, /Версия требований: 1/);
   assert.ok(!message.includes('Ожидает доставки'));
+  add('Guidance', 'guidance');
+  store.beginDeletion(task.project_id, task.id, store.task(task.project_id, task.id).state_version);
+  for (const revoked of chat.messages(task.id)) {
+    assert.equal(revoked.status, 'revoked');
+    const html = renderToStaticMarkup(createElement(Message, { message: revoked }));
+    assert.match(html, /Отозвано ·/);
+    assert.match(html, /Сообщение отозвано при остановке исполнения/);
+    assert.doesNotMatch(html, /требования изменились|Задача удаляется/);
+  }
 });
