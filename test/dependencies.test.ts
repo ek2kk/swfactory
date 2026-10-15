@@ -539,7 +539,9 @@ test('legacy diagnosis and non-code verification use isolated tool-free calls an
     { login: 'test', association: null, expectedLogin: 'test', role: 'owner', cleared: false },
     { login: 'test', association: 'OWNER', expectedLogin: 'test', role: 'unknown', cleared: false },
     { login: 'named-user', association: 'NONE', expectedLogin: 'named-user', role: 'user', cleared: true },
-    { login: 'member', association: 'MEMBER', expectedLogin: 'member', role: 'maintainer', cleared: true },
+    { login: 'member', association: 'MEMBER', expectedLogin: 'member', role: 'maintainer', cleared: false },
+    { login: 'collaborator', association: 'COLLABORATOR', expectedLogin: 'collaborator', role: 'maintainer', cleared: false },
+    { login: 'test', association: 'OWNER', expectedLogin: 'test', role: 'maintainer', cleared: false },
   ]) {
     const source = JSON.stringify({ url: issue + '#issuecomment-1', body: quote, user: { login: scenario.login }, author_association: scenario.association });
     output = { satisfied: true, reason: 'Approval claimed', evidence: [quote], approvals: [{ role: scenario.role, login: scenario.expectedLogin, source_index: 0, quote }] }; fake();
@@ -554,4 +556,50 @@ test('legacy diagnosis and non-code verification use isolated tool-free calls an
   assert.equal((await verifyCondition(ownerCondition, [], quote, 'model', signal())).satisfied, false);
   output = { satisfied: true, reason: 'Malformed approval', evidence: [quote], approvals: [{}] }; fake();
   await assert.rejects(verifyCondition(ownerCondition, [quote], '', 'model', signal()), /Невалидные свидетельства полномочий/);
+
+  for (const quote of ['I approve "deployment"', 'I approve deployment\non 2026-10-15', 'I approve deployment to C:\\release']) {
+    await t.test(`approval evidence matches decoded body: ${JSON.stringify(quote)}`, async () => {
+      const source = JSON.stringify({ url: issue + '#issuecomment-1', body: quote, user: { login: 'test' }, author_association: 'OWNER' });
+      output = { satisfied: true, reason: 'Direct approval', evidence: [quote], approvals: [{ role: 'owner', login: 'test', source_index: 0, quote }] }; fake();
+      const checked = await verifyCondition(ownerCondition, [source], '', 'model', signal());
+      assert.equal(checked.satisfied, true); assert.ok(checked.evidence.includes(quote));
+      const forged = JSON.stringify({ url: issue + '#issuecomment-1', body: 'No approval', user: { login: 'test' }, author_association: 'OWNER' });
+      await assert.rejects(verifyCondition(ownerCondition, [forged], '', 'model', signal()), /свидетельствами/);
+    });
+  }
+
+  const f = repository(t), gh = github(f.project, () => f.base);
+  for (const scenario of [
+    { role: 'maintain', login: 'member', cleared: true },
+    { role: 'admin', login: 'MEMBER', cleared: true },
+    { role: 'write', login: 'member', cleared: false },
+    { role: 'read', login: 'member', cleared: false },
+    { role: 'triage', login: 'member', cleared: false },
+    { role: 'none', login: 'member', cleared: false },
+    { role: 'custom', login: 'member', cleared: false },
+    { role: null, login: 'member', cleared: false },
+    { role: 'maintain', login: 'other-user', cleared: false },
+    { role: 'unavailable', login: 'member', cleared: false },
+  ]) {
+    await t.test(`maintainer requires repository permissions: ${JSON.stringify(scenario)}`, async () => {
+      const quote = 'I approve deployment';
+      output = { satisfied: true, reason: 'Maintainer approval', evidence: [quote], approvals: [{ role: 'maintainer', login: 'member', source_index: 1, quote }] }; fake();
+      let permissionCalls = 0;
+      const command: Run = async (file, args, cwd) => {
+        if (file === 'gh' && args[3] === 'repos/test/repo/collaborators/member/permission') {
+          permissionCalls++; assert.equal(args[2], f.project.host);
+          if (scenario.role === 'unavailable') throw new Problem(422, 'GitHub timeout/404/нет доступа');
+          return JSON.stringify({ permission: 'write', role_name: scenario.role, user: { login: scenario.login } });
+        }
+        if (file === 'gh' && args[3]?.includes('/comments?')) return JSON.stringify([[{
+          html_url: issue + '#issuecomment-1', body: quote, user: { login: 'member' }, author_association: 'MEMBER',
+        }]]);
+        return gh.command(file, args, cwd);
+      };
+      const checked = await verifyDependencies(f.project, [{ ...condition, condition: 'Repository maintainer approved deployment' }], f.base, '', 'model', signal(), command);
+      assert.equal(permissionCalls, 1);
+      assert.equal(checked.results[0].state, scenario.cleared ? 'cleared' : scenario.role === 'unavailable' ? 'unknown' : 'blocked');
+      if (!scenario.cleared && scenario.role !== 'unavailable') assert.equal(checked.questions[0].required, true);
+    });
+  }
 });
