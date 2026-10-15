@@ -12,6 +12,7 @@ import { SpecController } from '../src/server/spec.js';
 import { Chat } from '../src/server/chat.js';
 import { Scheduler } from '../src/server/scheduler.js';
 import { ProcessScope, spawn, exec } from '../src/server/processes.js';
+import { captureLogs } from './helpers/logging.js';
 import { createApp } from '../src/server/app.js';
 import type { AgentRun, Snapshot } from '../src/shared.js';
 
@@ -161,8 +162,10 @@ for (const role of ['spec', 'title'] as const) test(`orphaned detached descendan
   assert.equal(store.snapshot().tasks.length, 0);
 });
 
-test('scope holds scheduler slot after leader exit until detached descendants end', async () => {
-  const scope = new ProcessScope(), scheduler = new Scheduler();
+test('scope holds scheduler slot after leader exit until detached descendants end', async t => {
+  const { app, log, lines } = captureLogs();
+  t.after(() => app.close());
+  const scope = new ProcessScope(undefined, log.child({ task_id: 'descendant-task' })), scheduler = new Scheduler();
   let childPid = 0, release!: () => void, releaseBlockers!: () => void;
   const started = new Promise<void>(resolve => { release = resolve; });
   const blockers = new Promise<void>(resolve => { releaseBlockers = resolve; });
@@ -171,7 +174,7 @@ test('scope holds scheduler slot after leader exit until detached descendants en
     const child = spawn(process.execPath, ['-e', `const {spawn}=require('node:child_process');const c=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});console.log('ready');setInterval(()=>{},1000)"],{stdio:['ignore','pipe','ignore'],detached:true});c.stdout.pipe(process.stdout);setInterval(()=>{},1000);`], { stdio: ['ignore', 'pipe', 'pipe'] });
     childPid = child.pid!; child.stdout!.once('data', release);
     await once(child, 'close'); leaderClosed = true;
-  }));
+  }, log.child({ task_id: 'descendant-task', run_id: 'descendant-run', role: 'build' })));
   const b = scheduler.enqueue('b', () => blockers), c = scheduler.enqueue('c', () => blockers);
   const next = scheduler.enqueue('d', async () => { nextStarted = true; });
   await started;
@@ -181,6 +184,12 @@ test('scope holds scheduler slot after leader exit until detached descendants en
   assert.equal(nextStarted, false, 'slot remains occupied by the resistant descendant');
   await stop; await job; await next;
   assert.equal(nextStarted, true);
+  const signals = lines.filter(line => line.event === 'process.signal-sent');
+  assert.equal(new Set(signals.map(line => line.pgid)).size, 2, 'leader and detached descendant were signalled');
+  for (const line of signals) {
+    assert.equal(line.task_id, 'descendant-task'); assert.equal(line.run_id, 'descendant-run'); assert.equal(line.role, 'build');
+  }
+  assert.ok(lines.some(line => line.event === 'process.stop-confirmed' && line.run_id === 'descendant-run'));
   assert.throws(() => process.kill(childPid, 0), { code: 'ESRCH' });
   assert.throws(() => scope.run(() => exec(process.execPath, ['-e', "throw Error('must not start')"], {})), /abort/i);
   releaseBlockers(); await Promise.all([b, c]); scheduler.close();

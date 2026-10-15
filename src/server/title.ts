@@ -1,3 +1,5 @@
+import type { FastifyBaseLogger } from 'fastify';
+import { errorKind } from './logging.js';
 import { ProcessScope, execFile } from './processes.js';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -72,8 +74,8 @@ export class Titles {
   error: string | null = null;
   hasWork(taskId: string) { return this.active.has(taskId) || (this.scopes.get(taskId) ?? []).some(scope => !scope.knownGroupsStopped()); }
   constructor(private store: Store, private publish: () => void,
-    private generate = generateTitle, private onError: (error: unknown) => void = console.error,
-    private scheduler = new Scheduler(), private executionFailure: (error: unknown) => void = () => {}) {}
+    private generate = generateTitle, private onError: (error: unknown) => void = () => {},
+    private scheduler = new Scheduler(), private executionFailure: (error: unknown) => void = () => {}, private log?: FastifyBaseLogger) {}
 
   kick() {
     if (this.stopped) return;
@@ -81,22 +83,24 @@ export class Titles {
       for (const task of this.store.snapshot().tasks) {
         if (task.title_state !== 'pending' || task.run_state !== 'idle' || task.stage !== 'backlog' || this.active.has(task.id)) continue;
         if (task.deletion_state) continue;
+        const log = this.log?.child({ project_id: task.project_id, task_id: task.id, role: 'title' });
         const scope = new ProcessScope(pid => {
           this.store.db.prepare('UPDATE tasks SET stop_unverified = 1 WHERE id = ?').run(task.id);
           this.store.event('execution.process-started', task.id, { pid, pgid: pid, role: 'title' });
-        });
+        }, log);
         this.scopes.set(task.id, [...(this.scopes.get(task.id) ?? []).filter(scope => !scope.knownGroupsStopped()), scope]);
         const controller = scope.controller;
         const done = this.scheduler.enqueue(task.id, () => scope.run(async () => {
           try {
             if (this.stopped || controller.signal.aborted || !this.store.claimTitle(task)) return;
+            log?.info({ event: 'title.started', state_confirmed: true });
             this.store.db.prepare('UPDATE tasks SET execution_unverified = 1 WHERE id = ?').run(task.id);
             this.publish();
-            const title = await this.generate(task.description, controller.signal).then(title => parseTitle({ title })).catch(error => { this.executionFailure(error); return null; });
-            if (!this.stopped) { this.store.finishTitle(task, title); this.publish(); }
+            const title = await this.generate(task.description, controller.signal).then(title => parseTitle({ title })).catch(error => { log?.warn({ event: 'title.failure', error_kind: errorKind(error) }); this.executionFailure(error); return null; });
+            if (!this.stopped) { this.store.finishTitle(task, title); log?.info({ event: 'title.finished', outcome: title === null ? 'failed' : 'completed', state_confirmed: true }); this.publish(); }
           } catch (error) { if (!this.store.blocked(task.id)) this.fail(error); }
           finally { if (scope.knownGroupsStopped()) this.store.db.prepare('UPDATE tasks SET execution_unverified = 0 WHERE id = ?').run(task.id); }
-        }))
+        }, log), log)
           .finally(() => { this.active.delete(task.id); this.kick(); });
         this.active.set(task.id, { controller, scope, done });
       }
