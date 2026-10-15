@@ -32,7 +32,7 @@ function taskCard(api = async (..._args: any[]): Promise<any> => ({})) {
     './taskView.js': {}, './chat.js': { Composer() {}, Message() {}, RunConversation() {} },
     './output.js': { AgentOutput() {}, RunProgress() {} },
   };
-  runInNewContext(transformSync(source.replace(/createRoot\(document[^\n]+/, 'export { TaskCard, ArchivedTask, History, TaskResultsReset, ResetHistory, TaskDisposition };'), { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code, {
+  runInNewContext(transformSync(source.replace(/createRoot\(document[^\n]+/, 'export { TaskCard, ArchivedTask, History, TaskResultsReset, ResetHistory, TaskDisposition, DependencyStatus };'), { loader: 'tsx', format: 'cjs', jsx: 'automatic' }).code, {
     module, require(name: string) { assert.ok(Object.hasOwn(modules, name), name); return modules[name]; },
   });
   const props = {
@@ -54,6 +54,45 @@ function elements(node: any): any[] {
   if (!node?.props) return [];
   return [node, ...elements(node.props.children)];
 }
+
+test('dependency UI keeps keyboard target while pending, shows evidence/errors and guards repeats', async () => {
+  const calls: unknown[][] = [];
+  const view = taskCard(async (...args) => { calls.push(args); });
+  view.props.task.stage = 'needs-human'; view.props.task.run_state = 'interrupted';
+  const dependency = { kind: 'code', issue_url: 'https://github.com/owner/repo/issues/10', pr_url: 'https://github.com/owner/repo/pull/11', reason: 'API missing', condition: 'Merged API in main' };
+  const check = { id: 'check', status: 'pending', reason: 'Checking', started_at: '2026-10-15T00:00:00Z', questions: [], results: [] };
+  const origin = { ...view.props.runs[0], outcome: 'BLOCKED', diagnostic: { dependency_block: { reason: 'Needs API', dependencies: [dependency] }, dependency_checks: [check] } };
+  let tree = elements(view.render('DependencyStatus', { runs: [origin], executionPaused: false }).tree);
+  const button = tree.find(e => e.type === 'button');
+  assert.equal(button.props.disabled, undefined); assert.equal(button.props['aria-disabled'], true); assert.equal(button.props['aria-busy'], true);
+  await button.props.onClick(); assert.equal(calls.length, 0);
+  assert.ok(tree.some(e => e.props.role === 'status' && e.props['aria-live'] === 'polite'));
+  assert.equal(tree.filter(e => e.type === 'a').length, 2);
+  Object.assign(check, { status: 'error', reason: 'GitHub timeout', finished_at: '2026-10-15T00:01:00Z' });
+  tree = elements(view.render('DependencyStatus', { runs: [origin], executionPaused: false }).tree);
+  assert.equal(tree.find(e => e.props.role === 'alert').props.children, 'GitHub timeout');
+  await tree.find(e => e.type === 'button').props.onClick();
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0])), ['/projects/project/tasks/task/check-dependencies', 'POST', { state_version: 1, confirmation: '' }]);
+  tree = elements(view.render('DependencyStatus', { runs: [origin], executionPaused: true }).tree);
+  assert.equal(tree.find(e => e.type === 'button').props['aria-disabled'], true);
+  const interrupted = { ...origin, id: 'resumed-run', outcome: null, status: 'interrupted', diagnostic: { dependency_resume: { blocked_run_id: origin.id, preserved_worktree: null } } };
+  tree = elements(view.render('DependencyStatus', { runs: [origin, interrupted], executionPaused: false }).tree);
+  assert.equal(tree.find(e => e.type === 'button').props['aria-disabled'], false);
+});
+
+test('non-code dependency presents a concrete required question and records human evidence separately', async () => {
+  const calls: any[] = [], view = taskCard(async (...args) => { calls.push(args); });
+  view.props.task.stage = 'needs-human'; view.props.task.run_state = 'interrupted';
+  const d = { kind: 'condition', issue_url: 'https://github.com/owner/repo/issues/10', pr_url: null, reason: 'Approval', condition: 'Team approval' };
+  const q = { text: 'Who approved and when?', context: 'Missing approval evidence', impact: 'Task remains stopped', options: [], required: true };
+  const run = { ...view.props.runs[0], outcome: 'BLOCKED', diagnostic: { dependency_block: { reason: 'Need approval', dependencies: [d] }, dependency_checks: [{ id: 'check', status: 'blocked', questions: [q], results: [] }] } };
+  let tree = elements(view.render('DependencyStatus', { runs: [run] }).tree);
+  assert.ok(tree.some(e => e.type === 'strong' && e.props.children === q.text));
+  tree.find(e => e.type === 'textarea').props.onChange({ target: { value: 'Team approved on 2026-10-15, meeting #10' } });
+  tree = elements(view.render('DependencyStatus', { runs: [run] }).tree);
+  await tree.find(e => e.type === 'button').props.onClick();
+  assert.equal(calls[0][2].confirmation, 'Team approved on 2026-10-15, meeting #10');
+});
 
 test('task, archive and revision views share the renderer without changing their sources', async () => {
   const description = '# Requirements\n\n- [x] Saved  \n\n```txt\n  exact source\n```\n';

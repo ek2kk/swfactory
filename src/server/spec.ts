@@ -15,6 +15,8 @@ import { formatOutput } from './output.js';
 import { CodexFailure } from './diagnostics.js';
 import { Scheduler } from './scheduler.js';
 import { artifactDirectory, saveArtifact, removeResultArtifacts } from './artifacts.js';
+import { validateDependencies, diagnoseDependencies, verifyCondition, verifyDependencies, type DiagnoseDependencies, type VerifyCondition } from './dependencies.js';
+import type { DependencyCheck } from '../shared.js';
 
 export class SpecController {
   private scopes = new Map<string, ProcessScope>();
@@ -22,6 +24,7 @@ export class SpecController {
   private deletions = new Map<string, Promise<void>>();
   private verifications = new Map<string, number>();
   private active = new Set<Promise<void>>();
+  private dependencyWork = new Map<string, Promise<void>>();
   private scheduler = new Scheduler();
   readonly titles: Titles;
   readonly chat: Chat;
@@ -29,7 +32,8 @@ export class SpecController {
   private detectingLimits = 0;
   error: string | null = null;
   constructor(private store: Store, private directory: string, private publish: () => void,
-    private command: Run = git, private execute: ExecuteSpec = executeSpec, private generate = generateTitle, private build: ExecuteBuild = executeBuild, private review: ExecuteReview = executeReview, private approve: ExecuteApprove = executeApprove, private classify = classifySpec) {
+    private command: Run = git, private execute: ExecuteSpec = executeSpec, private generate = generateTitle, private build: ExecuteBuild = executeBuild, private review: ExecuteReview = executeReview, private approve: ExecuteApprove = executeApprove, private classify = classifySpec,
+    private diagnoseDependency: DiagnoseDependencies = diagnoseDependencies, private condition: VerifyCondition = verifyCondition) {
     const originalCommand = this.command;
     this.command = async (...args) => { checkExecution(); return originalCommand(...args); };
     this.chat = new Chat(store, publish);
@@ -60,7 +64,7 @@ export class SpecController {
     });
   }
   assertResultsResetIdle(taskId: string) {
-    if (this.scheduler.hasWork(taskId) || this.titles.hasWork(taskId) || this.chat.hasWork(taskId)
+    if (this.dependencyWork.has(taskId) || this.scheduler.hasWork(taskId) || this.titles.hasWork(taskId) || this.chat.hasWork(taskId)
       || this.scopes.get(taskId)?.hasWork() || this.deletions.has(taskId) || this.verifications.has(taskId)
       || [...this.interrupts.values()].some(control => control.run.task_id === taskId)) {
       throw new Problem(409, 'Процессы или callbacks ещё не завершены. Дождитесь завершения или используйте «Остановить исполнение / сверить».');
@@ -111,6 +115,103 @@ export class SpecController {
     return false;
   }
   resume() { this.scheduler.wake(); }
+  assertDependencyIdle(taskId: string) {
+    this.assertResultsResetIdle(taskId);
+    if (this.store.executionPause().paused || !this.canRun()) throw new Problem(409, 'Исполнение приостановлено; проверка зависимостей недоступна.');
+  }
+  checkDependencies(origin: AgentRun, check: DependencyCheck) {
+    if (this.dependencyWork.has(origin.task_id)) return;
+    const work = this.performDependencyCheck(origin, check).catch(() => {
+      this.error = 'Не удалось сохранить проверку зависимостей. Исполнение остановлено; нужна сверка data directory.'; this.publish();
+    }).finally(() => this.dependencyWork.delete(origin.task_id));
+    this.dependencyWork.set(origin.task_id, work);
+  }
+  private async performDependencyCheck(origin: AgentRun, check: DependencyCheck) {
+    let continuation: AgentRun | undefined;
+    const diagnosticOnly = !origin.diagnostic?.dependency_block;
+    const scope = this.scope(origin.task_id);
+    this.store.db.prepare('UPDATE tasks SET execution_unverified = 1 WHERE id = ?').run(origin.task_id);
+    try {
+      await scope.run(async () => {
+        const project = this.store.project(origin.project_id), task = this.store.task(origin.project_id, origin.task_id);
+        await verifyRepository(project, origin.worktree, this.command);
+        check.head_sha = await this.command('git', ['rev-parse', 'HEAD'], origin.worktree);
+        check.source_hash = await sourceHash(origin, this.command);
+        this.store.saveDependencyCheck(origin, check); this.publish();
+        if (!origin.diagnostic?.dependency_block) {
+          const path = join(this.directory, 'artifacts', origin.id, 'result.json');
+          if (realpathSync(path) !== path || !statSync(path).isFile() || statSync(path).size > 2 * 1024 * 1024) throw new Problem(422, 'Исходный BLOCKED недоступен для безопасной диагностики.');
+          const report = JSON.parse(readFileSync(path, 'utf8')).result;
+          if (origin.role === 'build') validateBuild(report); else validateReview(report, origin.role as ReviewRole);
+          const context = JSON.stringify({ description: task.description, origin: { id: origin.id, role: origin.role, description_revision: origin.description_revision, outcome: origin.outcome }, result: report,
+            project: { host: project.host, repository: project.repository, target_branch: project.target_branch } });
+          const diagnosed = await this.diagnoseDependency(context, origin.config.models.spec, executionSignal()!);
+          // The injected and production diagnosers share the same trust boundary.
+          validateDependencies(diagnosed.dependencies);
+          if (diagnosed.dependencies.some(d => [d.issue_url, d.pr_url].some(url => url && !context.includes(url)))) throw new Problem(422, 'Диагностика назвала зависимость без исходного основания.');
+          if (!diagnosed.dependencies.length) { check.status = 'blocked'; check.reason = diagnosed.reason; return; }
+          origin.diagnostic = { ...origin.diagnostic, dependency_block: diagnosed };
+          this.store.saveDependencyCheck(origin, check); this.publish();
+        }
+        const known = this.store.runs().filter(r => r.task_id === origin.task_id && r.description_revision === check.revision)
+          .flatMap(r => r.diagnostic?.dependency_block?.dependencies ?? []);
+        origin.diagnostic!.dependency_block!.dependencies = [...new Map([...origin.diagnostic!.dependency_block!.dependencies, ...known].map(d => [JSON.stringify(d), d])).values()];
+        this.store.saveDependencyCheck(origin, check);
+        await preflight(project, this.command);
+        check.target_sha = await fetchBase(project, check.id, this.command);
+        const checked = await verifyDependencies(project, origin.diagnostic!.dependency_block!.dependencies, check.target_sha, check.confirmation,
+          origin.config.models.spec, executionSignal()!, this.command, this.condition);
+        Object.assign(check, checked);
+        check.status = check.results.some(r => r.state === 'unknown') ? 'error' : check.results.every(r => r.state === 'cleared') ? 'cleared' : 'blocked';
+        check.reason = check.status === 'cleared' ? 'Все зависимости сняты.' : 'Продолжение запрещено: см. результат каждой зависимости.';
+        if (await sourceHash(origin, this.command) !== check.source_hash) throw new Problem(409, 'Source изменился во время проверки; повторите её.');
+      });
+      // Only this tool-free/read-only check may clear its own process marker after live OS proof.
+      if (!scope.knownGroupsStopped() || scope.hasWork()) throw new Problem(409, 'Остановка процессов проверки не подтверждена.');
+      if (this.closing || this.store.rawTask(origin.project_id, origin.task_id).state_version !== check.task_version) throw new Problem(409, 'Состояние изменилось во время проверки; результат не применён.');
+      this.store.db.prepare('UPDATE tasks SET execution_unverified = 0, stop_unverified = 0 WHERE id = ?').run(origin.task_id);
+      const current = this.store.dependencyOrigin(origin.project_id, origin.task_id, check.task_version);
+      if (current.id !== origin.id || this.store.project(origin.project_id).state_version !== check.project_version
+        || this.store.task(origin.project_id, origin.task_id).revision !== check.revision) throw new Problem(409, 'Требования, проект или запуск изменились во время проверки.');
+      if (check.status === 'cleared' && diagnosticOnly) {
+        check.reason = 'Legacy-диагностика подтвердила зависимости и их снятие. Исполнение не запускалось. Нажмите «Проверить блокировки и продолжить» ещё раз для отдельного безопасного запуска.';
+      } else if (check.status === 'cleared') {
+        const task = this.store.task(origin.project_id, origin.task_id);
+        const sameRequirements = origin.description_revision === task.revision && origin.project_version === check.project_version;
+        const sameSource = origin.head_sha === check.head_sha && origin.source_hash === check.source_hash;
+        let fresh = origin.base_sha !== check.target_sha || !sameSource || !sameRequirements;
+        let role = origin.role;
+        let reason = `Повтор ${origin.role}: зависимости сняты, prerequisites и source не изменились.`;
+        let validSpec = false;
+        try { this.requirements(origin); validSpec = sameRequirements; } catch { /* New Spec below. */ }
+        if (role.startsWith('review-') && (origin.stale || !sameSource || this.store.reviewRound(origin).some(r => r?.stale) || !this.store.reviewPlan(origin.round_id)
+          || this.store.reviewPlan(origin.round_id)?.source_hash !== check.source_hash)) { fresh = true; role = 'build'; }
+        if (fresh) {
+          const spec = origin.spec_run_id ? this.store.specRun(origin.project_id, origin.task_id, origin.spec_run_id) : null;
+          role = validSpec && (!spec || spec.base_sha === check.target_sha) ? 'build' : 'spec';
+          reason = role === 'spec' ? 'Нужна новая Spec: база или требования изменились; применимость прежней Spec к новой базе не доказана.'
+            : 'Нужен новый Build от актуальной target branch; требования пригодны, прежняя реализация и PASS не переносятся.';
+          reason += ` Прежний worktree сохранён: ${origin.worktree}. Partial edits не включены в новый запуск.`;
+        } else if (!validSpec) { fresh = true; role = 'spec'; reason = 'Нет актуальных достаточных требований; нужна новая Spec. Старый worktree сохранён, partial edits не перенесены.'; }
+        check.finished_at = new Date().toISOString();
+        continuation = this.store.queueDependencyContinuation(origin, check, this.directory, role, fresh, reason);
+      }
+    } catch (error) {
+      if (error instanceof CodexFailure && error.kind === 'rate_limit') this.store.pauseExecution(error.resetAt);
+      check.status = error instanceof Problem && error.statusCode === 409 ? 'stale' : 'error';
+      check.reason = error instanceof Problem ? error.message : 'Проверка GitHub или диагностика не завершена. Проверьте доступ и повторите действие; работа не продолжена.';
+    } finally {
+      check.finished_at ??= new Date().toISOString();
+      if (!scope.hasWork() && scope.knownGroupsStopped()) {
+        const current = this.store.rawTask(origin.project_id, origin.task_id);
+        if (current.state_version === check.task_version && !current.archived && !current.deletion_state && !current.reset_pending) {
+          this.store.db.prepare('UPDATE tasks SET execution_unverified = 0, stop_unverified = 0 WHERE id = ?').run(origin.task_id);
+        }
+      }
+      this.store.saveDependencyCheck(origin, check); this.publish();
+    }
+    if (continuation && !this.closing) this.enqueue(continuation);
+  }
   canInterrupt(runId: string) { return this.interrupts.has(runId); }
   interrupt(run: AgentRun) {
     const control = this.interrupts.get(run.id);
@@ -126,7 +227,10 @@ export class SpecController {
   }
   private chatContext(run: AgentRun) {
     const messages = this.chat.context(run);
-    return messages.length ? `\nPreviously delivered user guidance for this revision (not a replacement for Spec, role boundaries, required questions or approval):\n${JSON.stringify(messages)}` : '';
+    const resume = run.diagnostic?.dependency_resume;
+    const origin = resume ? this.store.readRun(run.project_id, run.task_id, resume.blocked_run_id) : null;
+    return (messages.length ? `\nPreviously delivered user guidance for this revision (not a replacement for Spec, role boundaries, required questions or approval):\n${JSON.stringify(messages)}` : '')
+      + (resume ? `\nCurrent verified dependency state supersedes the historical BLOCKED claim. Use these fresh prerequisites, never repeat the frozen old input.\n${JSON.stringify({ ...resume, check: origin?.diagnostic?.dependency_checks?.find(c => c.id === resume.check_id) })}` : '');
   }
   private recordOutput(run: AgentRun, text: string) {
     this.store.recordOutput(run, formatOutput(text));
@@ -185,6 +289,14 @@ export class SpecController {
       await released;
       if (this.store.blocked(run.task_id)) return;
       if (this.titles.error) return;
+      if (run.diagnostic?.dependency_resume) {
+        try { await this.verifyDependencyContinuation(run); }
+        catch (error) {
+          if (error instanceof CodexFailure) run.diagnostic = { ...run.diagnostic, error_kind: error.kind, reset_at: error.resetAt };
+          run.status = 'failed'; run.error = error instanceof Problem ? error.message : 'Prerequisites продолжения не подтверждены; повторите проверку зависимостей.';
+          this.store.updateRun(run, 'needs-human', 'interrupted'); this.publish(); return;
+        }
+      }
       if (run.role === 'build' && run.base_sha) await this.performBuild(run);
       else if (run.role === 'approve') await this.performApprove(run);
       else if (run.role.startsWith('review-')) await this.performReview(run);
@@ -219,7 +331,27 @@ export class SpecController {
     this.closing = true;
     this.scheduler.close();
     await Promise.all([...this.deletions.values()]);
-    await Promise.all([this.titles.close(), ...this.active]);
+    await Promise.all([this.titles.close(), ...this.active, ...this.dependencyWork.values()]);
+  }
+
+  private async verifyDependencyContinuation(run: AgentRun) {
+    const resume = run.diagnostic!.dependency_resume!, task = this.store.task(run.project_id, run.task_id);
+    const origin = this.store.readRun(run.project_id, run.task_id, resume.blocked_run_id);
+    const check = origin.diagnostic?.dependency_checks?.find(c => c.id === resume.check_id);
+    const project = this.store.project(run.project_id);
+    if (!check || check.status !== 'cleared' || check.continuation_run_id !== run.id || !origin.diagnostic?.dependency_block
+      || task.revision !== run.description_revision || project.state_version !== run.project_version
+      || task.run_state !== 'queued' || task.publication_status || task.archived || task.deletion_state || task.reset_pending || task.stop_unverified
+      || this.store.executionPause().paused || this.store.runs().filter(r => r.task_id === task.id).at(-1)?.id !== run.id) throw new Problem(409, 'Продолжение устарело; повторите проверку зависимостей.');
+    await preflight(project, this.command);
+    if (await fetchBase(project, `${run.id}-verify`, this.command) !== resume.target_sha) throw new Problem(409, 'Target branch изменилась после проверки. Повторите проверку зависимостей.');
+    const verified = await verifyDependencies(project, origin.diagnostic.dependency_block.dependencies, resume.target_sha, check.confirmation,
+      run.config.models.spec, executionSignal()!, this.command, this.condition);
+    if (!verified.results.length || verified.results.some(r => r.state !== 'cleared')) throw new Problem(409, 'Зависимости больше не подтверждены; повторите проверку.');
+    if (await sourceHash(origin, this.command) !== check.source_hash) throw new Problem(409, 'Source изменился после проверки; partial edits сохранены.');
+    const current = this.store.task(run.project_id, run.task_id);
+    if (current.state_version !== task.state_version || current.revision !== run.description_revision || current.publication_status
+      || this.store.project(run.project_id).state_version !== run.project_version || this.store.executionPause().paused) throw new Problem(409, 'Prerequisites изменились перед исполнением; повторите проверку зависимостей.');
   }
 
   private async verifyWorktree(run: AgentRun) {
@@ -299,6 +431,7 @@ The repair scope is local, but changed_paths must retain accumulated changes fro
 Follow applicable AGENTS.md instructions.
 Run relevant checks and report their actual results. For UI changes, a short smoke check of changed behavior is appropriate; leave independent Code, Security and UI/UX acceptance audits to reviewers. Preserve applicable mandatory repository checks and security safeguards. Return only the requested JSON result.
 Use READY only when implementation is complete, with exact repository-relative changed_paths covering ALL changes since the original base_sha, actions and checks.
+For an external dependency BLOCKED, return dependencies with exact GitHub issue/PR URLs, kind code or condition, the original reason and a concrete release condition. For code require merged implementing PR available in target branch; put additional non-code conditions into separate dependencies, and set issue_must_be_closed only if closure itself is explicitly required; closed issue/labels/PASS alone are insufficient. Return dependencies: [] for other outcomes or blockers such as rate limits, auth errors or missing human decisions. Never invent dependencies from a status or a regex match.
 Use NEEDS_INPUT with structured questions for blocking ambiguity or unresolved choices, including whether a return to Spec is needed. Skipping Spec never authorizes inventing requirements or skipping mandatory validation; BLOCKED for inability to complete. Never wait for interactive input.
 Do not publish, push, merge, or change other checkouts. Do not create commits; the coordinator will commit explicit paths.
 Never add credentials or secrets. Keep reports/logs outside source, in ${directory}.
@@ -413,6 +546,7 @@ Focus: ${focus}
 Do not modify source, index, branch or commits. Never run Build, publish, push or merge. Reports/logs belong outside source in ${directory}.
 ${['review-ui', 'review-ux', 'review-ui-ux'].includes(run.role) ? 'Perform required rendered UI/UX checks yourself using available browser/computer tools before asking the human. Evidence must identify observed scenarios, viewport/states and results within this role.' : ''}
 Collect all material findings within this bounded role pass; do not stop your own review at the first finding. Preserve applicable mandatory repository instructions and security checks. Return PASS only with actual evidence within your role; CHANGES with actionable findings. If a required check cannot be completed, report the concrete blocker and checks attempted; return NEEDS_INPUT with actionable manual steps and expected results only when human input or action is needed, otherwise BLOCKED. Distinguish your own tool observations from human-provided evidence for this code version; never claim a browser check you did not perform or fabricate PASS.
+For external dependency BLOCKED return explicit dependencies (kind code or condition, issue_url/pr_url, reason, condition). Code requires implementing PR merged and available in target branch; put additional non-code conditions into separate dependencies and use issue_must_be_closed for explicitly required issue closure; issue closure, labels or PASS alone are insufficient. For other blockers/outcomes return dependencies: [].
 Only UI/UX may be not applicable, with a concrete explanation in applicability. Return structured questions for human decisions; never wait for interactive input.
 Task/run context: ${JSON.stringify({ task_id: task.id, run_id: run.id, role: run.role, round_id: run.round_id, description_revision: run.description_revision, spec_revision: run.spec_run_id, base_sha: run.base_sha, head_sha: run.head_sha })}
 Project instructions:
@@ -536,6 +670,7 @@ Context: ${JSON.stringify({ review_plan: run.review_plan, run, description: task
         await preflight(project, this.command);
         prepared = true;
         run.base_sha = await fetchBase(project, run.id, this.command);
+        if (run.diagnostic?.dependency_resume && run.base_sha !== run.diagnostic.dependency_resume.target_sha) throw new Problem(409, 'Target branch изменилась; повторите проверку зависимостей перед новым запуском.');
         run.status = 'running';
         // Persist the immutable base and intended paths before creating external Git state.
         this.store.updateRun(run, 'backlog', 'running');

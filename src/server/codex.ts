@@ -1,3 +1,4 @@
+import { dependenciesSchema, validateDependencies } from './dependencies.js';
 import { executeInteractive, type Steer } from './interactive.js';
 import { execFile, spawn } from './processes.js';
 import { openSync, writeSync, closeSync } from 'node:fs';
@@ -127,13 +128,13 @@ async function executeResult<T>(input: CodexInput, schema: object, validate: (va
 export const buildSchema = {
   type: 'object', additionalProperties: false,
   properties: { outcome: { enum: ['READY', 'NEEDS_INPUT', 'BLOCKED'] }, summary: { type: 'string' },
-    changed_paths: list, actions: list, checks: list, questions: specSchema.properties.questions },
-  required: ['outcome', 'summary', 'changed_paths', 'actions', 'checks', 'questions'],
+    changed_paths: list, actions: list, checks: list, questions: specSchema.properties.questions, dependencies: dependenciesSchema },
+  required: ['outcome', 'summary', 'changed_paths', 'actions', 'checks', 'questions', 'dependencies'],
 };
 export function validateBuild(value: unknown): BuildResult {
   const result = value as BuildResult;
   if (!result || typeof result !== 'object' || Array.isArray(result)
-    || Object.keys(result).sort().join() !== [...buildSchema.required].sort().join()
+    || Object.keys(result).sort().join() !== buildSchema.required.filter(k => k !== 'dependencies' || result.dependencies !== undefined).sort().join()
     || !['READY', 'NEEDS_INPUT', 'BLOCKED'].includes(result.outcome) || !nonempty(result.summary)
     || !validQuestions(result.questions) || (result.outcome === 'NEEDS_INPUT' ? !result.questions.length : result.questions.length > 0)
     || !['changed_paths', 'actions', 'checks'].every(key => {
@@ -141,14 +142,15 @@ export function validateBuild(value: unknown): BuildResult {
       return Array.isArray(items) && items.every(v => typeof v === 'string' && v.trim().length > 0);
     }) || (result.outcome === 'READY' && (!result.changed_paths.length || !result.actions.length || !result.checks.length))
     || new Set(result.changed_paths).size !== result.changed_paths.length) throw new Problem(422, 'Невалидный Build.');
+  if (result.dependencies !== undefined && (validateDependencies(result.dependencies).length && result.outcome !== 'BLOCKED')) throw new Problem(422, 'Dependencies допустимы только для BLOCKED.');
   return result;
 }
 
 export const reviewSchema = {
   type: 'object', additionalProperties: false,
   properties: { outcome: { enum: ['PASS', 'CHANGES', 'NEEDS_INPUT', 'BLOCKED'] }, summary: { type: 'string' },
-    findings: list, evidence: list, applicable: { type: 'boolean' }, applicability: { type: 'string' }, questions: specSchema.properties.questions },
-  required: ['outcome', 'summary', 'findings', 'evidence', 'applicable', 'applicability', 'questions'],
+    findings: list, evidence: list, applicable: { type: 'boolean' }, applicability: { type: 'string' }, questions: specSchema.properties.questions, dependencies: dependenciesSchema },
+  required: ['outcome', 'summary', 'findings', 'evidence', 'applicable', 'applicability', 'questions', 'dependencies'],
 };
 const reviewSectionSchema = {
   type: 'object', additionalProperties: false,
@@ -162,7 +164,7 @@ export const visualReviewSchema = {
 export function validateReview(value: unknown, role?: ReviewRole): ReviewResult {
   const result = value as ReviewResult;
   if (!result || typeof result !== 'object' || Array.isArray(result)
-    || Object.keys(result).sort().join() !== [...(role === 'review-ui-ux' ? visualReviewSchema : reviewSchema).required].sort().join()
+    || Object.keys(result).sort().join() !== (role === 'review-ui-ux' ? visualReviewSchema : reviewSchema).required.filter(k => k !== 'dependencies' || result.dependencies !== undefined).sort().join()
     || !['PASS', 'CHANGES', 'NEEDS_INPUT', 'BLOCKED'].includes(result.outcome) || !nonempty(result.summary)
     || !validQuestions(result.questions) || (result.outcome === 'NEEDS_INPUT' ? !result.questions.length : result.questions.length > 0)
     || !['findings', 'evidence'].every(key => Array.isArray(result[key as 'findings']) && result[key as 'findings'].every(nonempty))
@@ -176,6 +178,7 @@ export function validateReview(value: unknown, role?: ReviewRole): ReviewResult 
       && Array.isArray(section.evidence) && section.evidence.every(nonempty)
       && (result.outcome !== 'PASS' || (!section.findings.length && (!result.applicable || section.evidence.length)))
       && section.findings.every(finding => result.findings.includes(finding))))) throw new Problem(422, 'Невалидный Review.');
+  if (result.dependencies !== undefined && (validateDependencies(result.dependencies).length && result.outcome !== 'BLOCKED')) throw new Problem(422, 'Dependencies допустимы только для BLOCKED.');
   return result;
 }
 export type ExecuteReview = (input: CodexInput) => Promise<ReviewResult>;

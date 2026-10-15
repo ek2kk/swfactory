@@ -16,6 +16,7 @@ import { SpecController } from './spec.js';
 import { readLog, readReport } from './artifacts.js';
 import type { Run } from './git.js';
 import type { ExecuteApprove, ExecuteSpec, ExecuteBuild, ExecuteReview } from './codex.js';
+import type { DiagnoseDependencies, VerifyCondition } from './dependencies.js';
 
 const text = { type: 'string', minLength: 1, maxLength: 4096 };
 const uuid = { type: 'string', pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' };
@@ -35,6 +36,7 @@ export async function createApp(options: {
   directory: string; origin: string; staticRoot?: string; inspect?: typeof inspectProject; command?: Run; execute?: ExecuteSpec; executeBuild?: ExecuteBuild; executeReview?: ExecuteReview; executeApprove?: ExecuteApprove; generateTitle?: typeof generateTitle;
   chooseFolder?: () => Promise<string | null>;
   issueCommand?: IssueCommand;
+  diagnoseDependencies?: DiagnoseDependencies; verifyCondition?: VerifyCondition;
 }) {
   const store = new Store(options.directory);
   const directory = realpathSync(options.directory);
@@ -52,7 +54,7 @@ export async function createApp(options: {
   function publish() {
     for (const client of clients.values()) client.update();
   }
-  const controller = new SpecController(store, directory, publish, options.command, options.execute, options.generateTitle, options.executeBuild, options.executeReview, options.executeApprove);
+  const controller = new SpecController(store, directory, publish, options.command, options.execute, options.generateTitle, options.executeBuild, options.executeReview, options.executeApprove, undefined, options.diagnoseDependencies, options.verifyCondition);
   const titles = controller.titles;
   const issues = new GithubIssues(store, publish, options.issueCommand, taskId => controller.deleteTask(taskId));
   app.addHook('onRequest', async (request, reply) => {
@@ -115,6 +117,24 @@ export async function createApp(options: {
     return catalogs.get(project.id, project.checkout);
   });
   const taskParams = object({ projectId: uuid, taskId: uuid });
+  app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number; confirmation: string } }>('/api/projects/:projectId/tasks/:taskId/check-dependencies', {
+    schema: { params: taskParams, body: object({ request_id: uuid, state_version: version, confirmation: { type: 'string', maxLength: 4096 } }) },
+  }, async request => {
+    const { projectId, taskId } = request.params;
+    const { request_id, state_version, confirmation } = request.body;
+    store.rawTask(projectId, taskId);
+    const fingerprint = JSON.stringify(['dependency.check', projectId, taskId, state_version, confirmation]);
+    const prior = store.replay(request_id, fingerprint);
+    if (prior !== undefined) return prior;
+    let queued: ReturnType<Store['beginDependencyCheck']> | undefined;
+    const result = store.mutate(request_id, fingerprint, () => {
+      controller.assertDependencyIdle(taskId);
+      queued = store.beginDependencyCheck(projectId, taskId, state_version, request_id, confirmation);
+      return { check_id: queued.check.id, blocked_run_id: queued.origin.id };
+    });
+    if (queued) controller.checkDependencies(queued.origin, queued.check);
+    publish(); return result;
+  });
   app.post<{ Params: { projectId: string; taskId: string }; Body: { request_id: string; state_version: number } }>('/api/projects/:projectId/tasks/:taskId/reset-results', {
     schema: { params: taskParams, body: object({ request_id: uuid, state_version: version }) },
   }, async request => {

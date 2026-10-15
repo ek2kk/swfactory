@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync, chmodSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { resultsResetBlocker, defaultModels, reviewsFor, requiredReviews, type ReviewRole, type ReviewPlan, type SpecMode, type SpecDecision, type ApproveResult, type ReviewResult, type BuildResult, type HumanRequest, type SpecResult, type Settings, type AgentRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision, type ExecutionPause } from '../shared.js';
+import { dependencyActionBlocker, type DependencyCheck, resultsResetBlocker, defaultModels, reviewsFor, requiredReviews, type ReviewRole, type ReviewPlan, type SpecMode, type SpecDecision, type ApproveResult, type ReviewResult, type BuildResult, type HumanRequest, type SpecResult, type Settings, type AgentRun, type Project, type Task, type Snapshot, type SavedEvent, type Revision, type ExecutionPause } from '../shared.js';
 
 const taskSelect = `SELECT t.*, g.issue_number, g.issue_url,
   (t.spec_decision IS NOT NULL OR t.publication_status IS NOT NULL
@@ -160,6 +160,14 @@ export class Store {
           const safe = JSON.stringify(payload);
           if (safe !== row.payload) this.db.prepare('UPDATE events SET payload = ? WHERE id = ?').run(safe, row.id);
         }
+        for (const run of this.runs()) {
+          const pending = run.diagnostic?.dependency_checks?.filter(c => c.status === 'pending') ?? [];
+          if (!pending.length) continue;
+          for (const check of pending) { check.status = 'interrupted'; check.finished_at = new Date().toISOString(); check.reason = 'Backend перезапущен во время проверки; повторите явное действие.'; }
+          this.db.prepare('UPDATE runs SET diagnostic = ? WHERE id = ?').run(JSON.stringify(run.diagnostic), run.id);
+          this.db.prepare('UPDATE tasks SET state_version = state_version + 1 WHERE id = ?').run(run.task_id);
+          this.event('dependency.interrupted', run.task_id, { run_id: run.id });
+        }
         this.db.pragma('user_version = 19');
         // No OS proof survives restart. Never infer termination from SQLite run status.
         if (Number(version) < 13) {
@@ -303,7 +311,8 @@ export class Store {
       const task = this.rawTask(projectId, id);
       if (task.archived || task.deletion_state !== 'deleted' || task.stop_unverified || task.execution_unverified) return;
       // A new Spec is explicit; interrupted runs and unknown publication remain in history.
-      const restartable = task.run_state === 'interrupted' && !task.publication_status;
+      const dependencyBlocked = this.runs().filter(r => r.task_id === id).at(-1);
+      const restartable = task.run_state === 'interrupted' && !task.publication_status && dependencyBlocked?.outcome !== 'BLOCKED' && !dependencyBlocked?.diagnostic?.dependency_resume;
       this.db.prepare('UPDATE tasks SET deletion_state = NULL, stage = ?, run_state = ?, state_version = state_version + 1 WHERE id = ?')
         .run(restartable ? 'backlog' : task.stage, restartable ? 'idle' : task.run_state, id);
       this.event('task.execution-unblocked', id, {});
@@ -513,6 +522,76 @@ export class Store {
       .run(previous.role.startsWith('review-') ? 'review' : previous.role, taskId);
     this.event('run.retried', taskId, { run_id: id, parent_run_id: previous.id });
     return this.specRun(projectId, taskId, id);
+  }
+  dependencyOrigin(projectId: string, taskId: string, version?: number) {
+    const task = this.task(projectId, taskId);
+    if (this.project(projectId).hosting !== 'github') throw new Problem(422, 'Проверка внешних блокировок поддерживает только GitHub.');
+    const blocker = dependencyActionBlocker(task);
+    if (blocker || this.executionPause().paused) throw new Problem(409, blocker ?? 'Исполнение глобально приостановлено.');
+    if (version !== undefined && task.state_version !== version) throw new Problem(409, 'Карточка изменилась; проверка устарела.');
+    const runs = this.runs().filter(r => r.task_id === taskId);
+    if (runs.some(r => ['queued', 'running'].includes(r.status))
+      || this.db.prepare("SELECT 1 FROM chat_messages WHERE task_id = ? AND status IN ('sending','queued')").get(taskId)) throw new Problem(409, 'Исполнение или сообщения ещё не завершены.');
+    const latest = runs.at(-1);
+    const origin = latest && ['failed', 'interrupted'].includes(latest.status) && latest.diagnostic?.dependency_resume
+      ? runs.find(r => r.id === latest.diagnostic!.dependency_resume!.blocked_run_id) : latest;
+    if (!origin || origin.status !== 'completed' || origin.outcome !== 'BLOCKED'
+      || !['build', 'review-code', 'review-security', 'review-ui-ux', 'review-ui', 'review-ux'].includes(origin.role)) throw new Problem(409, 'Нет остановленного BLOCKED для проверки причины.');
+    return origin;
+  }
+  saveDependencyCheck(origin: AgentRun, check: DependencyCheck) {
+    if (!this.hasRun(origin)) return;
+    const saved = this.readRun(origin.project_id, origin.task_id, origin.id);
+    const checks = saved.diagnostic?.dependency_checks ?? [];
+    const index = checks.findIndex(c => c.id === check.id);
+    if (index < 0) checks.push(check); else checks[index] = check;
+    saved.diagnostic = { ...saved.diagnostic, dependency_checks: checks,
+      ...(origin.diagnostic?.dependency_block ? { dependency_block: origin.diagnostic.dependency_block } : {}) };
+    this.db.prepare('UPDATE runs SET diagnostic = ? WHERE id = ?').run(JSON.stringify(saved.diagnostic), saved.id);
+    this.event(`dependency.${check.status}`, origin.task_id, { run_id: origin.id, check });
+  }
+  beginDependencyCheck(projectId: string, taskId: string, version: number, id: string, confirmation: string) {
+    const origin = this.dependencyOrigin(projectId, taskId, version);
+    if (origin.diagnostic?.dependency_checks?.some(c => c.status === 'pending')) throw new Problem(409, 'Проверка уже выполняется.');
+    const check: DependencyCheck = { id, status: 'pending', started_at: new Date().toISOString(),
+      revision: this.task(projectId, taskId).revision, task_version: version + 1, project_version: this.project(projectId).state_version,
+      results: [], reason: origin.diagnostic?.dependency_block ? 'Проверяем все зависимости…' : 'Диагностика legacy BLOCKED без Build и публикации…', questions: [], confirmation };
+    this.db.prepare('UPDATE tasks SET state_version = state_version + 1 WHERE id = ?').run(taskId);
+    this.saveDependencyCheck(origin, check);
+    return { origin, check };
+  }
+  queueDependencyContinuation(origin: AgentRun, check: DependencyCheck, directory: string, role: AgentRun['role'], fresh: boolean, reason: string) {
+    return this.db.transaction(() => {
+      if (this.dependencyOrigin(origin.project_id, origin.task_id, check.task_version).id !== origin.id
+        || this.project(origin.project_id).state_version !== check.project_version
+        || this.task(origin.project_id, origin.task_id).revision !== check.revision
+        || check.status !== 'cleared' || !check.target_sha || !check.results.length || check.results.some(r => r.state !== 'cleared')) throw new Problem(409, 'Prerequisites проверки устарели.');
+      const task = this.task(origin.project_id, origin.task_id), id = randomUUID();
+      const run: AgentRun = { ...origin, id, role, description_revision: task.revision, config: this.settings(origin.project_id),
+        project_version: check.project_version, status: 'queued', outcome: null, error: null, report: 0, stale: 0,
+        parent_run_id: fresh ? null : origin.id, branch: fresh ? `swfactory/${task.id}/${id}` : origin.branch,
+        worktree: fresh ? join(directory, 'worktrees', origin.project_id, id) : origin.worktree,
+        base_sha: fresh ? null : origin.base_sha, head_sha: fresh ? null : origin.head_sha, source_hash: fresh ? null : check.source_hash!,
+        spec_run_id: role === 'spec' ? null : origin.spec_run_id, round_id: role.startsWith('review-') ? origin.round_id : null,
+        repair_round_id: fresh ? null : origin.repair_round_id, repair_attempt: fresh ? 0 : origin.repair_attempt, started_at: null, finished_at: null,
+        output_preview: null, output_at: null, output_version: null, output_length: null,
+        diagnostic: { dependency_resume: { blocked_run_id: origin.id, check_id: check.id, target_sha: check.target_sha,
+          preserved_worktree: fresh ? origin.worktree : null, reason } } };
+      if (!role.startsWith('review-')) delete run.review_plan;
+      if (!role.startsWith('review-')) this.invalidateReviews(origin);
+      this.db.prepare(`INSERT INTO runs (id, task_id, project_id, description_revision, config, project_version,
+        status, branch, worktree, base_sha, outcome, error, report, parent_run_id, role, head_sha, source_hash, spec_run_id, round_id, stale, repair_round_id, repair_attempt, diagnostic)
+        VALUES (@id, @task_id, @project_id, @description_revision, @config, @project_version,
+        @status, @branch, @worktree, @base_sha, @outcome, @error, @report, @parent_run_id, @role, @head_sha, @source_hash, @spec_run_id, @round_id, @stale, @repair_round_id, @repair_attempt, @diagnostic)`)
+        .run({ ...run, config: JSON.stringify(run.config), diagnostic: JSON.stringify(run.diagnostic) });
+      if (role === 'spec') this.saveSpecDecision(run, { revision: task.revision, mode: 'spec', required: true, reason, missing: [] });
+      this.db.prepare("UPDATE human_requests SET status = 'revoked' WHERE task_id = ? AND status = 'pending'").run(task.id);
+      this.db.prepare("UPDATE tasks SET stage = ?, run_state = 'queued', state_version = state_version + 1 WHERE id = ?").run(role.startsWith('review-') ? 'review' : role, task.id);
+      check.continuation_run_id = run.id; check.resume_role = role; check.reason = reason;
+      this.saveDependencyCheck(origin, check);
+      this.event('dependency.continuation-queued', task.id, { run_id: run.id, blocked_run_id: origin.id, check_id: check.id, reason, preserved_worktree: run.diagnostic!.dependency_resume!.preserved_worktree });
+      return run;
+    })();
   }
   recordOutput(run: AgentRun, text: string) {
     if (this.blocked(run.task_id) || !this.hasRun(run)) return;
@@ -812,6 +891,9 @@ export class Store {
       run.started_at = current.started_at ?? (run.status === 'running' ? now : null);
       run.finished_at = ['completed', 'failed'].includes(run.status) ? now : null;
       run.diagnostic ??= {};
+      if (run.status === 'completed' && result && 'dependencies' in result && run.outcome === 'BLOCKED' && result.dependencies?.length) {
+        run.diagnostic.dependency_block = { reason: result.summary, dependencies: result.dependencies };
+      }
       if (run.diagnostic.error_kind === 'rate_limit') this.pauseExecution(run.diagnostic.reset_at ?? null);
       this.db.prepare('UPDATE runs SET diagnostic = ?, started_at = ?, finished_at = ? WHERE id = ?')
         .run(JSON.stringify(run.diagnostic), run.started_at, run.finished_at, run.id);

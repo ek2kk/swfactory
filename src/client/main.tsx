@@ -2,7 +2,7 @@ import { ModelPicker, ReasoningPicker } from './models.js';
 import { api } from './api.js';
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { resultsResetBlocker, stages, type Project, type Task, type Snapshot, type Revision, type SavedEvent, roles, allRoles, requiredReviews, type ReviewRole, type Settings, type AgentRun, type HumanRequest, type ChatMessage } from '../shared.js';
+import { dependencyActionBlocker, resultsResetBlocker, stages, type Project, type Task, type Snapshot, type Revision, type SavedEvent, roles, allRoles, requiredReviews, type ReviewRole, type Settings, type AgentRun, type HumanRequest, type ChatMessage } from '../shared.js';
 import './style.css';
 import { Composer, Message, RunConversation } from './chat.js';
 import { AgentOutput, RunProgress } from './output.js';
@@ -191,7 +191,7 @@ function ArchivedTask({ task, refresh, notify, expanded = false, draft, openTask
   </details>;
 }
 
-function TaskCard({ task, project, runs, questions, refresh, active, cursor, notify, draft, setDraft }: { task: Task; project: Project; runs: AgentRun[]; questions: HumanRequest[]; refresh: () => Promise<void>; active: boolean; cursor: number; notify: (text: string) => void; draft?: DescriptionDraft; setDraft: (draft: DescriptionDraft | null) => void }) {
+function TaskCard({ task, project, runs, questions, refresh, active, cursor, notify, draft, setDraft, executionPaused = false }: { executionPaused?: boolean; task: Task; project: Project; runs: AgentRun[]; questions: HumanRequest[]; refresh: () => Promise<void>; active: boolean; cursor: number; notify: (text: string) => void; draft?: DescriptionDraft; setDraft: (draft: DescriptionDraft | null) => void }) {
   const [specMode, setSpecMode] = useState<'auto' | 'spec' | 'skip'>('auto');
   const decision = task.spec_decision?.revision === task.revision ? task.spec_decision : null;
   const [editing, setEditing] = useState(!!draft);
@@ -264,6 +264,7 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
     }}>Изменить требования</button>}</>}
     </section>
     {messages.filter(message => message.kind === 'requirements' && ['queued', 'failed'].includes(message.status)).map(message => <p key={message.id} role={message.status === 'failed' ? 'alert' : 'status'}>{message.status === 'queued' ? 'Изменение требований ожидает применения после текущего этапа.' : `Изменение требований не применено: ${message.error ?? 'Ошибка сохранения'}`}</p>)}
+    <DependencyStatus task={task} runs={runs} refresh={refresh} executionPaused={executionPaused} />
     <div className="current-activity">
     {latest?.description_revision === task.revision && latest.error && <p role="alert" className="error">{latest.error}</p>}
     {latest?.description_revision === task.revision && <RunProgress run={latest} busy={busy}
@@ -346,6 +347,57 @@ function TaskCard({ task, project, runs, questions, refresh, active, cursor, not
     </fieldset>
   </article>;
 }
+function DependencyStatus({ task, runs, refresh, executionPaused }: { task: Task; runs: AgentRun[]; refresh: () => Promise<void>; executionPaused: boolean }) {
+  const [busy, setBusy] = useState(false), [error, setError] = useState(''), [confirmation, setConfirmation] = useState('');
+  const latest = runs.at(-1);
+  const source = latest?.outcome === 'BLOCKED' ? latest : latest?.diagnostic?.dependency_resume
+    ? runs.find(r => r.id === latest.diagnostic!.dependency_resume!.blocked_run_id)
+    : runs.findLast(r => r.diagnostic?.dependency_checks?.length);
+  if (!source) return null;
+  const checks = source.diagnostic?.dependency_checks ?? [], check = checks.at(-1);
+  const dependencies = source.diagnostic?.dependency_block?.dependencies ?? [];
+  const pending = check?.status === 'pending';
+  const eligible = latest?.outcome === 'BLOCKED' || latest && ['failed', 'interrupted'].includes(latest.status) && !!latest.diagnostic?.dependency_resume;
+  const blocker = dependencyActionBlocker(task) ?? (executionPaused ? 'Исполнение глобально приостановлено.' : null);
+  const stateNames = { pending: 'Проверка выполняется', blocked: 'Блокировки остались', cleared: 'Зависимости сняты', error: 'Ошибка проверки', stale: 'Проверка устарела', interrupted: 'Проверка прервана' };
+  return <section className="dependency-status" aria-label="Внешние блокировки">
+    <h4>Внешние блокировки</h4>
+    <p>{source.diagnostic?.dependency_block?.reason ?? 'Причина BLOCKED ещё не подтверждена структурированными зависимостями. Явная диагностика проверит её без Build и публикации.'}</p>
+    <p className="meta">Исходный run: {source.id} · {stageNames[source.role]} · revision {source.description_revision}</p>
+    {dependencies.map((d, index) => {
+      const result = check?.results[index];
+      return <div key={index} className="dependency-item">
+        <p>{d.kind === 'code' ? 'Код' : 'Условие без кода'}: {d.reason}</p>
+        <p>{[d.issue_url, d.pr_url].filter(Boolean).map(url => <a key={url} href={url!} target="_blank" rel="noreferrer">{url}</a>)}</p>
+        <p>Условие снятия: {d.condition}</p>
+        {d.issue_must_be_closed && <p>Дополнительно требуется закрытие исходной issue.</p>}
+        <p>{result ? `${result.state === 'cleared' ? 'Снята' : result.state === 'blocked' ? 'Не снята' : 'Неизвестно'}: ${result.reason}` : 'Ещё не проверена'}</p>
+        {result?.evidence.map((e, i) => <p key={i} className="meta">{e}</p>)}
+      </div>;
+    })}
+    <div aria-live="polite" role="status">{check && <p>{stateNames[check.status]} · <time dateTime={check.finished_at ?? check.started_at}>{check.finished_at ?? check.started_at}</time>{check.status !== 'error' && <><br />{check.reason}</>}</p>}</div>
+    {check?.questions.map((q, i) => <div key={i}><p><strong>{q.text}</strong> (обязательно)</p><p>{q.context}</p><p>{q.impact}</p></div>)}
+    {check?.confirmation && <p className="meta">Сохранённое свидетельство: {check.confirmation}</p>}
+    {eligible && <>
+      {dependencies.some(d => d.kind === 'condition') && <label>Свидетельство выполнения условия без кода<textarea value={confirmation} maxLength={4096} disabled={busy || pending} onChange={e => setConfirmation(e.target.value)} placeholder="Что выполнено, кем и когда; ссылка или наблюдаемый результат" /></label>}
+      <button aria-disabled={busy || pending || !!blocker} aria-busy={busy || pending} onClick={async () => {
+        if (busy || pending || blocker) return;
+        setBusy(true); setError('');
+        try { await api(`${taskPath(task)}/check-dependencies`, 'POST', { state_version: task.state_version, confirmation }); await refresh(); }
+        catch (error) { setError((error as Error).message); } finally { setBusy(false); }
+      }}>Проверить блокировки и продолжить</button>
+      {blocker && <p className="hint">{blocker}</p>}
+    </>}
+    {(error || check?.status === 'error') && <p role="alert" className="error">{error || check?.reason}</p>}
+    {latest?.diagnostic?.dependency_resume?.preserved_worktree && <p>Partial edits сохранены в {latest.diagnostic.dependency_resume.preserved_worktree} и не включены в новый запуск.</p>}
+    {checks.length > 1 && <details><summary>Предыдущие проверки ({checks.length - 1})</summary>{checks.slice(0, -1).map(c => <details key={c.id}>
+      <summary>{c.finished_at ?? c.started_at} · {stateNames[c.status]}</summary><p>{c.reason}</p>
+      {c.results.map((r, i) => <div key={i}><p>{r.dependency.condition} · {r.reason}</p>{r.evidence.map((e, j) => <p key={j}>{e}</p>)}</div>)}
+      {c.confirmation && <p>Свидетельство: {c.confirmation}</p>}{c.continuation_run_id && <p>Run: {c.continuation_run_id}</p>}
+    </details>)}</details>}
+  </section>;
+}
+
 function HumanDecision({ task, request, refresh }: { task: Task; request: HumanRequest; refresh: () => Promise<void> }) {
   const [version] = useState(task.state_version);
   const [feedback, setFeedback] = useState('');
@@ -693,7 +745,7 @@ function App() {
       {opened.map(id => {
         const task = [...snapshot.tasks, ...(snapshot.archived_tasks ?? [])].find(task => task.id === id);
         const project = task && snapshot.projects.find(project => project.id === task.project_id);
-        return task && project ? <TaskView key={id} hidden={id !== detailId} blocked={!!(task.archived || task.deletion_state)}>{task.archived || task.deletion_state ? <ArchivedTask task={task} refresh={refresh} notify={setNotice} expanded draft={drafts[id]} /> : <TaskCard task={task} project={project} runs={snapshot.runs.filter(run => run.task_id === id)} questions={snapshot.human_requests.filter(request => request.task_id === id)} refresh={refresh} active={id === detailId} cursor={snapshot.cursor} notify={setNotice} draft={drafts[id]} setDraft={draft => setTaskDraft(id, draft)} />}</TaskView> : null;
+        return task && project ? <TaskView key={id} hidden={id !== detailId} blocked={!!(task.archived || task.deletion_state)}>{task.archived || task.deletion_state ? <ArchivedTask task={task} refresh={refresh} notify={setNotice} expanded draft={drafts[id]} /> : <TaskCard task={task} project={project} executionPaused={!!snapshot.execution_pause?.paused} runs={snapshot.runs.filter(run => run.task_id === id)} questions={snapshot.human_requests.filter(request => request.task_id === id)} refresh={refresh} active={id === detailId} cursor={snapshot.cursor} notify={setNotice} draft={drafts[id]} setDraft={draft => setTaskDraft(id, draft)} />}</TaskView> : null;
       })}
     </div>
   </main>;
