@@ -1,7 +1,7 @@
 # Graph Report - ae574043-a275-471b-8763-14732a2f66d0  (2026-10-15)
 
 ## Corpus Check
-- 99 files · ~131,110 words
+- 99 files · ~131,972 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -10,7 +10,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `22237e63`
+- Built from commit: `cb0dc92e`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -100,8 +100,8 @@ Cohesion: 0.09
 Nodes (19): githubIssueCommand(), GithubIssues, ImportFailure, ImportLoop, IssueCommand, parseIssue(), subscribe(), GithubIssue (+11 more)
 
 ### Community 5 - "Codex Execution and Failures"
-Cohesion: 0.19
-Nodes (14): CodexInput, executeResult(), classifyFailure(), CodexFailure, DeliveryError, executeInteractive(), Steer, execFile (+6 more)
+Cohesion: 0.22
+Nodes (12): CodexInput, executeResult(), classifyFailure(), CodexFailure, DeliveryError, executeInteractive(), Steer, execFile (+4 more)
 
 ### Community 6 - "Dependency Validation and Schemas"
 Cohesion: 0.13
@@ -136,8 +136,8 @@ Cohesion: 0.11
 Nodes (17): DOM, ES2023, node, src, test, vite.config.ts, compilerOptions, esModuleInterop (+9 more)
 
 ### Community 14 - "Agent Output and Validation"
-Cohesion: 0.18
-Nodes (19): directory, root, approveSchema, executeApprove, executeBuild, executeReview, executeSpec, list (+11 more)
+Cohesion: 0.17
+Nodes (21): directory, root, approveSchema, executeApprove, executeBuild, executeReview, executeSpec, list (+13 more)
 
 ### Community 15 - "Artifacts and Conversation Storage"
 Cohesion: 0.24

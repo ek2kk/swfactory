@@ -29,6 +29,80 @@ async function waitFor(predicate: () => boolean) {
   assert.ok(predicate(), 'condition must become true');
 }
 
+for (const reused of [false, true]) test(`census failure revokes signals but retains capacity until ${reused ? 'PID reuse is detected' : 'identity is verified again'}`, async t => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'factory-stop-census-'))), ps = join(directory, 'ps');
+  const listing = (started = 'Thu Oct 15 00:00:00 2026') => `#!/bin/sh\nprintf '987654 1 987654 S ${started}\\n'\n`;
+  const empty = listing().replace(' S ', ' Z ');
+  writeFileSync(ps, listing(), { mode: 0o700 });
+  const previousPath = process.env.PATH; process.env.PATH = `${directory}:${previousPath}`;
+  const states: string[] = [], sent: unknown[] = [];
+  const scope = new ProcessScope((_pid, row) => states.push(row.state));
+  t.after(async () => {
+    try { writeFileSync(ps, empty); await scope.stop(100); }
+    finally { process.env.PATH = previousPath; rmSync(directory, { recursive: true, force: true }); }
+  });
+  t.mock.method(process, 'kill', (pid: number, signal?: NodeJS.Signals | number) => {
+    sent.push([pid, signal]); writeFileSync(ps, empty); return true;
+  });
+  scope.restore([{ pid: 987654, pgid: 987654, started_at: 'Thu Oct 15 00:00:00 2026', state: 'running' }]);
+  assert.equal(scope.hasLiveProcesses(), true);
+  writeFileSync(ps, '#!/bin/sh\nexit 1\n');
+  const failure = await scope.stop(60).catch(error => error);
+  assert.deepEqual(sent, [], 'failed census must revoke permission to signal a formerly verified PGID');
+  assert.match(failure.message, /диагностика/);
+  assert.equal(states.at(-1), 'unknown');
+  assert.equal(scope.hasLiveProcesses(), true, 'diagnostics outage must not release known capacity');
+  writeFileSync(ps, listing(reused ? 'Thu Oct 15 00:00:01 2026' : undefined));
+  if (reused) {
+    await assert.rejects(scope.stop(100), /не подтверждено/);
+    assert.deepEqual(sent, []); assert.equal(scope.hasLiveProcesses(), false);
+  } else {
+    await scope.stop(200);
+    assert.deepEqual(sent, [[-987654, 'SIGTERM']]); assert.equal(scope.hasLiveProcesses(), false);
+    assert.equal(states.at(-1), 'exited');
+  }
+});
+
+for (const currentProcess of [false, true]) test(`restart stops a revoked survivor independently of a fresh run${currentProcess ? ' and preserves its current process' : ''}`, async t => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'factory-stop-fresh-restart-')));
+  const oldChild = nativeSpawn(process.execPath, ['-e', "console.log('ready');setInterval(()=>{},1000)"], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const currentChild = currentProcess ? nativeSpawn(process.execPath, ['-e', "console.log('ready');setInterval(()=>{},1000)"], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] }) : undefined;
+  await Promise.all([oldChild, ...(currentChild ? [currentChild] : [])].map(child => once(child.stdout!, 'data')));
+  let store = new Store(directory), controller: SpecController | undefined;
+  const kill = process.kill.bind(process), sent: number[] = [];
+  t.after(async () => {
+    for (const child of [oldChild, ...(currentChild ? [currentChild] : [])]) { try { kill(-child.pid!, 'SIGKILL'); } catch {} }
+    await controller?.close(); await delay(300); store.close(); rmSync(directory, { recursive: true, force: true });
+  });
+  const project = store.addProject(projectInput), task = store.createTask(project.id, 'Survivor and fresh run', 1);
+  const old = store.queueSpec(project.id, task.id, 1, directory), identity = processCensus().find(row => row.pid === oldChild.pid)!;
+  store.recordProcess(task.id, { ...identity, state: 'running', run_id: old.id });
+  store.beginDeletion(project.id, task.id, store.task(project.id, task.id).state_version);
+  store.finishDeletion(task.id, 'Известный процесс ещё работает. Остановка продолжится; можно повторить её.', true);
+  store.releaseStoppedTask(project.id, task.id);
+  const fresh = store.queueSpec(project.id, task.id, store.task(project.id, task.id).state_version, directory);
+  if (currentChild) store.recordProcess(task.id, { ...processCensus().find(row => row.pid === currentChild.pid)!, state: 'running', run_id: fresh.id });
+  store.close(); store = new Store(directory);
+  t.mock.method(process, 'kill', (pid: number, signal?: NodeJS.Signals | number) => {
+    if (signal && signal !== 0) sent.push(pid);
+    return kill(pid, signal);
+  });
+  controller = new SpecController(store, directory, () => {});
+  let started = false;
+  t.mock.method(controller as any, 'perform', async () => { started = true; });
+  controller.enqueue(fresh);
+  await waitFor(() => store.executionProcesses(task.id).find(row => row.pid === oldChild.pid)?.state === 'exited');
+  assert.ok(sent.includes(-oldChild.pid!)); assert.equal(store.hasRun(fresh), true);
+  if (currentChild) {
+    assert.ok(!sent.includes(-currentChild.pid!)); kill(currentChild.pid!, 0);
+    assert.equal(started, false); assert.equal((controller as any).scheduler.active.has(task.id), true);
+    kill(-currentChild.pid!, 'SIGKILL');
+  }
+  await waitFor(() => started);
+  await waitFor(() => !(controller as any).scheduler.active.has(task.id));
+  assert.equal(controller.error, null);
+});
+
 test('legacy Stop releases lifecycle without manual proof, preserves publication and rejects stale run callbacks at the same revision', async t => {
   const { store, project, directory, controller } = fixture(t);
   const task = store.createTask(project.id, 'Keep requirements', 1);

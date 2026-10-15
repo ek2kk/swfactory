@@ -29,6 +29,8 @@ export class ProcessScope {
   private groups = new Map<number, ProcessLog | undefined>();
   private identities = new Map<string, ExecutionProcess>();
   private verified = new Set<number>();
+  // A census outage revokes signals without releasing previously confirmed capacity.
+  private retained = new Set<number>();
   private closed = new Set<number>();
   private refreshed = 0;
   private jobs = new Map<Promise<unknown>, ProcessLog | undefined>();
@@ -57,7 +59,7 @@ export class ProcessScope {
     return job;
   }
   knownGroupsStopped() { this.refresh(); return [...this.identities.values()].every(row => row.state === 'exited'); }
-  get hasKnownProcess() { return this.verified.size > 0; }
+  get hasKnownProcess() { return this.retained.size > 0; }
   get hasPendingWork() { return this.jobs.size > 0 || [...this.identities.values()].some(row => row.state !== 'exited'); }
   hasLiveProcesses() { this.refresh(); return this.hasKnownProcess; }
   hasWork() { return this.jobs.size > 0 || !this.knownGroupsStopped(); }
@@ -72,7 +74,7 @@ export class ProcessScope {
     try { identity = processCensus(child.pid).find(row => row.pid === child.pid); } catch { /* Missing identity is unknown, never safe to signal after restart. */ }
     try { this.save({ pid: child.pid, pgid: child.pid, started_at: identity?.started_at ?? '', state: identity ? 'running' : 'unknown', run_id: current?.runId ?? null }); }
     catch (error) { child.kill('SIGKILL'); throw error; }
-    if (identity) this.verified.add(child.pid);
+    if (identity) { this.verified.add(child.pid); this.retained.add(child.pid); }
     const started = Date.now();
     child.once?.('close', (code, signal) => {
       this.closed.add(child.pid!);
@@ -80,7 +82,7 @@ export class ProcessScope {
       try { process.kill(-child.pid!, 0); } catch (error) { absent = (error as NodeJS.ErrnoException).code === 'ESRCH'; }
       if (absent) {
         for (const row of this.identities.values()) if (row.pgid === child.pid) this.save({ ...row, state: 'exited' });
-        this.groups.delete(child.pid!); this.verified.delete(child.pid!);
+        this.groups.delete(child.pid!); this.verified.delete(child.pid!); this.retained.delete(child.pid!);
       } else this.refresh(true);
       log?.info({ event: 'process.exited', pid: child.pid, pgid: child.pid, exit_code: code, signal, duration_ms: Date.now() - started });
     });
@@ -91,13 +93,13 @@ export class ProcessScope {
     if (!this.groups.size || (!force && Date.now() - this.refreshed < 30)) return;
     this.refreshed = Date.now();
     let rows: ProcessRow[];
+    this.verified.clear();
     try { rows = processCensus(); }
     catch {
       for (const row of this.identities.values()) if (row.state !== 'exited') this.save({ ...row, state: 'unknown' });
       return;
     }
     const owned = new Map<number, ExecutionProcess>();
-    this.verified.clear();
     for (const row of this.identities.values()) {
       if (row.state === 'exited') continue;
       const match = rows.find(candidate => candidate.pid === row.pid && candidate.started_at === row.started_at);
@@ -118,6 +120,7 @@ export class ProcessScope {
         this.groups.set(row.pgid, this.groups.get(owner.pgid)); this.save(identity); added = true;
       }
     } while (added);
+    this.retained = new Set(this.verified);
     for (const row of this.identities.values()) {
       if (row.state === 'exited') continue;
       const group = rows.some(candidate => candidate.pgid === row.pgid);
@@ -163,7 +166,7 @@ export class ProcessScope {
         if (Date.now() - started >= 500) this.signal('SIGKILL');
         await delay(50);
       }
-      throw new Error(this.hasLiveProcesses() ? 'Известный процесс ещё работает. Остановка продолжится; можно повторить её.'
+      throw new Error(this.hasLiveProcesses() && this.verified.size ? 'Известный процесс ещё работает. Остановка продолжится; можно повторить её.'
         : 'Завершение исполнения не подтверждено: диагностика процесса или callback недоступна.');
     } catch (error) {
       this.controller.abort();

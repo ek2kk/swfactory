@@ -49,17 +49,23 @@ export class SpecController {
     }, log);
     // Recover only identities recorded by this backend; legacy flags never reserve a slot.
     const taskIds = store.db.prepare("SELECT DISTINCT task_id FROM execution_processes WHERE state <> 'exited'").all() as { task_id: string }[];
+    const runs = store.runs(), revoked = new Set(runs.filter(run => run.revoked).map(run => run.id));
     for (const { task_id } of taskIds) {
-      const scope = this.scope(task_id);
-      scope.restore(store.executionProcesses(task_id).filter(row => row.state !== 'exited'));
-      if (scope.hasLiveProcesses()) this.scheduler.retain(task_id, async () => {
-        while (!this.closing && scope.hasLiveProcesses()) await new Promise(resolve => setTimeout(resolve, 100));
-      });
-      const task = store.db.prepare('SELECT deletion_state, execution_generation FROM tasks WHERE id = ?').get(task_id) as { deletion_state: string | null; execution_generation: number };
-      if (task.execution_generation > 0 && store.runs().filter(r => r.task_id === task_id).every(r => r.revoked)) {
-        this.retired.set(task_id, new Set([scope])); this.scopes.delete(task_id);
-        void scope.stop().catch(() => {});
+      const task = store.db.prepare('SELECT execution_generation FROM tasks WHERE id = ?').get(task_id) as { execution_generation: number };
+      const stoppedWithoutRun = task.execution_generation > 0 && runs.filter(run => run.task_id === task_id).every(run => run.revoked);
+      const processes = store.executionProcesses(task_id).filter(row => row.state !== 'exited'), scopes: ProcessScope[] = [];
+      for (const stopping of [true, false]) {
+        const rows = processes.filter(row => (row.run_id ? revoked.has(row.run_id) : stoppedWithoutRun) === stopping);
+        if (!rows.length) continue;
+        const scope = this.scope(task_id); scope.restore(rows); scopes.push(scope);
+        if (stopping) {
+          this.retired.set(task_id, new Set([scope])); this.scopes.delete(task_id);
+          void scope.stop().catch(() => {});
+        }
       }
+      if (scopes.some(scope => scope.hasLiveProcesses())) this.scheduler.retain(task_id, async () => {
+        while (!this.closing && scopes.some(scope => scope.hasLiveProcesses())) await new Promise(resolve => setTimeout(resolve, 100));
+      });
     }
   }
 
