@@ -7,7 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 // Each task owns isolated POSIX process groups, including descendants after the leader exits.
 type ProcessLog = FastifyBaseLogger | (() => FastifyBaseLogger | undefined);
 function resolveLog(log?: ProcessLog) { return typeof log === 'function' ? log() : log; }
-export type ExecutionProcess = { pid: number; pgid: number; started_at: string; state: 'running' | 'exited' | 'unknown'; run_id?: string | null };
+export type ExecutionProcess = { pid: number; pgid: number; started_at: string; state: 'running' | 'exited' | 'unknown'; run_id?: string | null; execution_generation?: number | null };
 type ProcessRow = { pid: number; parent: number; pgid: number; started_at: string };
 export function processCensus(pid?: number): ProcessRow[] {
   const columns = 'pid=,ppid=,pgid=,stat=,lstart=';
@@ -22,7 +22,7 @@ export function processCensus(pid?: number): ProcessRow[] {
 const context = new AsyncLocalStorage<{ scope: ProcessScope; log?: ProcessLog; runId?: string }>();
 export class ProcessScope {
   constructor(private onProcess: (pid: number, identity: ExecutionProcess) => void = () => {}, private log?: FastifyBaseLogger,
-    private authorized = () => true) {}
+    private authorized = () => true, private generation?: number) {}
   readonly controller = new AbortController();
   private cancelled = false;
   private scanning = false;
@@ -60,6 +60,7 @@ export class ProcessScope {
   }
   knownGroupsStopped() { this.refresh(); return [...this.identities.values()].every(row => row.state === 'exited'); }
   get hasKnownProcess() { return this.retained.size > 0; }
+  get hasRecoverableProcess() { return [...this.identities.values()].some(row => row.state !== 'exited' && !!row.started_at); }
   get hasPendingWork() { return this.jobs.size > 0 || [...this.identities.values()].some(row => row.state !== 'exited'); }
   hasLiveProcesses() { this.refresh(); return this.hasKnownProcess; }
   hasWork() { return this.jobs.size > 0 || !this.knownGroupsStopped(); }
@@ -72,7 +73,7 @@ export class ProcessScope {
     this.groups.set(child.pid, currentLog);
     let identity: ProcessRow | undefined;
     try { identity = processCensus(child.pid).find(row => row.pid === child.pid); } catch { /* Missing identity is unknown, never safe to signal after restart. */ }
-    try { this.save({ pid: child.pid, pgid: child.pid, started_at: identity?.started_at ?? '', state: identity ? 'running' : 'unknown', run_id: current?.runId ?? null }); }
+    try { this.save({ pid: child.pid, pgid: child.pid, started_at: identity?.started_at ?? '', state: identity ? 'running' : 'unknown', run_id: current?.runId ?? null, execution_generation: this.generation }); }
     catch (error) { child.kill('SIGKILL'); throw error; }
     if (identity) { this.verified.add(child.pid); this.retained.add(child.pid); }
     const started = Date.now();
@@ -115,7 +116,7 @@ export class ProcessScope {
       for (const row of rows) if (!owned.has(row.pid)) {
         const owner = owned.get(row.parent) ?? [...owned.values()].find(owner => owner.pgid === row.pgid);
         if (!owner) continue;
-        const identity: ExecutionProcess = { ...row, state: 'running', run_id: owner.run_id };
+        const identity: ExecutionProcess = { ...row, state: 'running', run_id: owner.run_id, execution_generation: owner.execution_generation };
         owned.set(row.pid, identity); this.verified.add(row.pgid);
         this.groups.set(row.pgid, this.groups.get(owner.pgid)); this.save(identity); added = true;
       }
@@ -137,7 +138,7 @@ export class ProcessScope {
     }
   }
   private continueStop() {
-    if (this.retry || !this.hasKnownProcess) return;
+    if (this.retry || !this.hasRecoverableProcess) return;
     this.retry = setTimeout(() => {
       this.retry = undefined;
       try { this.signal('SIGKILL'); } catch { /* Retry known survivors without claiming termination. */ }

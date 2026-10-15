@@ -452,7 +452,7 @@ test('v14 migration keeps local tasks, revisions and run history and adds persis
   const before = store.task(project.id, task.id), revisions = store.revisions(project.id, task.id), runs = store.runs();
   store.db.exec('DROP TABLE github_issues; PRAGMA user_version = 14');
   store.close(); store = new Store(directory);
-  assert.equal(store.db.pragma('user_version', { simple: true }), 20);
+  assert.equal(store.db.pragma('user_version', { simple: true }), 21);
   assert.deepEqual(store.task(project.id, task.id), before); assert.deepEqual(store.revisions(project.id, task.id), revisions);
   assert.deepEqual(store.runs(), runs);
   const imported = seed(store, project);

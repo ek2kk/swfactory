@@ -103,6 +103,83 @@ for (const currentProcess of [false, true]) test(`restart stops a revoked surviv
   assert.equal(controller.error, null);
 });
 
+for (const variant of ['recorded', 'legacy', 'current-title'] as const) test(`restart stops a title survivor before a fresh queued run (${variant})`, async t => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'factory-stop-title-restart-')));
+  const child = nativeSpawn(process.execPath, ['-e', "console.log('ready');setInterval(()=>{},1000)"], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const current = variant === 'current-title' ? nativeSpawn(process.execPath, ['-e', "console.log('ready');setInterval(()=>{},1000)"], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] }) : undefined;
+  await Promise.all([child, ...(current ? [current] : [])].map(child => once(child.stdout!, 'data')));
+  let store = new Store(directory), controller: SpecController | undefined;
+  t.after(async () => {
+    for (const processChild of [child, ...(current ? [current] : [])]) { try { process.kill(-processChild.pid!, 'SIGKILL'); } catch {} }
+    await controller?.close(); await delay(300); store.close(); rmSync(directory, { recursive: true, force: true });
+  });
+  const project = store.addProject(projectInput), task = store.createTask(project.id, 'Title survivor', 1);
+  const identity = processCensus().find(row => row.pid === child.pid)!;
+  store.recordProcess(task.id, { ...identity, state: 'running', run_id: null, execution_generation: 0 });
+  store.beginDeletion(project.id, task.id, task.state_version);
+  store.finishDeletion(task.id, 'Известный процесс ещё работает.', true); store.releaseStoppedTask(project.id, task.id);
+  const fresh = store.queueSpec(project.id, task.id, store.task(project.id, task.id).state_version, directory);
+  if (current) store.recordProcess(task.id, { ...processCensus().find(row => row.pid === current.pid)!, state: 'running', run_id: null, execution_generation: 1 });
+  if (variant === 'legacy') {
+    store.db.exec('ALTER TABLE execution_processes DROP COLUMN execution_generation; PRAGMA user_version = 20');
+  }
+  store.close(); store = new Store(directory);
+  controller = new SpecController(store, directory, () => {});
+  let started = false;
+  t.mock.method(controller as any, 'perform', async () => { started = true; });
+  controller.enqueue(fresh);
+  await waitFor(() => store.executionProcesses(task.id).find(row => row.pid === child.pid)?.state === 'exited');
+  if (current) {
+    assert.equal(store.executionProcesses(task.id).find(row => row.pid === current.pid)?.state, 'running');
+    assert.equal(started, false, 'the current generation keeps its own slot');
+    process.kill(current.pid!, 0); process.kill(-current.pid!, 'SIGKILL');
+  }
+  await waitFor(() => started && !(controller as any).scheduler.active.has(task.id));
+  assert.equal(store.hasRun(fresh), true);
+  assert.equal(store.executionProcesses(task.id).find(row => row.pid === child.pid)?.execution_generation, variant === 'legacy' ? null : 0);
+});
+
+for (const reused of [false, true]) test(`restart retries an unavailable census and ${reused ? 'rejects PID reuse' : 'recovers survivor capacity and Stop'}`, async t => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'factory-stop-restart-outage-'))), ps = join(directory, 'ps');
+  let store = new Store(directory), controller: SpecController | undefined;
+  const previousPath = process.env.PATH;
+  const empty = "#!/bin/sh\nprintf '987654 1 987654 Z Thu Oct 15 00:00:00 2026\\n'\n";
+  t.after(async () => {
+    try {
+      writeFileSync(ps, empty); await delay(400);
+      await controller?.close(); await delay(300);
+    } finally { process.env.PATH = previousPath; store.close(); rmSync(directory, { recursive: true, force: true }); }
+  });
+  const project = store.addProject(projectInput), task = store.createTask(project.id, 'Census outage', 1);
+  const old = store.queueSpec(project.id, task.id, 1, directory);
+  store.recordProcess(task.id, { pid: 987654, pgid: 987654, started_at: 'Thu Oct 15 00:00:00 2026', state: 'running', run_id: old.id });
+  store.beginDeletion(project.id, task.id, store.task(project.id, task.id).state_version);
+  store.finishDeletion(task.id, 'Известный процесс ещё работает.', true); store.releaseStoppedTask(project.id, task.id);
+  store.close(); store = new Store(directory);
+  writeFileSync(ps, '#!/bin/sh\nexit 1\n', { mode: 0o700 });
+  process.env.PATH = `${directory}:${previousPath}`;
+  const sent: [number, NodeJS.Signals | number | undefined][] = [];
+  t.mock.method(process, 'kill', (pid: number, signal?: NodeJS.Signals | number) => { sent.push([pid, signal]); return true; });
+  controller = new SpecController(store, directory, () => {});
+  await delay(100);
+  assert.equal(store.executionProcesses(task.id)[0].state, 'unknown');
+  assert.equal((controller as any).scheduler.active.has(task.id), false);
+  assert.equal(sent.length, 0, 'an outage cannot authorize signals or a live slot');
+  writeFileSync(ps, `#!/bin/sh\nprintf '987654 1 987654 S Thu Oct 15 00:00:0${reused ? 1 : 0} 2026\\n'\n`);
+  if (reused) {
+    await delay(700);
+    assert.equal(store.executionProcesses(task.id)[0].state, 'unknown');
+    assert.equal(sent.length, 0); assert.equal((controller as any).scheduler.active.has(task.id), false);
+  } else {
+    await waitFor(() => store.executionProcesses(task.id)[0].state === 'running' && (controller as any).scheduler.active.has(task.id));
+    await waitFor(() => sent.some(([pid, signal]) => pid === -987654 && signal === 'SIGKILL'));
+    assert.equal(store.task(project.id, task.id).stage, 'backlog');
+  }
+  writeFileSync(ps, empty);
+  await waitFor(() => store.executionProcesses(task.id)[0].state === 'exited');
+  await waitFor(() => !(controller as any).scheduler.active.has(task.id));
+});
+
 test('legacy Stop releases lifecycle without manual proof, preserves publication and rejects stale run callbacks at the same revision', async t => {
   const { store, project, directory, controller } = fixture(t);
   const task = store.createTask(project.id, 'Keep requirements', 1);

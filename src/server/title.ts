@@ -85,7 +85,7 @@ export class Titles {
         if (task.deletion_state) continue;
         const log = this.log?.child({ project_id: task.project_id, task_id: task.id, role: 'title' });
         const scope = new ProcessScope((_pid, row) => { this.store.recordProcess(task.id, row); this.publish(); }, log,
-          () => this.store.rawTask(task.project_id, task.id).execution_generation === task.execution_generation);
+          () => this.store.rawTask(task.project_id, task.id).execution_generation === task.execution_generation, task.execution_generation);
         this.scopes.set(task.id, [...(this.scopes.get(task.id) ?? []).filter(scope => !scope.knownGroupsStopped()), scope]);
         const controller = scope.controller;
         const done = this.scheduler.enqueue(task.id, () => scope.run(async () => {

@@ -52,10 +52,10 @@ export class SpecController {
     const runs = store.runs(), revoked = new Set(runs.filter(run => run.revoked).map(run => run.id));
     for (const { task_id } of taskIds) {
       const task = store.db.prepare('SELECT execution_generation FROM tasks WHERE id = ?').get(task_id) as { execution_generation: number };
-      const stoppedWithoutRun = task.execution_generation > 0 && runs.filter(run => run.task_id === task_id).every(run => run.revoked);
       const processes = store.executionProcesses(task_id).filter(row => row.state !== 'exited'), scopes: ProcessScope[] = [];
       for (const stopping of [true, false]) {
-        const rows = processes.filter(row => (row.run_id ? revoked.has(row.run_id) : stoppedWithoutRun) === stopping);
+        const rows = processes.filter(row => (row.run_id ? revoked.has(row.run_id)
+          : (row.execution_generation ?? 0) < task.execution_generation) === stopping);
         if (!rows.length) continue;
         const scope = this.scope(task_id); scope.restore(rows); scopes.push(scope);
         if (stopping) {
@@ -63,9 +63,15 @@ export class SpecController {
           void scope.stop().catch(() => {});
         }
       }
-      if (scopes.some(scope => scope.hasLiveProcesses())) this.scheduler.retain(task_id, async () => {
-        while (!this.closing && scopes.some(scope => scope.hasLiveProcesses())) await new Promise(resolve => setTimeout(resolve, 100));
-      });
+      // Keep diagnosing saved identities even when the initial census cannot reserve capacity.
+      void (async () => {
+        while (!this.closing && scopes.some(scope => scope.hasRecoverableProcess)) {
+          if (scopes.some(scope => scope.hasLiveProcesses())) this.scheduler.retain(task_id, async () => {
+            while (!this.closing && scopes.some(scope => scope.hasLiveProcesses())) await new Promise(resolve => setTimeout(resolve, 100));
+          });
+          await new Promise(resolve => setTimeout(resolve, 100).unref());
+        }
+      })();
     }
   }
 
@@ -74,7 +80,7 @@ export class SpecController {
     if (!scope) {
       const generation = (this.store.db.prepare('SELECT execution_generation FROM tasks WHERE id = ?').get(taskId) as { execution_generation: number }).execution_generation;
       scope = new ProcessScope((_pid, row) => { this.store.recordProcess(taskId, row); this.publish(); }, log,
-        () => (this.store.db.prepare('SELECT execution_generation FROM tasks WHERE id = ?').get(taskId) as { execution_generation: number } | undefined)?.execution_generation === generation);
+        () => (this.store.db.prepare('SELECT execution_generation FROM tasks WHERE id = ?').get(taskId) as { execution_generation: number } | undefined)?.execution_generation === generation, generation);
       this.scopes.set(taskId, scope);
     }
     return scope;

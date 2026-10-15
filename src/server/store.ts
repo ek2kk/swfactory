@@ -50,7 +50,7 @@ export class Store {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       const version = this.db.pragma('user_version', { simple: true });
-      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13 && version !== 14 && version !== 15 && version !== 16 && version !== 17 && version !== 18 && version !== 19 && version !== 20) throw new Error('Версия базы новее приложения. Обновите приложение.');
+      if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6 && version !== 7 && version !== 8 && version !== 9 && version !== 10 && version !== 11 && version !== 12 && version !== 13 && version !== 14 && version !== 15 && version !== 16 && version !== 17 && version !== 18 && version !== 19 && version !== 20 && version !== 21) throw new Error('Версия базы новее приложения. Обновите приложение.');
       this.db.transaction(() => {
         this.db.exec(`
           CREATE TABLE IF NOT EXISTS projects (
@@ -172,12 +172,15 @@ export class Store {
         this.db.exec(`CREATE TABLE IF NOT EXISTS execution_processes (
           task_id TEXT NOT NULL REFERENCES tasks(id), run_id TEXT, pid INTEGER NOT NULL, pgid INTEGER NOT NULL,
           started_at TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(task_id, pid, started_at));`);
+        if (!(this.db.pragma('table_info(execution_processes)') as { name: string }[]).some(column => column.name === 'execution_generation')) {
+          this.db.exec('ALTER TABLE execution_processes ADD COLUMN execution_generation INTEGER');
+        }
         if (Number(version) < 20) {
           this.db.exec(`UPDATE runs SET revoked = 1 WHERE task_id IN (SELECT id FROM tasks WHERE deletion_state IS NOT NULL OR archived = 1);
             UPDATE tasks SET execution_generation = execution_generation + 1 WHERE deletion_state IS NOT NULL;
             UPDATE tasks SET legacy_execution_unknown = 1 WHERE (stop_unverified = 1 OR execution_unverified = 1) AND NOT EXISTS (SELECT 1 FROM execution_processes WHERE task_id = tasks.id);`);
         }
-        this.db.pragma('user_version = 20');
+        this.db.pragma('user_version = 21');
         // No OS proof survives restart. Never infer termination from SQLite run status.
         if (Number(version) < 13) {
           this.db.exec(`UPDATE tasks SET stop_unverified = 1
@@ -341,11 +344,11 @@ export class Store {
     }).immediate();
   }
   executionProcesses(taskId: string): ExecutionProcess[] {
-    return this.db.prepare('SELECT run_id, pid, pgid, started_at, state FROM execution_processes WHERE task_id = ?').all(taskId) as ExecutionProcess[];
+    return this.db.prepare('SELECT run_id, pid, pgid, started_at, state, execution_generation FROM execution_processes WHERE task_id = ?').all(taskId) as ExecutionProcess[];
   }
   recordProcess(taskId: string, row: ExecutionProcess) {
-    this.db.prepare(`INSERT INTO execution_processes (task_id, run_id, pid, pgid, started_at, state) VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(task_id, pid, started_at) DO UPDATE SET state = excluded.state, pgid = excluded.pgid`).run(taskId, row.run_id ?? null, row.pid, row.pgid, row.started_at, row.state);
+    this.db.prepare(`INSERT INTO execution_processes (task_id, run_id, pid, pgid, started_at, state, execution_generation) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(task_id, pid, started_at) DO UPDATE SET state = excluded.state, pgid = excluded.pgid`).run(taskId, row.run_id ?? null, row.pid, row.pgid, row.started_at, row.state, row.execution_generation ?? null);
     this.db.prepare(`UPDATE tasks SET execution_unverified = EXISTS(SELECT 1 FROM execution_processes WHERE task_id = ? AND state = 'running'),
       stop_unverified = legacy_execution_unknown OR EXISTS(SELECT 1 FROM execution_processes WHERE task_id = ? AND state = 'unknown') WHERE id = ?`).run(taskId, taskId, taskId);
     if (!this.executionProcesses(taskId).some(row => row.state !== 'exited')) this.db.prepare("UPDATE tasks SET execution_warning = NULL, deletion_error = NULL WHERE id = ? AND execution_warning LIKE 'Известный процесс ещё работает.%'").run(taskId);
