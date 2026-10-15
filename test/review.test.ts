@@ -1,4 +1,6 @@
 import { test } from 'node:test';
+import { captureLogs } from './helpers/logging.js';
+import type { FastifyBaseLogger } from 'fastify';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -38,7 +40,7 @@ async function fixture(t: { after: (fn: () => void) => void }, completedRepairs 
   if (!planned) store.db.prepare('DELETE FROM review_plans WHERE build_id = ?').run(build.id);
   store.db.prepare('UPDATE runs SET repair_attempt = ? WHERE id = ?').run(completedRepairs, build.id);
   const reviewQueue = () => store.queueReview(project.id, task.id, store.task(project.id, task.id).state_version);
-  const reviewer = (execute: ExecuteReview) => new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, async input => visualResult(await execute(input), input.reviewRole), approved);
+  const reviewer = (execute: ExecuteReview, logger?: FastifyBaseLogger) => new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, async input => visualResult(await execute(input), input.reviewRole), approved, undefined, logger);
   return { root, checkout, directory, store, project, task, initial, git, build, queue: reviewQueue, controller: reviewer };
 }
 
@@ -62,7 +64,9 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
  if(r.method==='turn/start') { send({id:r.id,result:{turn:{id:'turn'}}}); send({method:'turn/started',params:{threadId:'thread',turn:{id:'turn'}}}); }
  if(r.method==='turn/interrupt') { send({id:r.id,result:{}}); send({method:'turn/completed',params:{threadId:'thread',turn:{id:'turn',status:'interrupted'}}}); }
 });`, { mode: 0o700 });
-  const runner = controller(input => executeReview(input, cli));
+  const capture = captureLogs();
+  t.after(() => capture.app.close());
+  const runner = controller(input => executeReview(input, cli), capture.log);
   runner.enqueue(run);
   for (let i = 0; i < 200 && !runner.canInterrupt(run.id); i++) await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(runner.canInterrupt(run.id), true);
@@ -71,6 +75,11 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   const failed = store.specRun(project.id, task.id, run.id);
   assert.equal(failed.status, 'failed'); assert.equal(failed.diagnostic?.error_kind, 'interrupted');
   assert.equal(failed.diagnostic?.execution_finished, true); assert.equal(failed.diagnostic?.can_interrupt, false);
+  const logs = capture.lines.filter(line => line.run_id === run.id);
+  const interrupted = logs.findIndex(line => line.event === 'run.interrupt-requested');
+  const exited = logs.findIndex((line, index) => index > interrupted && line.event === 'process.exited');
+  assert.ok(interrupted >= 0 && exited > interrupted);
+  assert.ok(logs.some(line => line.event === 'run.finished' && line.execution_finished === true && line.error_kind === 'interrupted'));
   assert.equal(store.task(project.id, task.id).execution_unverified, 0);
   store.db.prepare('UPDATE tasks SET execution_unverified=1 WHERE id=?').run(task.id);
   assert.throws(() => store.retryRun(project.id, task.id, store.task(project.id, task.id).state_version), /Повтор запрещён/);
@@ -487,7 +496,9 @@ for (const mode of ['success', 'existing', 'existing-changed-during-fetch', 'unk
     if (mode === 'existing-changed-during-fetch') writeFileSync(join(cwd, 'README.md'), 'changed during PR detail fetch');
     return JSON.stringify(mode === 'wrong-marker' ? { ...pr, body: 'another task' } : mode === 'wrong-head' ? { ...pr, head: { ...pr.head, sha: 'bad' } } : pr);
   };
-  const publisher = new SpecController(store, directory, () => {}, cli);
+  const capture = captureLogs();
+  t.after(() => capture.app.close());
+  const publisher = new SpecController(store, directory, () => {}, cli, undefined, undefined, undefined, undefined, undefined, undefined, capture.log);
   const version = store.task(project.id, task.id).state_version;
   assert.throws(() => store.beginPublication(project.id, task.id, version - 1));
   store.db.exec("CREATE TRIGGER fail_publication BEFORE INSERT ON events WHEN NEW.type = 'publication.started' BEGIN SELECT RAISE(ABORT, 'disk'); END");
@@ -503,6 +514,11 @@ for (const mode of ['success', 'existing', 'existing-changed-during-fetch', 'unk
   const saved = store.task(project.id, task.id);
   const success = mode === 'success' || mode === 'existing';
   assert.equal(saved.publication_status, success ? 'confirmed' : 'unknown');
+  const logs = capture.lines.filter(line => line.task_id === task.id && line.run_id === run.id);
+  assert.ok(logs.some(line => line.event === 'publication.pending'));
+  assert.ok(logs.some(line => line.event === (success ? 'publication.confirmed' : 'publication.unknown') && line.state_confirmed === true));
+  assert.ok(!logs.some(line => line.event === (success ? 'publication.unknown' : 'publication.confirmed')));
+  assert.ok(logs.some(line => line.event === 'publication.finished' && typeof line.duration_ms === 'number' && line.outcome === saved.publication_status));
   assert.equal(saved.stage, success ? 'pr-created' : 'needs-human');
   assert.equal(saved.pr_url, success || mode === 'save' ? pr.html_url : null);
   assert.equal(creates, ['success', 'unknown', 'save'].includes(mode) ? 1 : 0);

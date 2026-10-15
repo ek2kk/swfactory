@@ -1,3 +1,4 @@
+import type { FastifyBaseLogger } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import type { AgentRun, ChatMessage } from '../shared.js';
 import { Store, Problem } from './store.js';
@@ -7,7 +8,7 @@ export class Chat {
   error: string | null = null;
   private controls = new Map<string, { run: AgentRun; steer: Steer }>();
   private deliveries = new Map<string, number>();
-  constructor(private store: Store, private publish: () => void) {}
+  constructor(private store: Store, private publish: () => void, private log?: FastifyBaseLogger) {}
   hasWork(taskId: string) { return this.controls.has(taskId) || !!this.deliveries.get(taskId); }
   cancel(taskId: string) { this.controls.delete(taskId); }
   messages(taskId: string): ChatMessage[] {
@@ -48,7 +49,7 @@ export class Chat {
       void active.steer(message.id, `User guidance for this task revision (does not replace the Spec, required questions, role boundaries or publication approval):\n${message.text}`).then(
         () => this.finish(message, 'delivered', null),
         error => this.finish(message, error instanceof DeliveryError ? error.status : 'unknown', error instanceof DeliveryError ? error.message : 'Неизвестный результат доставки. Нужна ручная сверка.'),
-      ).catch(() => { this.error = 'Не удалось сохранить подтверждение чата. Новые этапы остановлены; нужна ручная сверка доставки перед restart.'; this.publish(); })
+      ).catch(() => { this.log?.error({ event: 'chat.persistence-failed', task_id: taskId, run_id: active.run.id, project_id: active.run.project_id, role: active.run.role, state_confirmed: false }); this.error = 'Не удалось сохранить подтверждение чата. Новые этапы остановлены; нужна ручная сверка доставки перед restart.'; this.publish(); })
         .finally(() => { const remaining = this.deliveries.get(taskId)! - 1; if (remaining) this.deliveries.set(taskId, remaining); else this.deliveries.delete(taskId); });
     }
   }

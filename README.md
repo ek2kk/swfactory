@@ -21,7 +21,7 @@ npm run check
 npm start
 ```
 
-Откройте URL, напечатанный backend. Bootstrap token передаётся во fragment,
+Откройте URL, напечатанный backend в **stderr** (терминал). Bootstrap token передаётся во fragment,
 удаляется из адресной строки и обменивается на HttpOnly/SameSite session cookie.
 После restart откройте новый URL из терминала. Не публикуйте этот URL.
 Backend работает отдельным процессом: закрытие браузерной вкладки его не
@@ -35,6 +35,54 @@ Backend работает отдельным процессом: закрытие
 портах. Настройки проектов, карточки, редакции и события хранятся в `state.sqlite`;
 `owner.sqlite` удерживает process-lifetime exclusive lock. Не удаляйте его при
 работающем backend. Данные и их история автоматически не удаляются.
+
+## Operational logs
+
+Backend использует встроенный [Fastify/Pino logger](https://fastify.dev/docs/latest/Reference/Logging/):
+JSON Lines в stdout, уровень `info` по умолчанию. `LOG_LEVEL` принимает стандартные
+уровни Pino: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `silent`.
+Обязательного pretty transport и отдельного log service нет.
+
+```sh
+# npm --silent убирает служебный banner npm из stdout; stderr оставьте в терминале.
+LOG_LEVEL=info npm --silent start | jq -c .
+# Либо сохраните stdout в защищённый файл вне checkout (хранением управляет вызывающая среда).
+(umask 077; node dist/server/main.js > "$HOME/swfactory-backend.jsonl")
+jq -c 'select(.task_id == "TASK_UUID" and .run_id == "RUN_UUID")' "$HOME/swfactory-backend.jsonl"
+jq -c 'select(.event == "scheduler.changed" or .event == "http.completed")' "$HOME/swfactory-backend.jsonl"
+```
+
+Bootstrap URL с token выводится только в stderr для открытия UI. **Не объединяйте
+stderr со stdout через `2>&1` и не отправляйте stderr в сборщик логов**; это приватный
+канал терминала. После restart используйте новый URL. Обмен token на session cookie,
+проверки Origin/Host и loopback binding сохраняются.
+
+`http_request_id` — серверный ID HTTP-запроса, `request_id` — ID идемпотентной команды.
+Работа после HTTP response сохраняет `project_id`, `task_id`, `run_id`, `role`.
+`job.enqueued` → `job.started` показывают ожидание очереди (`queue_wait_ms`),
+`run.started` → `run.finished` — длительность и outcome. `stage.changed` описывает
+состояние после commit SQLite; `*.persistence-failed` и `state_confirmed: false`
+не подтверждают переход. `scheduler.changed` содержит `active`, `queued`, `limit`
+и причину блокировки, включая capacity, rate limit и ошибки сохранения.
+Stream chunks и heartbeat в operational logs не попадают.
+
+`run.interrupt-requested`/`process.stop-requested` означают запрос остановки;
+`process.exited` подтверждает выход конкретного процесса, `process.stop-confirmed`
+— завершение известных групп и callbacks. `process.stop-unknown`/`task.stop-unknown`
+требуют сверки; выход лидера не доказывает завершения всех потомков.
+`publication.pending`, `publication.confirmed` и `publication.unknown` различают
+начатую публикацию, подтверждённый remote объект и неизвестный исход без auto-retry.
+
+Operational logs содержат только выбранные metadata и безопасные категории ошибок:
+без descriptions, prompts, chat, config, HTTP bodies/headers, raw CLI output и stacks.
+Из разрешённых строк дополнительно маскируются известные environment secrets и
+bootstrap/session token. Эти логи дополняют диагностику и **не управляют состоянием**.
+SQLite events остаются сохранённой историей и источником состояния; CLI artifacts
+в `artifacts/<run_id>/` содержат подробности исполнения по прежнему контракту,
+без нового маскирования. Они могут содержать приватный текст — защищайте data directory.
+При SIGINT/SIGTERM backend дожидается закрытия controllers и SQLite, пишет финальный
+shutdown event и завершается естественно, позволяя стандартному logger закончить вывод.
+Ротация, долговременное хранение и shipping operational logs остаются за вызывающей средой.
 
 ## Подключение и карточки
 
@@ -551,7 +599,7 @@ duration, SHA, отчёт и страницы локальных логов. Usa
 SIGTERM группе процесса, затем SIGKILL через 3 секунды. Задача и worktree сохраняются.
 Прерванный этап не получает PASS/READY; повтор доступен только после подтверждённого
 завершения известных процессов и сверки source. Публикацию эта кнопка не прерывает.
-Redaction отключена: значения environment credentials, токены и пароли сохраняются
+В SQLite history и CLI artifacts redaction отключена: значения environment credentials, токены и пароли сохраняются
 без маскирования в новых сообщениях чата, отчётах, артефактах, логах и review plans.
 Старые логи также доступны в браузере без требования маркера `redacted-v1`.
 Ранее замаскированные значения не восстанавливаются. Проверки принадлежности

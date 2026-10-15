@@ -1,19 +1,22 @@
+import type { FastifyBaseLogger } from 'fastify';
+import { errorKind } from './logging.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFile as nativeExecFile, spawn as nativeSpawn, type ChildProcess, type ExecFileOptions } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 
 // Each task owns isolated POSIX process groups, including descendants after the leader exits.
-const context = new AsyncLocalStorage<ProcessScope>();
+type ProcessLog = FastifyBaseLogger | (() => FastifyBaseLogger | undefined);
+const context = new AsyncLocalStorage<{ scope: ProcessScope; log?: ProcessLog }>();
 export class ProcessScope {
-  constructor(private onProcess: (pid: number) => void = () => {}) {}
+  constructor(private onProcess: (pid: number) => void = () => {}, private log?: FastifyBaseLogger) {}
   readonly controller = new AbortController();
   private cancelled = false;
   private scanning = false;
   private groups = new Set<number>();
   private jobs = new Set<Promise<unknown>>();
-  run<T>(work: () => Promise<T>): Promise<T> {
+  run<T>(work: () => Promise<T>, log: ProcessLog | undefined = this.log): Promise<T> {
     this.check();
-    const job = context.run(this, async () => {
+    const job = context.run({ scope: this, log }, async () => {
       try { return await work(); }
       finally {
         // Keep the scheduler slot while deletion is stopping descendant processes.
@@ -30,9 +33,18 @@ export class ProcessScope {
   check() { if (this.cancelled) throw new Error('Task execution aborted'); this.controller.signal.throwIfAborted(); }
   track(child: ChildProcess) {
     if (!child.pid) return;
+    const currentLog = context.getStore()?.log ?? this.log;
+    const log = typeof currentLog === 'function' ? currentLog() : currentLog;
+    if (log) {
+      const started = Date.now();
+      child.once('close', (code, signal) => { log.info({ event: 'process.exited', pid: child.pid, pgid: child.pid,
+        exit_code: code, signal, duration_ms: Date.now() - started }); });
+      child.once('error', error => { log.error({ event: 'process.failed', error_kind: errorKind(error) }); });
+    }
     this.groups.add(child.pid);
     try { this.onProcess(child.pid); }
     catch (error) { process.kill(-child.pid, 'SIGKILL'); throw error; }
+    log?.info({ event: 'process.started', pid: child.pid, pgid: child.pid });
   }
   private alive(pid: number) {
     try { process.kill(-pid, 0); return true; }
@@ -45,7 +57,7 @@ export class ProcessScope {
   }
   private signal(signal: NodeJS.Signals) {
     for (const pid of this.groups) if (this.alive(pid)) {
-      try { process.kill(-pid, signal); }
+      try { process.kill(-pid, signal); this.log?.info({ event: 'process.signal-sent', pgid: pid, signal }); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
     }
   }
@@ -68,6 +80,17 @@ export class ProcessScope {
     } while (added);
   }
   async stop(timeout = 5000) {
+    const started = Date.now();
+    this.log?.info({ event: 'process.stop-requested' });
+    try {
+      await this.performStop(timeout);
+      this.log?.info({ event: 'process.stop-confirmed', duration_ms: Date.now() - started, execution_finished: true });
+    } catch (error) {
+      this.log?.warn({ event: 'process.stop-unknown', duration_ms: Date.now() - started, error_kind: errorKind(error), execution_finished: false });
+      throw error;
+    }
+  }
+  private async performStop(timeout: number) {
     this.cancelled = true;
     this.scanning = true;
     if (!this.groups.size) this.controller.abort();
@@ -86,11 +109,11 @@ export class ProcessScope {
     }
   }
 }
-export function checkExecution() { context.getStore()?.check(); }
-export function executionSignal() { return context.getStore()?.controller.signal; }
+export function checkExecution() { context.getStore()?.scope.check(); }
+export function executionSignal() { return context.getStore()?.scope.controller.signal; }
 
 export const execFile: typeof nativeExecFile = ((file: string, args: string[], options: ExecFileOptions, callback?: (...args: any[]) => void) => {
-  const scope = context.getStore(); scope?.check();
+  const scope = context.getStore()?.scope; scope?.check();
   if (!scope) return nativeExecFile(file, args, options, callback as any);
   // execFile itself does not forward detached to spawn; buffer an isolated spawn instead.
   const child = nativeSpawn(file, args, { ...options, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -115,7 +138,7 @@ export const execFile: typeof nativeExecFile = ((file: string, args: string[], o
   return child;
 }) as typeof nativeExecFile;
 export const spawn: typeof nativeSpawn = ((file: string, args: string[], options: object) => {
-  const scope = context.getStore(); scope?.check();
+  const scope = context.getStore()?.scope; scope?.check();
   const child = nativeSpawn(file, args, { ...options, detached: true });
   scope?.track(child); return child;
 }) as typeof nativeSpawn;
