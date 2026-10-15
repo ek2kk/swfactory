@@ -55,12 +55,12 @@ test('interrupted Review preserves work and permits an explicit retry only after
   const run = queue();
   const cli = join(root, 'codex');
   writeFileSync(cli, `#!${process.execPath}
-if (process.argv[2] === '--version') { console.log('codex-cli 0.160.1'); process.exit(0); }
+if (process.argv[2] === '--version') { console.log('codex-cli 0.162.1'); process.exit(0); }
 const send = x => console.log(JSON.stringify(x));
 require('node:readline').createInterface({input:process.stdin}).on('line', line => {
  const r=JSON.parse(line);
  if(r.method==='initialize') send({id:r.id,result:{}});
- if(r.method==='thread/start') send({id:r.id,result:{thread:{id:'thread'}}});
+ if(r.method==='thread/start') send({id:r.id,result:{thread:{id:'thread'},serviceTier:'default'}});
  if(r.method==='turn/start') { send({id:r.id,result:{turn:{id:'turn'}}}); send({method:'turn/started',params:{threadId:'thread',turn:{id:'turn'}}}); }
  if(r.method==='turn/interrupt') { send({id:r.id,result:{}}); send({method:'turn/completed',params:{threadId:'thread',turn:{id:'turn',status:'interrupted'}}}); }
 });`, { mode: 0o700 });
@@ -112,6 +112,7 @@ for (const changes of [false, true]) test(`Sequential independent reports stop o
     assert.equal(active++, 0);
     const role = /You are the ([\w-]+)/.exec(input.prompt)![1]; seen.push(role); directories.add(input.directory);
     assert.equal(input.reasoningEffort, build.config.reasoning_efforts?.[role as keyof typeof build.config.models]);
+    assert.equal(input.fast, build.config.fast_modes?.[role as keyof typeof build.config.models]);
     assert.match(input.prompt, /README says hello/); assert.match(input.prompt, /Never run Build/);
     assert.equal(store.task(project.id, task.id).stage, 'review');
     assert.throws(() => store.queueBuild(project.id, task.id, store.task(project.id, task.id).state_version));
@@ -378,7 +379,7 @@ for (const mode of ['question', 'drift', 'invalid', 'save'] as const) test(`Appr
   const { store, project, task, directory, queue } = await fixture(t);
   let calls = 0;
   const runner = new SpecController(store, directory, () => {}, command, undefined, undefined, undefined, async input => visualResult(pass, input.reviewRole), async input => {
-    calls++; assert.equal(input.reasoningEffort, 'max');
+    calls++; assert.equal(input.reasoningEffort, 'max'); assert.equal(input.fast, false);
     if (mode === 'question' && calls === 1) return { ...await approved(), outcome: 'NEEDS_INPUT', questions: [{ text: 'Rollout?', context: 'Policy', impact: 'Risk', options: [], required: true }] };
     if (mode === 'question') assert.match(input.prompt, /Canary/);
     if (mode === 'drift') writeFileSync(join(input.cwd, 'README.md'), 'external');

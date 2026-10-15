@@ -17,7 +17,7 @@ export function Modal({ open, title, close, children }: { open: boolean; title: 
   }, [open]);
   return <dialog ref={dialog} className="workspace-dialog" aria-labelledby={titleId} onCancel={event => { event.preventDefault(); close(); }} onKeyDown={event => {
     if (event.key !== 'Tab') return;
-    const elements = [...event.currentTarget.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href], summary, [tabindex="0"]')].filter(element => !element.matches(':disabled') && element.getClientRects().length);
+    const elements = [...event.currentTarget.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href], summary, [tabindex="0"]')].filter(element => element.tabIndex >= 0 && !element.matches(':disabled') && element.checkVisibility({ visibilityProperty: true }));
     const first = elements[0], last = elements.at(-1);
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
     if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }

@@ -45,9 +45,10 @@ const send=x=>console.log(JSON.stringify(x));
 let initialized=false;
 require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
  const r=JSON.parse(line);
- assert.ok(['initialize','initialized','model/list'].includes(r.method));
+ assert.ok(['initialize','initialized','account/read','model/list'].includes(r.method));
  if(r.method==='initialize') {send({id:r.id,result:{}});return;}
  if(r.method==='initialized'){initialized=true;return;}
+ if(r.method==='account/read'){send({id:r.id,result:{account:{type:'chatgpt'}}});return;}
  assert.ok(initialized); assert.equal(r.params.includeHidden,false);
  const scenario=${JSON.stringify(scenario)};
  if(scenario==='timeout')return;

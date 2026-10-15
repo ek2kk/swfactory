@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn } from './processes.js';
 import { readFileSync, writeFileSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { defaultModels, type ModelOption, type ModelCatalog } from '../shared.js';
@@ -22,16 +22,28 @@ export function normalizeModels(value: unknown): ModelOption[] {
       if (!model.reasoning_efforts?.some(option => option.effort === entry.default_reasoning_effort)) throw new Error('invalid default effort');
       model.default_reasoning_effort = entry.default_reasoning_effort;
     }
+    if (entry.fast !== undefined) {
+      if (typeof entry.fast?.supported !== 'boolean' || typeof entry.fast.reason !== 'string' || entry.fast.reason.length > 1024
+        || !['chatgpt', 'apiKey', 'unknown'].includes(entry.fast.auth)) throw new Error('invalid fast metadata');
+      model.fast = { supported: entry.fast.supported, reason: entry.fast.reason, auth: entry.fast.auth };
+    }
     models.set(entry.id, model);
   }
   return [...models.values()];
 }
 
-// Only initialize and model/list: no thread, inference, credentials parsing or tool execution.
+// 0.162.1 is the oldest protocol verified here to acknowledge serviceTier and its explicit default.
+export function supportsFast(version: string | undefined) {
+  const match = version?.match(/(?:codex[- ]cli |\/)(\d+)\.(\d+)\.(\d+)(?:\s|$)/);
+  return !!match && (Number(match[1]) > 0 || Number(match[2]) > 162 || (Number(match[2]) === 162 && Number(match[3]) >= 1));
+}
+
+// Read-only discovery: no thread, inference, credentials parsing or tool execution.
 export function discoverModels(cwd: string, executable = 'codex', timeout = 10_000): Promise<ModelOption[]> {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, ['app-server', '--listen', 'stdio://'], { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
     let buffer = '', bytes = 0, id = 1, pages = 0, done = false;
+    let method = 'initialize', version: string | undefined, auth: 'chatgpt' | 'apiKey' | 'unknown' = 'unknown';
     let result: ModelOption[] | undefined;
     const models: ModelOption[] = [], cursors = new Set<string>();
     let error: Error | undefined, kill: ReturnType<typeof setTimeout> | undefined;
@@ -56,19 +68,41 @@ export function discoverModels(cwd: string, executable = 'codex', timeout = 10_0
           const event = JSON.parse(line);
           if (event.method && event.id !== undefined) throw new Error('Unexpected server request');
           if (event.id !== id) continue;
+          if (method === 'account/read') {
+            const type = event.result?.account?.type;
+            auth = type === 'chatgpt' || type === 'apiKey' ? type : 'unknown';
+            method = 'model/list';
+            send({ id: ++id, method, params: { limit: 100, includeHidden: false } });
+            continue;
+          }
           if (event.error || !event.result) throw new Error('Discovery failed');
-          if (id === 1) {
+          if (method === 'initialize') {
+            version = event.result.userAgent;
             send({ method: 'initialized', params: {} });
+            method = 'account/read';
+            send({ id: ++id, method, params: {} });
+            continue;
           } else {
             const page = event.result;
             if (!Array.isArray(page.data) || ++pages > 100) throw new Error('Invalid page');
-            models.push(...page.data.filter((m: any) => !m?.hidden).map((m: any) => ({ id: m?.model, name: m?.displayName, reasoning_efforts: m?.supportedReasoningEfforts?.map((option: any) => ({ effort: option?.reasoningEffort, description: option?.description })), default_reasoning_effort: m?.defaultReasoningEffort })));
+            models.push(...page.data.filter((m: any) => !m?.hidden).map((m: any) => {
+              const tier = Array.isArray(m?.serviceTiers) && m.serviceTiers.some((tier: any) => tier?.id === 'priority');
+              const reason = !supportsFast(version) ? 'Версия Codex не подтверждает управление Fast; требуется CLI 0.162.1 или новее.'
+                : auth !== 'chatgpt' ? 'Fast подтверждён только для входа через ChatGPT; текущая авторизация не поддержана.'
+                : !tier ? 'Каталог Codex не подтверждает Fast для этой модели.'
+                : 'Доступность аккаунта и фактический режим проверяются исполнителем при запуске.';
+              return { id: m?.model, name: m?.displayName,
+                reasoning_efforts: m?.supportedReasoningEfforts?.map((option: any) => ({ effort: option?.reasoningEffort, description: option?.description })),
+                default_reasoning_effort: m?.defaultReasoningEffort,
+                ...(Array.isArray(m?.serviceTiers) ? { fast: { supported: supportsFast(version) && auth === 'chatgpt' && !!tier, auth, reason } } : {}),
+              };
+            }));
             if (models.length > 1000) throw new Error('Catalog limit');
             if (page.nextCursor == null) { result = normalizeModels(models); finish(); break; }
             if (typeof page.nextCursor !== 'string' || !page.nextCursor || cursors.has(page.nextCursor)) throw new Error('Invalid cursor');
             cursors.add(page.nextCursor);
           }
-          send({ id: ++id, method: 'model/list', params: { limit: 100, includeHidden: false, ...(id > 2 ? { cursor: event.result.nextCursor } : {}) } });
+          send({ id: ++id, method: 'model/list', params: { limit: 100, includeHidden: false, cursor: event.result.nextCursor } });
         }
       } catch { finish(new Error('Invalid Codex model catalog')); }
     });

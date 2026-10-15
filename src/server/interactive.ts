@@ -1,3 +1,4 @@
+import { prepareFast, FastModeFailure } from './fast.js';
 import { execFile, spawn } from './processes.js';
 import { openSync, writeSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
@@ -17,6 +18,7 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
     child.stdin?.end();
   });
   input.metadata?.({ cli_version: version });
+  const fastArgs = await prepareFast(input, version, executable);
   saveArtifact(input.directory, 'schema.json', JSON.stringify(schema));
   const out = openSync(join(input.directory, 'events.jsonl'), 'wx', 0o600);
   let err: number;
@@ -24,7 +26,7 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
   catch (error) { closeSync(out); throw error; }
   try {
     return await new Promise<T>((resolve, reject) => {
-      const child = spawn(executable, ['app-server', '--listen', 'stdio://'], { cwd: input.cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+      const child = spawn(executable, ['app-server', '--listen', 'stdio://', ...fastArgs], { cwd: input.cwd, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
       let sequence = 0, buffer = '', stderr = '', bytes = 0, threadId = '', turnId = '', message = '';
       let finished = false, failure: Error | undefined, result: T;
       let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -166,7 +168,9 @@ export async function executeInteractive<T>(input: CodexInput, schema: object, v
       void (async () => {
         await rpc('initialize', { clientInfo: { name: 'swfactory', title: 'SW Factory', version: '0.1.0' } });
         send({ method: 'initialized', params: {} });
-        const response = await rpc('thread/start', { cwd: input.cwd, model: input.model, approvalPolicy: 'never', sandbox: 'danger-full-access' });
+        const response = await rpc('thread/start', { cwd: input.cwd, model: input.model, ...(input.fast !== undefined ? { serviceTier: input.fast ? 'fast' : 'default' } : {}), approvalPolicy: 'never', sandbox: 'danger-full-access' });
+        if (input.fast !== undefined && response.serviceTier !== (input.fast ? 'priority' : 'default')) throw new FastModeFailure(`Codex не подтвердил режим ${input.fast ? 'Fast' : 'обычный'}: получено ${response.serviceTier ?? 'неизвестно'}. Запуск остановлен без fallback.`);
+        if (input.fast !== undefined) writeSync(out, JSON.stringify({ method: 'run/serviceTier', params: { requested: input.fast ? 'fast' : 'default', confirmed: response.serviceTier } }) + '\n');
         threadId = response.thread.id;
         input.metadata?.({ session_id: threadId });
         await rpc('turn/start', { threadId, ...(input.reasoningEffort ? { effort: input.reasoningEffort } : {}), input: [{ type: 'text', text: input.prompt }], outputSchema: schema });

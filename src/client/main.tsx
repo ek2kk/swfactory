@@ -511,7 +511,7 @@ function RunReport({ task, run }: { task: Task; run: AgentRun }) {
     <summary>{run.report ? 'Отчёт' : 'Диагностика'} · {run.outcome ?? run.status}{run.stale || run.description_revision !== task.revision ? ' · Неактуален' : ''}{run.finished_at && ` · ${new Date(run.finished_at).toLocaleString('ru')}`}</summary>
     <p className="meta">Версия требований: {run.description_revision} · Модель: {run.config.models[run.role]}</p>
     <p className="meta">Доработки: {run.repair_attempt}/2 · {run.round_id && `Раунд: ${run.round_id}`} {run.spec_run_id && `Spec: ${run.spec_run_id}`}<br />{run.base_sha && `Base: ${run.base_sha}`}<br />{run.head_sha && `Head: ${run.head_sha}`}<br />Branch: {run.branch}<br />{run.worktree}</p>
-    <p className="meta">Модели запуска: {allRoles.filter(role => run.config.models[role]).map(role => `${role}: ${run.config.models[role]} (${run.config.reasoning_efforts?.[role] ?? 'по умолчанию Codex'})`).join(' · ')}</p>
+    <p className="meta">Модели запуска: {allRoles.filter(role => run.config.models[role]).map(role => `${role}: ${run.config.models[role]} (${run.config.reasoning_efforts?.[role] ?? 'по умолчанию Codex'}; ${run.config.fast_modes?.[role] === undefined ? 'Fast наследуется' : run.config.fast_modes[role] ? 'Fast запрошен' : 'обычный режим'})`).join(' · ')}</p>
     <p className="meta">CLI: {run.diagnostic?.cli_version ?? 'неизвестна'} · Session: {run.diagnostic?.session_id ?? 'не предоставлен'}<br />
       Начало: {run.started_at ?? '—'} · Конец: {run.finished_at ?? '—'} · Duration: {run.started_at && run.finished_at ? `${Date.parse(run.finished_at) - Date.parse(run.started_at)} ms` : '—'}</p>
     {run.diagnostic?.usage && <p>Usage этого запуска: {JSON.stringify(run.diagnostic.usage)}. Это не остаток подписки.</p>}
@@ -528,6 +528,7 @@ function ModelSettings({ project, refresh }: { project: Project; refresh: () => 
   const [config, setConfig] = useState<Settings | null>(null);
   const [version, setVersion] = useState(project.state_version);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [catalog, setCatalog] = useState<import('../shared.js').ModelCatalog | null>(null);
   const [loading, setLoading] = useState(false);
@@ -541,20 +542,27 @@ function ModelSettings({ project, refresh }: { project: Project; refresh: () => 
   }
   useEffect(() => { void refreshCatalog(); }, [project.id]);
   async function reload() {
-    setConfig(await api<Settings>(`/projects/${project.id}/settings`));
-    setVersion(project.state_version);
+    const { state_version, ...saved } = await api<Settings & { state_version: number }>(`/projects/${project.id}/settings`);
+    setConfig(saved); setVersion(state_version); setError(''); setNotice('');
   }
   useEffect(() => { reload().catch(error => setError(error.message)); }, [project.id]);
-  return <details><summary>Модели и инструкции · {project.host}/{project.repository} · {project.checkout}</summary>
+  return <details className="model-settings" open><summary>Модели и инструкции · {project.host}/{project.repository} · {project.checkout}</summary>
     {config && <form onSubmit={async event => {
-      event.preventDefault(); if (submitting.current) return; submitting.current = true; setBusy(true); setError('');
-      try { await api(`/projects/${project.id}/settings`, 'PUT', { ...config, state_version: version }); setVersion(version + 1); await refresh(); }
+      event.preventDefault(); if (submitting.current) return; submitting.current = true; setBusy(true); setError(''); setNotice('');
+      try {
+        const saved = await api<Settings>(`/projects/${project.id}/settings`, 'PUT', { ...config, state_version: version });
+        setConfig(saved); setVersion(version + 1);
+        setNotice('Настройки сохранены.');
+        await refresh();
+      }
       catch (error) { setError((error as Error).message); } finally { submitting.current = false; setBusy(false); }
     }}>
+      <fieldset className="form-fields" disabled={busy}>
       <p role="status">{loading ? 'Получаем модели Codex…' : catalog ? `Источник: ${{ codex: 'Codex', cache: 'последний успешный каталог', defaults: 'встроенные настройки' }[catalog.source]}${catalog.updated_at ? ' · ' + new Date(catalog.updated_at).toLocaleString('ru') : ''}` : 'Каталог пока недоступен.'}</p>
       {(catalogError || catalog?.error) && <p role="alert">{catalogError || catalog?.error}</p>}
       <button type="button" className="secondary" disabled={loading} onClick={() => void refreshCatalog()}>Обновить список моделей</button>
-      <div className="fields">{roles.map(role => <div key={role}>
+      <div className="model-rows">{roles.map(role => <section className="model-row" key={role} aria-label={`Настройки роли ${role}`}>
+        <strong>{role === 'review-ui-ux' ? 'Review UI/UX' : role === 'review-code' ? 'Review Code' : role === 'review-security' ? 'Review Security' : role === 'spec' ? 'Spec' : role === 'build' ? 'Build' : 'Approve'}</strong>
         <ModelPicker role={role} value={config.models[role]!} catalog={catalog?.models ?? []} onChange={value => {
           const reasoning_efforts = { ...config.reasoning_efforts };
           if (value !== config.models[role]) delete reasoning_efforts[role];
@@ -565,13 +573,23 @@ function ModelSettings({ project, refresh }: { project: Project; refresh: () => 
           if (value) reasoning_efforts[role] = value; else delete reasoning_efforts[role];
           setConfig({ ...config, reasoning_efforts });
         }} />
-      </div>)}</div>
+        <div className="fast-setting">
+          <label><input type="checkbox" aria-label={`Fast · ${role}`} checked={config.fast_modes?.[role] === true}
+            disabled={config.fast_modes?.[role] !== true && (catalog?.source !== 'codex' || !catalog.models.find(model => model.id === config.models[role])?.fast?.supported)}
+            onChange={event => setConfig({ ...config, fast_modes: { ...config.fast_modes, [role]: event.target.checked } })} />Fast</label>
+          <p className="hint">{config.fast_modes?.[role] === undefined ? 'Наследуется настройка Codex; фактический режим неизвестен.' : config.fast_modes[role] ? 'Запрошен Fast; применение проверяется при запуске.' : 'Обычный режим (явно).'} </p>
+          {(catalog?.source !== 'codex' || !catalog.models.find(model => model.id === config.models[role])?.fast?.supported) && <p className="hint">{catalog?.source !== 'codex' ? 'Fast не подтверждён: актуальный каталог недоступен.' : catalog.models.find(model => model.id === config.models[role])?.fast?.reason ?? 'Fast не подтверждён для модели и аккаунта.'}</p>}
+          {config.fast_modes?.[role] === undefined && <button type="button" className="secondary" onClick={() => setConfig({ ...config, fast_modes: { ...config.fast_modes, [role]: false } })}>Обычный режим · {role}</button>}
+        </div>
+      </section>)}</div>
+      <p className="hint">Fast при входе через ChatGPT: расход включённых лимитов ×2,5; купленные credits и Enterprise pay-as-you-go ×2. При API key действует API token pricing; этот путь Fast пока не подтверждён. <a href="https://developers.openai.com/codex/speed" target="_blank" rel="noreferrer">Тарификация Codex</a></p>
       <label>Инструкции проекта<textarea maxLength={30000} value={config.instructions} onChange={event => setConfig({ ...config, instructions: event.target.value })} /></label>
       <p className="hint">Каталог Codex не гарантирует доступ к модели. Модель вне списка можно указать вручную. При смене модели глубина сбрасывается на «По умолчанию Codex». Конфигурация фиксируется при старте задачи; недоступная модель останавливает запуск без подмены.</p>
       {project.state_version !== version && <p role="status">Настройки изменились. Загрузите актуальную версию перед сохранением.</p>}
       <button disabled={busy || project.state_version !== version}>Сохранить настройки</button>{' '}
-      <button type="button" className="secondary" disabled={busy} onClick={() => reload().catch(error => setError(error.message))}>Загрузить актуальные</button>
-    </form>}{error && <p role="alert" className="error">{error}</p>}
+      <button type="button" className="secondary" disabled={busy} onClick={() => reload().catch(error => setError(error.message))}>Отменить / загрузить сохранённые</button>
+      </fieldset>
+    </form>}{notice && <p role="status">{notice}</p>}{!config && <button type="button" className="secondary" onClick={() => reload().catch(error => setError(error.message))}>Загрузить настройки</button>}{error && <p role="alert" className="error">{error}</p>}
   </details>;
 }
 
@@ -659,7 +677,6 @@ function App() {
   const [description, setDescription] = useState('');
   const [checkout, setCheckout] = useState('');
   const [windowName, setWindowName] = useState('');
-  const [settingsVisited, setSettingsVisited] = useState(false);
   const [projectError, setProjectError] = useState('');
   const [taskError, setTaskError] = useState('');
   const [deleteError, setDeleteError] = useState('');
@@ -674,7 +691,6 @@ function App() {
       setProjectId(filter || (snapshot.projects.some(project => project.id === projectId) ? projectId : snapshot.projects[0]?.id ?? ''));
       createDraftStarted.current = true;
     }
-    if (name === 'settings') setSettingsVisited(true);
     if (name === 'delete') { setDeleting(snapshot.projects.find(project => project.id === filter) ?? null); setDeleteError(''); }
     setWindowName(name);
   }
@@ -809,7 +825,7 @@ function App() {
     </Modal>
     <Modal open={windowName === 'settings'} title="Модели и инструкции" close={closeWindow}>
       {!snapshot.projects.length && <p>Сначала подключите проект.</p>}
-      {settingsVisited && snapshot.projects.map(project => <ModelSettings key={project.id} project={project} refresh={refresh} />)}
+      {windowName === 'settings' && snapshot.projects.map(project => <ModelSettings key={project.id} project={project} refresh={refresh} />)}
       <details className="projects"><summary>Подключённые проекты ({snapshot.projects.length})</summary>{snapshot.projects.map(p => <div key={p.id}>
         <strong>{p.host}/{p.repository}</strong>{' '}
         {p.hosting === 'github' && <IssueRefresh project={p} syncing={!!snapshot.issue_syncing?.includes(p.id)} />}
