@@ -29,7 +29,7 @@ test('requirements form preserves both drafts on cancel, reopen and conflicts, a
     './api.js': { api: async (...args: any[]) => { calls.push(args); if (fail) throw new Error('Conflict'); return snapshot; } },
     './theme.js': { readTheme: () => 'system', applyTheme: () => {} },
     '../shared.js': shared, './stageHistory.js': stageHistory,
-    './TaskMarkdown.js': { TaskMarkdown },
+    './TaskMarkdown.js': { TaskMarkdown }, './windows.js': {},
     './models.js': {}, './chat.js': {}, './output.js': {}, './taskView.js': {}, './style.css': {},
   };
   const source = readFileSync(new URL('../src/client/main.tsx', import.meta.url), 'utf8');
@@ -127,7 +127,7 @@ test('App reports unavailable live updates and restores active status and curren
       useState(initial: unknown) {
         const index = values.length;
         values.push(typeof initial === 'function' ? initial() : initial);
-        return [values[index], (value: unknown) => { values[index] = value; }];
+        return [values[index], (value: unknown) => { values[index] = typeof value === 'function' ? value(values[index]) : value; }];
       },
       useRef: (current: unknown) => ({ current }),
       useEffect: (effect: () => void | (() => void)) => effects.push(effect),
@@ -136,7 +136,7 @@ test('App reports unavailable live updates and restores active status and curren
     './api.js': { api: async () => structuredClone(initial) },
     './theme.js': { readTheme: () => 'system', applyTheme: () => {} },
     '../shared.js': shared, './stageHistory.js': stageHistory,
-    './TaskMarkdown.js': { TaskMarkdown },
+    './TaskMarkdown.js': { TaskMarkdown }, './windows.js': {},
     './models.js': {}, './chat.js': {}, './output.js': {}, './taskView.js': {}, './style.css': {},
   };
   // Run the real App with hook/module doubles; no browser or extra runtime dependency.
@@ -167,6 +167,11 @@ test('App reports unavailable live updates and restores active status and curren
     assert.equal(values[connectionIndex], 'Сохранено локально · Соединение активно');
     assert.equal(JSON.stringify(values[snapshotIndex]), JSON.stringify(updated));
     assert.equal(events.closes, 0);
+    const change = { id: 10, type: 'task.archived', task_id: 'task', payload: '{"state_version":4}', created_at: '' };
+    const receive = (event: object) => events.handlers.get('change')!({ data: JSON.stringify(event) });
+    receive(change); receive(change); receive({ ...change, id: 9 }); receive({ ...change, id: 11 });
+    const notices = values.find(value => Array.isArray(value) && value.some(item => item.text?.startsWith('Карточка скрыта.'))) as { text: string }[];
+    assert.equal(notices.length, 1, 'duplicate event IDs and archive action keys do not announce twice');
   } finally { for (const cleanup of cleanups) cleanup?.(); }
   assert.equal(sources[0].closes, 1, 'unmount closes the connection');
 });
@@ -198,7 +203,7 @@ test('GitHub refresh controls follow project snapshots, prevent double clicks an
     './api.js': { api: (...args: unknown[]) => { calls.push(args); return request; } },
     './theme.js': { readTheme: () => 'system', applyTheme: () => {} },
     '../shared.js': shared, './stageHistory.js': stageHistory,
-    './TaskMarkdown.js': { TaskMarkdown },
+    './TaskMarkdown.js': { TaskMarkdown }, './windows.js': {},
     './models.js': {}, './chat.js': {}, './output.js': {}, './taskView.js': {}, './style.css': {},
   };
   const source = readFileSync(new URL('../src/client/main.tsx', import.meta.url), 'utf8');
